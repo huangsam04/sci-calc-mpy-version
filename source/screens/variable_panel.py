@@ -1,0 +1,150 @@
+"""Variable panel: Shift+Tab — 2-column table of defined variables."""
+import time
+from ui.element import UIElement
+from input.keyboard import get_key_label
+
+VISIBLE = 4
+ROW_H = 10
+COL_W = 90
+COL2_X = 108
+
+
+class VariablePanel(UIElement):
+    def __init__(self, font, calc_screen):
+        super().__init__(0, 0, 210, 64)
+        self.font = font
+        self.calc = calc_screen
+        self._names = []
+        self._cursor = 0
+        self._offset = 0
+        self._cooldown = 0
+
+    def activate(self):
+        self._rebuild()
+        self._cursor = 0
+        self._offset = 0
+        self._cooldown = 0
+
+    def _rebuild(self):
+        self._names = sorted(self.calc.vars.keys())
+
+    def _clamp(self):
+        n = len(self._names)
+        if n == 0:
+            return
+        self._cursor = max(0, min(self._cursor, n - 1))
+        PAGE = VISIBLE * 2
+        if self._cursor < self._offset or self._cursor >= self._offset + PAGE:
+            self._offset = (self._cursor // PAGE) * PAGE
+        max_off = max(0, ((n - 1) // PAGE) * PAGE)
+        self._offset = max(0, min(self._offset, max_off))
+
+    def _draw_item(self, display, x, y, name, value_str, selected):
+        font_h = self.font.height if self.font else 8
+        label = f"{name}={value_str}"
+        if self.font and self.font.measure_text(label) > COL_W - 12:
+            while len(label) > 0 and self.font.measure_text(label + "~") > COL_W - 12:
+                label = label[:-1]
+            label += "~"
+        if selected:
+            display.fill_rectangle(x, y, COL_W, font_h, 14)
+            if self.font:
+                display.draw_text(x + 2, y, label, self.font, invert=True, gs=14)
+            else:
+                display.draw_text8x8(x + 2, y, label[:12], gs=0)
+        else:
+            if self.font:
+                display.draw_text(x + 2, y, label, self.font, gs=15)
+            else:
+                display.draw_text8x8(x + 2, y, label[:12], gs=15)
+
+    def draw(self, display):
+        if self.font:
+            display.draw_text(2, 0, "Variables", self.font, gs=15)
+        else:
+            display.draw_text8x8(2, 0, "Variables", gs=15)
+        display.draw_hline(0, 10, 210, 15)
+
+        self._clamp()
+        n = len(self._names)
+
+        if n == 0:
+            display.draw_text8x8(4, 30, "(no variables defined)", gs=10)
+        else:
+            for row in range(VISIBLE):
+                y = 12 + row * ROW_H
+                li = self._offset + row
+                if li < n:
+                    name = self._names[li]
+                    val = self._fmt(self.calc.vars[name])
+                    self._draw_item(display, 4, y, name, val, li == self._cursor)
+                ri = self._offset + VISIBLE + row
+                if ri < n:
+                    name = self._names[ri]
+                    val = self._fmt(self.calc.vars[name])
+                    self._draw_item(display, COL2_X, y, name, val, ri == self._cursor)
+
+        total = len(self._names)
+        hint = f"[{self._cursor+1}/{total}] [ENT:ins] [DEL:del] [L/R:col]" if total else "[No variables]"
+        if self.font:
+            display.draw_text(2, 54, hint, self.font, gs=15)
+        else:
+            display.draw_text8x8(2, 54, hint, gs=15)
+
+    def _fmt(self, val):
+        if isinstance(val, float):
+            s = f"{val:.4f}".rstrip('0').rstrip('.')
+            return s if s else "0"
+        return str(val)
+
+    def update(self, kb):
+        now = time.ticks_ms()
+        if time.ticks_diff(now, self._cooldown) < 150:
+            kb.get_rising_edge()
+            return None
+
+        key = kb.get_rising_edge()
+        if key is None:
+            return None
+
+        r, c = key
+        shift = kb.is_pressed(4, 0)
+        label = get_key_label(r, c, shift)
+        n = len(self._names)
+
+        if label in ("2", "down"):
+            if self._cursor < n - 1:
+                self._cursor += 1
+                self._cooldown = now
+        elif label in ("8", "up"):
+            if self._cursor > 0:
+                self._cursor -= 1
+                self._cooldown = now
+        elif label == "ENT":
+            if self._names:
+                self.calc.input_box.insert_str(self._names[self._cursor])
+            return "VAR_PANEL_DONE"
+        elif label == "DEL":
+            if self._names and 0 <= self._cursor < n:
+                name = self._names[self._cursor]
+                if name in self.calc.vars:
+                    del self.calc.vars[name]
+                self._rebuild()
+                if self._cursor >= len(self._names):
+                    self._cursor = max(0, len(self._names) - 1)
+                self._cooldown = now
+        elif label == "ESC":
+            return "VAR_PANEL_DONE"
+        # Left/Right: physical 4/6 keys
+        elif r == 2 and c == 0:
+            nc = self._cursor - VISIBLE
+            if nc >= 0:
+                self._cursor = nc
+                self._cooldown = now
+        elif r == 2 and c == 2:
+            nc = self._cursor + VISIBLE
+            if nc < n:
+                self._cursor = nc
+                self._cooldown = now
+
+        return None

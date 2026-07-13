@@ -1,0 +1,6 @@
+{
+    "angle_mode": 0,
+    "cursor_mode": 1,
+    "enabled_functions": ["basic", "trig"],
+    "version": "1.0.0"
+}
