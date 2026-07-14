@@ -8,7 +8,7 @@ DEFAULTS = {
     "angle_mode": 0,
     "cursor_mode": 1,
     "enabled_functions": ["basic", "trig", "math", "list"],
-    "version": "1.0.0",
+    "version": "1.0.1",
 }
 
 # In-memory caches — survive across function calls within a session
