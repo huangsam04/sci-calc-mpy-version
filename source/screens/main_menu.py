@@ -1,7 +1,6 @@
 """Main menu screen - top-level navigation."""
 from ui.element import UIElement
 from ui.menu import Menu
-import time
 
 
 class MainMenu(UIElement):
@@ -25,15 +24,11 @@ class MainMenu(UIElement):
         self.menu.activate()
 
     def draw(self, display):
-        # Title and time
-        tt = time.localtime()
-        time_str = f"{tt[3]:02d}:{tt[4]:02d}:{tt[5]:02d}"
+        # Title
         if self.font:
             display.draw_text(2, 1, "SCI-CALC", self.font, gs=15)
-            display.draw_text(130, 1, time_str, self.font, gs=15)
         else:
             display.draw_text8x8(2, 1, "SCI-CALC", gs=15)
-            display.draw_text8x8(130, 1, time_str, gs=15)
 
         display.draw_hline(0, 11, 210, 15)
 

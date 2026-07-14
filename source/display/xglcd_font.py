@@ -1,4 +1,5 @@
 """XGLCD Font Utility."""
+import gc
 from math import floor
 from framebuf import FrameBuffer, MONO_VLSB  # type: ignore
 
@@ -21,8 +22,10 @@ class XglcdFont(object):
         self.letter_count = letter_count
         self.bytes_per_letter = (floor(
             (self.height - 1) / 8) + 1) * self.width + 1
-        # ponytail: cache rendered letters, avoids FrameBuffer alloc per char per frame
+        # Cache rendered glyphs and strings. Hard cap prevents unbounded growth
+        # from frequently-changing text like clock displays (time strings).
         self._cache = {}
+        self._cache_max = 256
         self.__load_xglcd_font(path)
 
     def __load_xglcd_font(self, path):
@@ -111,7 +114,8 @@ class XglcdFont(object):
         else:
             result = (fb, width, height)
 
-        self._cache[cache_key] = result
+        if len(self._cache) < self._cache_max:
+            self._cache[cache_key] = result
         return result
 
     def measure_text(self, text, spacing=1):
@@ -134,12 +138,24 @@ class XglcdFont(object):
         total_w = self.measure_text(text, spacing)
         if total_w == 0:
             result = (FrameBuffer(bytearray(1), 1, self.height, MONO_VLSB), 0, self.height)
-            self._cache[cache_key] = result
+            if len(self._cache) < self._cache_max:
+                self._cache[cache_key] = result
             return result
 
         byte_height = (self.height - 1) // 8 + 1
-        buf = bytearray(total_w * byte_height)
-        fb = FrameBuffer(buf, total_w, self.height, MONO_VLSB)
+        try:
+            buf = bytearray(total_w * byte_height)
+            fb = FrameBuffer(buf, total_w, self.height, MONO_VLSB)
+        except MemoryError:
+            # Emergency: clear cache + GC, then retry once
+            self._cache.clear()
+            gc.collect()
+            try:
+                buf = bytearray(total_w * byte_height)
+                fb = FrameBuffer(buf, total_w, self.height, MONO_VLSB)
+            except MemoryError:
+                # Still OOM — return minimal placeholder, caller won't crash
+                return (FrameBuffer(bytearray(1), 1, self.height, MONO_VLSB), 0, self.height)
 
         x = 0
         for letter in text:
@@ -148,5 +164,6 @@ class XglcdFont(object):
             x += w + spacing
 
         result = (fb, total_w, self.height)
-        self._cache[cache_key] = result
+        if len(self._cache) < self._cache_max:
+            self._cache[cache_key] = result
         return result

@@ -360,6 +360,12 @@ def main():
             # Crash landing: draw error screen, wait for key, then recover
             _draw_crash(display, e)
 
+            # Emergency memory recovery — clear font caches + GC
+            for f in (font_main, font_small):
+                if f:
+                    f._cache.clear()
+            gc.collect()
+
             # Debounce: wait for key release + new press
             time.sleep_ms(300)
             while True:
