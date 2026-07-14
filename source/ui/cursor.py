@@ -22,7 +22,7 @@ class Cursor(UIElement):
         insert_animation(self, 'y', self.y, new_y, duration, "INDENT", delay)
 
     def draw(self, display):
-        if not self.is_visible or not self.visible:
+        if not self.is_visible:
             return
         if self.mode == 1:
             # Line cursor: vertical line
