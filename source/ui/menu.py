@@ -107,12 +107,11 @@ class Menu(UIElement):
                     display.draw_text8x8(self.x + 4, draw_y, label, gs=self.gs)
 
     def update(self, kb):
-        key = kb.get_rising_edge()
-        if key is None:
+        event = kb.pop_key_event()
+        if event is None:
             return None
 
-        r, c = key
-        shift = kb.is_pressed(4, 0)
+        r, c, shift = event
         label = get_key_label(r, c, shift)
 
         # Navigation: 8=UP, 2=DOWN (no shift needed in menus)

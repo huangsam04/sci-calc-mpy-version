@@ -109,11 +109,24 @@ class Keyboard:
             cp.value(0)
 
     def get_rising_edge(self):
-        """Peek at first rising edge key. Does NOT consume - matches original getRisingEdgeKey()."""
+        """Peek at first rising edge key. Does NOT consume — prefer pop_key_event()."""
         for ri in range(ROWS):
             for ci in range(COLS):
                 if self.keys[ri][ci].state == RISING_EDGE:
                     return (ri, ci)
+        return None
+
+    def pop_key_event(self):
+        """Return (row, col, shift_held) for first unconsumed rising edge and
+        consume it. Shift state is captured atomically with the edge — no more
+        label misresolution. Returns None if all edges already consumed."""
+        shift_held = self.keys[4][0].is_pressed
+        for ri in range(ROWS):
+            for ci in range(COLS):
+                k = self.keys[ri][ci]
+                if k.state == RISING_EDGE and not k._consumed:
+                    k._consumed = True
+                    return (ri, ci, shift_held)
         return None
 
     def is_pressed(self, row, col):

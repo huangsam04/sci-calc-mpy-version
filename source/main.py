@@ -364,7 +364,7 @@ def main():
             time.sleep_ms(300)
             while True:
                 kb.scan()
-                if kb.get_rising_edge() is not None:
+                if kb.pop_key_event() is not None:
                     break
                 time.sleep_ms(20)
 

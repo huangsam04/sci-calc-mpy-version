@@ -83,14 +83,14 @@ class LetterPanel(UIElement):
         # Skip one frame so the key that triggered activation doesn't leak into the panel
         if self._skip_frame:
             self._skip_frame = False
-            kb.get_rising_edge()  # discard pending edge
+            kb.pop_key_event()  # consume and discard pending edge
             return None
 
-        key = kb.get_rising_edge()
-        if key is None:
+        event = kb.pop_key_event()
+        if event is None:
             return None
 
-        r, c = key
+        r, c, _ = event  # letter panel ignores shift — uses raw (r,c) for key mapping
         now = time.ticks_ms()
 
         # Per-key cooldown: same-key double-tap prevention, different keys pass through

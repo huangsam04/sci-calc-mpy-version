@@ -23,7 +23,6 @@ class CalculatorScreen(UIElement):
         self._cooldown = 0
         self._hist_last_key = None
         self._esc_guard = 0       # prevent ESC double-fire after exiting history
-        self._tab_held = False    # direct Tab press tracking
         self.vars = {}
         self.func_table = {}
         # Error popup
@@ -189,8 +188,7 @@ class CalculatorScreen(UIElement):
 
     def update(self, kb):
         if self.mode == 2:
-            key = kb.get_rising_edge()
-            if key is not None:
+            if kb.pop_key_event() is not None:
                 self.mode = 0
                 self._err_msg = ""
             return None
@@ -199,28 +197,6 @@ class CalculatorScreen(UIElement):
         if kb.is_pressed(0, 0) and kb.get_hold_time(0, 0) > 1000:
             return "BACK"
 
-        # --- Direct Tab / Shift+Tab: raw hardware read bypasses all layers ---
-        # Immune to label mapping, shift ghosting, cooldowns, and inputbox edge consumption.
-        tab_down = kb.is_pressed(4, 5)
-        shift_down = kb.is_pressed(4, 0)
-        if tab_down and not self._tab_held:
-            self._tab_held = True
-            if shift_down:
-                return "VARIABLE_PANEL"
-            elif self.mode == 1:
-                self.mode = 0
-            elif self.mode == 0 and self.history:
-                self.mode = 1
-                self._cursor = 0
-                self._view_offset = 0
-                self._cooldown = time.ticks_ms()
-            elif self.mode == 0:
-                # No history yet — consume edge so inputbox doesn't process it
-                kb.get_rising_edge()
-            return None
-        elif not tab_down:
-            self._tab_held = False
-
         if self.mode == 0:
             action = self.input_box.update(kb)
             if action == "ENT":
@@ -228,6 +204,12 @@ class CalculatorScreen(UIElement):
                     self.input_box.insert_str("=")
                 else:
                     self._enter()
+            elif action == "tab":
+                if self.history:
+                    self.mode = 1
+                    self._cursor = 0
+                    self._view_offset = 0
+                    self._cooldown = time.ticks_ms()
             elif action == "stab":
                 return "VARIABLE_PANEL"
             elif action == "ESC":
@@ -243,11 +225,11 @@ class CalculatorScreen(UIElement):
                     return "FUNC_PICKER"
         else:
             # History nav mode
-            key = kb.get_rising_edge()
-            if key is None:
+            event = kb.pop_key_event()
+            if event is None:
                 return None
 
-            r, c = key
+            r, c, shift = event
             now = time.ticks_ms()
 
             # Per-key cooldown: same-key rapid-fire prevention, different keys pass through
@@ -256,7 +238,6 @@ class CalculatorScreen(UIElement):
             self._cooldown = now
             self._hist_last_key = (r, c)
 
-            shift = kb.is_pressed(4, 0)
             label = get_key_label(r, c, shift)
 
             if label in ("2", "down"):
@@ -277,6 +258,8 @@ class CalculatorScreen(UIElement):
                     expr_str, _ = self.history[self._cursor]
                     self.input_box.insert_str(expr_str)
                     self.mode = 0
+            elif label == "tab":
+                self.mode = 0
             elif label == "stab":
                 return "VARIABLE_PANEL"
             elif label == "ESC":

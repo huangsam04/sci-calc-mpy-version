@@ -73,10 +73,10 @@ class Checkbox(UIElement):
                 display.fill_rectangle(fill_x, fill_y, fill_w, fill_h, self.gs)
 
     def update(self, kb):
-        key = kb.get_rising_edge()
-        if key is None:
+        event = kb.pop_key_event()
+        if event is None:
             return None
-        r, c = key
+        r, c, _ = event  # checkbox ignores shift — ENT is at fixed position (3,3)
         if r == 3 and c == 3:  # ENT toggles when checkbox is focused
             self.toggle()
             return "TOGGLE"

@@ -107,11 +107,11 @@ class FunctionPicker(UIElement):
             display.draw_text8x8(2, 54, hint, gs=15)
 
     def update(self, kb):
-        key = kb.get_rising_edge()
-        if key is None:
+        event = kb.pop_key_event()
+        if event is None:
             return None
 
-        r, c = key
+        r, c, shift = event
         now = time.ticks_ms()
 
         # Per-key cooldown: same-key rapid-fire prevention, different keys pass through
@@ -119,8 +119,6 @@ class FunctionPicker(UIElement):
             return None
         self._cooldown = now
         self._last_key = (r, c)
-
-        shift = kb.is_pressed(4, 0)
         label = get_key_label(r, c, shift)
         n = len(self._names)
 

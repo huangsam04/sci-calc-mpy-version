@@ -33,11 +33,11 @@ class AboutScreen(UIElement):
                     display.draw_text8x8(5, y, line, gs=15)
 
     def update(self, kb):
-        key = kb.get_rising_edge()
-        if key is None:
+        event = kb.pop_key_event()
+        if event is None:
             return None
-        r, c = key
-        label = get_key_label(r, c, kb.is_pressed(4, 0))
+        r, c, shift = event
+        label = get_key_label(r, c, shift)
         if label == "ESC":
             return "BACK"
         return None
