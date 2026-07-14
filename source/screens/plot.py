@@ -124,7 +124,7 @@ class PlotScreen(UIElement):
         for px in range(graph_left, graph_right + 1):
             x_val = self.x_min + (px - graph_left) / graph_w * (self.x_max - self.x_min)
             y_val, ok, err = self._eval(x_val)
-            if ok and abs(y_val) < 1e30:
+            if ok and abs(y_val) < 1e6:
                 if y_val < y_min:
                     y_min = y_val
                 if y_val > y_max:
@@ -143,8 +143,17 @@ class PlotScreen(UIElement):
             self.mode = 2
             return
 
-        pad = max((y_max - y_min) * 0.1, 0.5)
-        if y_max - y_min < 1e-10:
+        # Clamp extreme range (asymptotes skew auto-scale)
+        y_range = y_max - y_min
+        MAX_RANGE = 200.0  # beyond this the 54px graph is unreadable
+        if y_range > MAX_RANGE:
+            mid = (y_min + y_max) / 2.0
+            y_min = mid - MAX_RANGE / 2.0
+            y_max = mid + MAX_RANGE / 2.0
+            y_range = MAX_RANGE
+
+        pad = max(y_range * 0.1, 0.5)
+        if y_range < 1e-10:
             pad = 1.0
         self._y_min = y_min - pad
         self._y_max = y_max + pad
@@ -168,7 +177,7 @@ class PlotScreen(UIElement):
             px = graph_left + i
             x_val = self.x_min + i / graph_w * (self.x_max - self.x_min)
             y_val, ok, _ = self._eval(x_val)
-            if ok and abs(y_val) < 1e30 and y_range > 0:
+            if ok and abs(y_val) < 1e6 and y_range > 0:
                 ratio = (y_val - self._y_min) / y_range
                 py = graph_h - 1 - int(ratio * (graph_h - 1))
                 py = max(0, min(graph_h - 1, py))
