@@ -45,6 +45,7 @@ class InputBox(UIElement):
         self.str = ""
         self.cursor_pos = 0
         self.view_offset = 0
+        self._update_cursor_target()
 
     def insert_str(self, s):
         pos = self.cursor_pos

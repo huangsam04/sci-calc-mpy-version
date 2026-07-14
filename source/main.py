@@ -325,7 +325,7 @@ def main():
         _boot_progress(display, 4, 8, "Settings OK")
     except Exception as e:
         _boot_fail(display, 4, 8, "Settings", e)
-        settings = {"angle_mode": 0, "enabled_functions": ["basic", "trig", "math", "list"], "version": "1.0.1"}
+        settings = {"angle_mode": 0, "enabled_functions": ["basic", "trig", "math", "list"], "version": "1.0.2"}
     import calc.functions
     calc.functions.ANGLE_MODE = settings.get("angle_mode", 0)
 
@@ -366,7 +366,7 @@ def main():
         raise
 
     try:
-        about = AboutScreen(font_main, settings.get("version", "1.0.1"))
+        about = AboutScreen(font_main, settings.get("version", "1.0.2"))
         func_panel = FunctionPanel(font_main)
         stopwatch = StopwatchScreen(font_main)
         calc_screen = CalculatorScreen(font_main, font_small)

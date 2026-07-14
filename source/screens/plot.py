@@ -25,8 +25,8 @@ class PlotScreen(UIElement):
         self.expr = ""
         self.x_min = -10.0
         self.x_max = 10.0
-        self._y_min = 0.0
-        self._y_max = 1.0
+        self._y_min = -5.0
+        self._y_max = 5.0
         self._err_expr = ""
         self._err_msg = ""
         self._err_pos = 0
@@ -222,7 +222,7 @@ class PlotScreen(UIElement):
             display.palette.bg(0)
             display.palette.fg(15)
             display.gs4_fb.blit(self._curve_fb, graph_left, self._graph_top,
-                                -1, display.palette)
+                                0, display.palette)  # key=0: black pixels transparent
 
     def _draw_overlay(self, display):
         oy = self._overlay_y

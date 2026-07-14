@@ -14,14 +14,18 @@ import math
 ANGLE_MODE = 0  # 0=rad, 1=deg
 
 
+_DEG = math.pi / 180.0
+_RAD = 180.0 / math.pi
+
+
 def to_rad(x):
     """Convert degrees to radians if in degree mode."""
-    return math.radians(x) if ANGLE_MODE else x
+    return x * _DEG if ANGLE_MODE else x
 
 
 def from_rad(x):
     """Convert radians to degrees if in degree mode."""
-    return math.degrees(x) if ANGLE_MODE else x
+    return x * _RAD if ANGLE_MODE else x
 
 
 # --- Infix operators ---

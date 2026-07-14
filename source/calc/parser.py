@@ -48,7 +48,16 @@ def tokenize(expr_str):
                     if dots > 1:
                         break
                 j += 1
-            val = float(expr_str[i:j]) if '.' in expr_str[i:j] else int(expr_str[i:j])
+            # Scientific notation: 1.5e-7 or 2E+10
+            if j < n and expr_str[j] in ('e', 'E') and j + 1 < n:
+                k = j + 1
+                if expr_str[k] in ('+', '-'):
+                    k += 1
+                if k < n and expr_str[k].isdigit():
+                    j = k
+                    while j < n and expr_str[j].isdigit():
+                        j += 1
+            val = float(expr_str[i:j])
             tokens.append(_tok(T_NUM, val, start))
             i = j
         elif c.isalpha() or c == '_':

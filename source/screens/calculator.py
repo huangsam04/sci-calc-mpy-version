@@ -59,6 +59,8 @@ class CalculatorScreen(UIElement):
 
     def _fmt(self, val):
         if isinstance(val, float):
+            if abs(val) < 1e-6:   # snap 32-bit float noise to zero
+                val = 0.0
             if abs(val) >= 1e10 or (abs(val) < 1e-6 and val != 0):
                 return f"{val:.6g}"
             s = f"{val:.6f}".rstrip('0').rstrip('.')
