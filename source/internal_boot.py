@@ -1,6 +1,6 @@
 # Auto-boot: mount SD card and launch SCI-CALC
 import os
-from machine import Pin, SPI
+from machine import SPI
 
 try:
     import sdcard

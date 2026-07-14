@@ -10,12 +10,8 @@ class MainMenu(UIElement):
         self.menu = Menu(0, 13, 210, 4, 12, font)
         self._items = []  # keep track of (label, screen) pairs
 
-    def init(self, display):
-        pass
-
     def add_screen(self, label, screen):
         self.menu.add_item(label, screen)
-        screen.parent = self
         self._items.append((label, screen))
 
     def activate(self):

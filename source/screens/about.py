@@ -9,9 +9,6 @@ class AboutScreen(UIElement):
         self.font = font
         self.version = version
 
-    def activate(self):
-        pass
-
     def draw(self, display):
         # ponytail: 8px line spacing fits 7 lines on 64px display
         # (2 + 6*8 + 9 = 59px)

@@ -31,9 +31,6 @@ class CalculatorScreen(UIElement):
         self._err_msg = ""
         self._err_time = 0
 
-    def init(self, display):
-        pass
-
     def activate(self):
         self.input_box.activate()
         self.mode = 0

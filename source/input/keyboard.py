@@ -108,14 +108,6 @@ class Keyboard:
                 self.keys[ri][ci].update(raw, now)
             cp.value(0)
 
-    def get_rising_edge(self):
-        """Peek at first rising edge key. Does NOT consume — prefer pop_key_event()."""
-        for ri in range(ROWS):
-            for ci in range(COLS):
-                if self.keys[ri][ci].state == RISING_EDGE:
-                    return (ri, ci)
-        return None
-
     def pop_key_event(self):
         """Return (row, col, shift_held) for first unconsumed rising edge and
         consume it. Shift state is captured atomically with the edge — no more

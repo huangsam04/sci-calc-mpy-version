@@ -74,10 +74,3 @@ def save_vars(vars_dict):
     global _vars_cache
     _vars_cache = dict(vars_dict)
     return _write_json(_vars_path(), vars_dict)
-
-
-def clear_vars():
-    global _vars_cache
-    _vars_cache = {}
-    _write_json(_vars_path(), {})
-    return {}

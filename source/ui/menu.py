@@ -2,7 +2,6 @@
 """Menu widget: scrollable list with animation transitions."""
 from ui.element import UIElement
 from ui.cursor import Cursor
-from anim.engine import insert_animation, insert_tmp_target
 from input.keyboard import get_key_label
 
 
@@ -18,10 +17,6 @@ class Menu(UIElement):
         self.cursor = Cursor(x + 2, y + 2, mode=0)
         self.cursor.width = width - 4
         self.cursor.height = row_height - 1
-        self._rest_x = x
-        self._rest_y = y
-        self._active_x = x
-        self._active_y = y
         self.gs = 15
 
     def add_item(self, label, target):

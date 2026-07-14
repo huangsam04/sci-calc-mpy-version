@@ -3,7 +3,6 @@
 import time
 from ui.element import UIElement
 from ui.cursor import Cursor
-from anim.engine import insert_animation
 from input.keyboard import get_key_label
 
 
@@ -62,14 +61,6 @@ class InputBox(UIElement):
             pos = self.cursor_pos
             self.str = self.str[:pos - 1] + self.str[pos:]
             self.cursor_pos -= 1
-            self._clamp_view()
-            self._update_cursor_target()
-
-    def delete_at_cursor(self):
-        """Forward delete: delete character at cursor."""
-        if self.cursor_pos < len(self.str):
-            pos = self.cursor_pos
-            self.str = self.str[:pos] + self.str[pos + 1:]
             self._clamp_view()
             self._update_cursor_target()
 

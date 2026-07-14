@@ -195,59 +195,73 @@ def _draw_crash(display, error):
     display.present()
 
 
-def _screen_transition(display, from_screen, to_screen, font_small):
-    """Dual-slide transition matching CPP_VERSION: both screens move simultaneously
-    with INDENT easing. Direction-aware — forward vs back use opposite directions.
-
-    FORWARD: old exits LEFT, new enters from RIGHT (push-left feel).
-    BACK:    old exits RIGHT, new enters from LEFT (pop-back feel).
-    """
-    going_back = (getattr(from_screen, 'parent', None) is to_screen)
-
-    # Render old screen → snapshot
+def _slide_transition(display, old, new, font_small, forward):
+    """Dual-slide INDENT transition. forward=True: push-left, False: pop-right."""
+    # Snapshot old
     display.clear_buffers(0)
-    from_screen.draw(display)
+    old.draw(display)
     _draw_sidebar(display, font_small)
     old_buf = bytearray(display.gs4_buf)
 
-    # Activate new screen, render it → snapshot
-    to_screen.activate()
+    # Snapshot new
+    new.activate()
     display.clear_buffers(0)
-    to_screen.draw(display)
+    new.draw(display)
     _draw_sidebar(display, font_small)
     new_buf = bytearray(display.gs4_buf)
 
     w = display.width
-    frames = 10  # ~130ms total
-    for i in range(1, frames + 1):
-        t = i / frames
-        eased = 1.0 - pow(2.0, -10.0 * t)  # INDENT — same as CPP_VERSION
+    for i in range(1, 11):
+        t = i / 10.0
+        eased = 1.0 - pow(2.0, -10.0 * t)  # INDENT
 
-        if going_back:
-            # BACK: new enters from LEFT, old exits RIGHT
-            new_x = -w + int(w * eased)
-            old_x = int(w * eased)
+        if forward:
+            new_x, old_x = w - int(w * eased), -int(w * eased)
         else:
-            # FORWARD: new enters from RIGHT, old exits LEFT
-            new_x = w - int(w * eased)
-            old_x = -int(w * eased)
+            new_x, old_x = -w + int(w * eased), int(w * eased)
 
         display.clear_buffers(0)
-
-        # Old underneath, new on top — new slides over old
-        old_fb = FrameBuffer(old_buf, w, display.height, GS4_HMSB)
-        display.gs4_fb.blit(old_fb, old_x, 0)
-        new_fb = FrameBuffer(new_buf, w, display.height, GS4_HMSB)
-        display.gs4_fb.blit(new_fb, new_x, 0)
-
+        display.gs4_fb.blit(FrameBuffer(old_buf, w, display.height, GS4_HMSB), old_x, 0)
+        display.gs4_fb.blit(FrameBuffer(new_buf, w, display.height, GS4_HMSB), new_x, 0)
         display.present()
         time.sleep_ms(13)
 
-    # Final clean frame
     display.clear_buffers(0)
-    to_screen.draw(display)
+    new.draw(display)
     _draw_sidebar(display, font_small)
     display.present()
+
+
+# ── Screen navigation ───────────────────────────────────────────
+
+class Nav:
+    """Screen stack with slide transitions. Captures display + font once."""
+    def __init__(self, display, font_small):
+        self.display = display
+        self.font_small = font_small
+        self.stack = []
+
+    def boot(self, screen):
+        """Set root screen (no transition)."""
+        self.stack.append(screen)
+        screen.activate()
+
+    @property
+    def current(self):
+        return self.stack[-1]
+
+    def go_to(self, screen):
+        old = self.stack[-1]
+        old.deactivate()
+        self.stack.append(screen)
+        _slide_transition(self.display, old, screen, self.font_small, forward=True)
+
+    def go_back(self):
+        if len(self.stack) <= 1:
+            return
+        old = self.stack.pop()
+        old.deactivate()
+        _slide_transition(self.display, old, self.stack[-1], self.font_small, forward=False)
 
 
 def main():
@@ -340,11 +354,8 @@ def main():
         calc_screen.vars = vars_dict
         calc_screen.func_table = func_table
         letter_panel = LetterPanel(font_main, calc_screen.input_box)
-        letter_panel.parent = calc_screen
         func_picker = FunctionPicker(font_main, calc_screen)
-        func_picker.parent = calc_screen
         var_panel = VariablePanel(font_main, calc_screen)
-        var_panel.parent = calc_screen
         plot_screen = PlotScreen(font_main, font_small)
 
         main_menu = MainMenu(font_main)
@@ -353,11 +364,6 @@ def main():
         main_menu.add_screen("Function Panel", func_panel)
         main_menu.add_screen("Stopwatch", stopwatch)
         main_menu.add_screen("About", about)
-        calc_screen.parent = main_menu
-        plot_screen.parent = main_menu
-        func_panel.parent = main_menu
-        stopwatch.parent = main_menu
-        about.parent = main_menu
     except Exception as e:
         _boot_fail(display, 7, 8, "Init", e)
         raise
@@ -372,11 +378,10 @@ def main():
     from anim.engine import animate_all, update_tmp, has_active_animations
     from utils.storage import save_settings, save_vars
 
-    current_screen = main_menu
-    current_screen.activate()
+    nav = Nav(display, font_small)
+    nav.boot(main_menu)
     _angle_was_pressed = False
     _rpn_shift_was_pressed = False
-    _letter_parent = calc_screen  # screen to return to after letter panel closes
     _frame = 0
     _last_render = 0
     FRAME_MS = 66
@@ -391,7 +396,8 @@ def main():
             animate_all()
             update_tmp()
 
-            result = current_screen.update(kb)
+            cur = nav.current
+            result = cur.update(kb)
 
             now = time.ticks_ms()
             needs_render = (time.ticks_diff(now, _last_render) >= FRAME_MS
@@ -401,54 +407,38 @@ def main():
             if needs_render:
                 _last_render = now
                 display.clear_buffers(0)
-                current_screen.draw(display)
+                cur.draw(display)
                 _draw_sidebar(display, font_small)
                 display.present()
 
-            # ── Screen switching (collect target, transition at end) ──
-            next_screen = None
-
+            # ── Screen switching ──
             if result == "BACK":
-                if current_screen.parent:
-                    next_screen = current_screen.parent
+                nav.go_back()
             elif result == "FUNC_PANEL_DONE":
                 settings = load_settings()
                 func_table = _reload_functions(settings)
                 calc.functions._current_func_table = func_table
                 calc_screen.func_table = func_table
-                next_screen = main_menu
+                nav.go_back()
+            elif result in ("FUNC_PICKER_DONE", "LETTER_DONE", "VAR_PANEL_DONE"):
+                nav.go_back()
             elif result == "FUNC_PICKER":
-                next_screen = func_picker
-            elif result == "LETTER_PANEL":
-                next_screen = letter_panel
-            elif result == "LETTER_DONE":
-                next_screen = _letter_parent
-            elif result == "FUNC_PICKER_DONE":
-                next_screen = calc_screen
+                nav.go_to(func_picker)
             elif result == "VARIABLE_PANEL":
-                next_screen = var_panel
-            elif result == "VAR_PANEL_DONE":
-                next_screen = calc_screen
-            elif isinstance(result, UIElement) and result is not current_screen:
-                next_screen = result
+                nav.go_to(var_panel)
+            elif isinstance(result, UIElement) and result is not cur:
+                nav.go_to(result)
 
-            # Global Shift+RPN → Letter Panel (calculator or plot screen)
+            # Global Shift+RPN → Letter Panel
             rpn_pressed = kb.is_pressed(3, 5)
             shift_held = kb.is_pressed(4, 0)
             if (rpn_pressed and shift_held and not _rpn_shift_was_pressed
-                    and (current_screen is calc_screen or current_screen is plot_screen)):
-                letter_panel.input_box = current_screen.input_box
-                _letter_parent = current_screen
-                next_screen = letter_panel
+                    and nav.current in (calc_screen, plot_screen)):
+                letter_panel.input_box = nav.current.input_box
+                nav.go_to(letter_panel)
             _rpn_shift_was_pressed = rpn_pressed and shift_held
 
-            # Execute transition if screen changed
-            if next_screen is not None and next_screen is not current_screen:
-                current_screen.deactivate()
-                _screen_transition(display, current_screen, next_screen, font_small)
-                current_screen = next_screen
-
-            # ANG key (global — toggles deg/rad, shows on status line everywhere)
+            # ANG key
             ang_pressed = kb.is_pressed(4, 4)
             if ang_pressed and not _angle_was_pressed:
                 calc.functions.ANGLE_MODE = 1 - calc.functions.ANGLE_MODE
@@ -457,7 +447,7 @@ def main():
             _angle_was_pressed = ang_pressed
 
             # Persist vars
-            if current_screen is calc_screen:
+            if nav.current is calc_screen:
                 if calc_screen.vars != vars_dict:
                     vars_dict = dict(calc_screen.vars)
                     save_vars(vars_dict)
@@ -468,13 +458,11 @@ def main():
             # Crash landing: draw error screen, wait for key, then recover
             _draw_crash(display, e)
 
-            # Emergency memory recovery — clear font caches + GC
             for f in (font_main, font_small):
                 if f:
                     f._cache.clear()
             gc.collect()
 
-            # Debounce: wait for key release + new press
             time.sleep_ms(300)
             while True:
                 kb.scan()
@@ -482,16 +470,8 @@ def main():
                     break
                 time.sleep_ms(20)
 
-            # Recover to main menu
-            try:
-                current_screen.deactivate()
-            except Exception:
-                pass
-            current_screen = main_menu
-            try:
-                current_screen.activate()
-            except Exception:
-                pass
+            nav.stack[:] = [main_menu]
+            main_menu.activate()
             _last_render = 0
 
 

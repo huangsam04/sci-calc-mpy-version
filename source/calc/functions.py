@@ -129,10 +129,6 @@ def abs_func(a, vars_dict):
     return abs(a), vars_dict
 
 
-def neg_func(a, vars_dict):
-    return -a, vars_dict
-
-
 # --- List functions ---
 
 def max_func(args, vars_dict):

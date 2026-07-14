@@ -15,12 +15,3 @@ def flist():
 def welcome():
     print("Basic operators active.")
     return "Basic operators loaded."
-
-
-# Optional: custom functions
-def mod_func(a, b, vars_dict):
-    if a is None:
-        return 0, vars_dict
-    if b == 0:
-        raise ZeroDivisionError("Modulo by zero")
-    return a % b, vars_dict

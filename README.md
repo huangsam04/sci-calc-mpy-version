@@ -51,7 +51,6 @@ mpremote connect COM5 fs cp vars.json :/vars.json
 mpremote connect COM5 fs cp display/ssd1322.py :/display/ssd1322.py
 mpremote connect COM5 fs cp display/xglcd_font.py :/display/xglcd_font.py
 mpremote connect COM5 fs cp display/mono_palette.py :/display/mono_palette.py
-mpremote connect COM5 fs cp display/__init__.py :/display/__init__.py
 
 mpremote connect COM5 fs cp fonts/Bally7x9.c :/fonts/Bally7x9.c
 mpremote connect COM5 fs cp fonts/Neato5x7.c :/fonts/Neato5x7.c
@@ -61,20 +60,14 @@ mpremote connect COM5 fs cp ui/element.py :/ui/element.py
 mpremote connect COM5 fs cp ui/cursor.py :/ui/cursor.py
 mpremote connect COM5 fs cp ui/inputbox.py :/ui/inputbox.py
 mpremote connect COM5 fs cp ui/menu.py :/ui/menu.py
-mpremote connect COM5 fs cp ui/text.py :/ui/text.py
-mpremote connect COM5 fs cp ui/checkbox.py :/ui/checkbox.py
-mpremote connect COM5 fs cp ui/__init__.py :/ui/__init__.py
 
 mpremote connect COM5 fs cp anim/engine.py :/anim/engine.py
-mpremote connect COM5 fs cp anim/__init__.py :/anim/__init__.py
 
 mpremote connect COM5 fs cp calc/functions.py :/calc/functions.py
 mpremote connect COM5 fs cp calc/parser.py :/calc/parser.py
 mpremote connect COM5 fs cp calc/loader.py :/calc/loader.py
-mpremote connect COM5 fs cp calc/__init__.py :/calc/__init__.py
 
 mpremote connect COM5 fs cp input/keyboard.py :/input/keyboard.py
-mpremote connect COM5 fs cp input/__init__.py :/input/__init__.py
 
 mpremote connect COM5 fs cp screens/main_menu.py :/screens/main_menu.py
 mpremote connect COM5 fs cp screens/calculator.py :/screens/calculator.py
@@ -85,10 +78,8 @@ mpremote connect COM5 fs cp screens/variable_panel.py :/screens/variable_panel.p
 mpremote connect COM5 fs cp screens/stopwatch.py :/screens/stopwatch.py
 mpremote connect COM5 fs cp screens/about.py :/screens/about.py
 mpremote connect COM5 fs cp screens/plot.py :/screens/plot.py
-mpremote connect COM5 fs cp screens/__init__.py :/screens/__init__.py
 
 mpremote connect COM5 fs cp utils/storage.py :/utils/storage.py
-mpremote connect COM5 fs cp utils/__init__.py :/utils/__init__.py
 
 mpremote connect COM5 fs cp functions/basic.py :/functions/basic.py
 mpremote connect COM5 fs cp functions/trig.py :/functions/trig.py

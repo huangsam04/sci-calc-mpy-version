@@ -13,9 +13,6 @@ class FunctionPanel(UIElement):
         self._toggled = {}     # ponytail: session overrides so _refresh doesn't undo toggles
         self._dirty = False
 
-    def init(self, display):
-        pass
-
     def activate(self):
         self._dirty = False
         self._toggled = {}
