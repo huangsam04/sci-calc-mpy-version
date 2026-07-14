@@ -199,13 +199,15 @@ class CalculatorScreen(UIElement):
         if kb.is_pressed(0, 0) and kb.get_hold_time(0, 0) > 1000:
             return "BACK"
 
-        # --- Direct Tab check: bypasses all layers for reliability ---
-        # Uses raw hardware press state — immune to label mapping, shift ghosting,
-        # cooldowns, and inputbox edge consumption.
+        # --- Direct Tab / Shift+Tab: raw hardware read bypasses all layers ---
+        # Immune to label mapping, shift ghosting, cooldowns, and inputbox edge consumption.
         tab_down = kb.is_pressed(4, 5)
+        shift_down = kb.is_pressed(4, 0)
         if tab_down and not self._tab_held:
             self._tab_held = True
-            if self.mode == 1:
+            if shift_down:
+                return "VARIABLE_PANEL"
+            elif self.mode == 1:
                 self.mode = 0
             elif self.mode == 0 and self.history:
                 self.mode = 1
