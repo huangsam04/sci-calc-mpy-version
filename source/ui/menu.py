@@ -77,12 +77,16 @@ class Menu(UIElement):
         font_h = self.font.height if self.font else 8
         bar_y = self.cursor.y
 
-        # Draw highlight bar at animated position
+        # Highlight bar — only as wide as the selected text, not full row
         if 0 <= self.cursor_pos < len(self.items):
-            display.fill_rectangle(self.x + 2, bar_y, self.width - 4, font_h, 14)
+            label = self.items[self.cursor_pos][0]
+            if self.font:
+                tw = self.font.measure_text(label)
+            else:
+                tw = len(label) * 8
+            display.fill_rectangle(self.x + 2, bar_y, tw + 4, font_h, 14)
 
         # Draw items — only invert text when highlight bar fully covers it
-        # Tight threshold prevents text inversion before the animated bar arrives
         for i in range(self.view_offset,
                        min(self.view_offset + self.visible_rows, len(self.items))):
             label = self.items[i][0]
@@ -90,7 +94,6 @@ class Menu(UIElement):
             dist = abs(bar_y - draw_y)
 
             if dist <= 2:
-                # Bar is on this row: invert text to contrast with highlight
                 if self.font:
                     display.draw_text(self.x + 4, draw_y, label, self.font, invert=True, gs=14)
                 else:

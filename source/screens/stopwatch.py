@@ -1,7 +1,10 @@
-"""Stopwatch screen."""
+"""Stopwatch screen — large timer, scrollable lap list (newest first)."""
 import time
 from ui.element import UIElement
 from input.keyboard import get_key_label
+
+LAP_H = 9        # row height for lap entries
+LAP_COUNT = 4    # visible lap rows
 
 
 class StopwatchScreen(UIElement):
@@ -12,13 +15,18 @@ class StopwatchScreen(UIElement):
         self._paused = False
         self._start_time = 0
         self._elapsed = 0
-        self._laps = []
+        self._laps = []          # list of (lap_number, elapsed_ms)
+        self._lap_cursor = 0     # selected lap index (0 = newest)
+        self._view_offset = 0    # first visible lap index
         self._last_action = 0
         self._last_key = ""
+        self._next_lap_num = 1   # next lap number to assign
 
     def activate(self):
         self._last_action = 0
         self._last_key = ""
+
+    # ── timer logic ─────────────────────────────────────────────
 
     def _start(self):
         if self._paused:
@@ -39,62 +47,98 @@ class StopwatchScreen(UIElement):
         self._paused = False
         self._elapsed = 0
         self._laps = []
+        self._lap_cursor = 0
+        self._view_offset = 0
+        self._next_lap_num = 1
 
     def _lap(self):
         if self._running:
             elapsed = time.ticks_diff(time.ticks_ms(), self._start_time)
-            self._laps.append((len(self._laps) + 1, elapsed))
+            self._laps.insert(0, (self._next_lap_num, elapsed))  # newest first
+            self._next_lap_num += 1
 
     def _get_elapsed(self):
         if self._running:
             return time.ticks_diff(time.ticks_ms(), self._start_time)
         return self._elapsed
 
-    def _fmt(self, ms):
-        neg = ms < 0
+    @staticmethod
+    def _fmt(ms):
         ms = abs(ms)
-        total_s = ms // 1000
+        h = ms // 3600000
+        m = (ms % 3600000) // 60000
+        s = (ms % 60000) // 1000
         cs = (ms % 1000) // 10
-        h = total_s // 3600
-        m = (total_s % 3600) // 60
-        s = total_s % 60
-        sign = "-" if neg else ""
-        return f"{sign}{h:02d}:{m:02d}:{s:02d}:{cs:02d}"
+        if h:
+            return f"{h}:{m:02d}:{s:02d}:{cs:02d}"
+        return f"{m:02d}:{s:02d}:{cs:02d}"
+
+    # ── drawing ─────────────────────────────────────────────────
 
     def draw(self, display):
-        if self.font:
-            display.draw_text(2, 0, "Stopwatch", self.font, gs=15)
-        else:
-            display.draw_text8x8(2, 0, "Stopwatch", gs=15)
-        display.draw_hline(0, 11, 210, 15)
-
         elapsed = self._get_elapsed()
         time_str = self._fmt(elapsed)
+
+        # Large centered timer (y=2) — raw=True avoids per-frame string cache alloc
         if self.font:
-            display.draw_text(60, 16, time_str, self.font, gs=15)
+            tw = self.font.measure_text(time_str)
+            tx = max(2, (self.width - tw) // 2)
+            display.draw_text(tx, 2, time_str, self.font, gs=15, raw=True)
         else:
-            display.draw_text8x8(60, 16, time_str, gs=15)
+            display.draw_text8x8(60, 2, time_str, gs=15)
 
-        visible = min(len(self._laps), 3)
-        lap_start = 28
-        for i in range(visible):
-            idx = len(self._laps) - visible + i
-            if 0 <= idx < len(self._laps):
-                n, t = self._laps[idx]
-                s = f"Lap{n}: {self._fmt(t)}"
+        # Divider
+        display.draw_hline(0, 12, self.width, 15)
+
+        # Lap list (y=14-51, 4 rows × 9px = 36px)
+        lap_top = 14
+        total = len(self._laps)
+        if total:
+            self._lap_cursor = max(0, min(self._lap_cursor, total - 1))
+            # Scroll view to keep cursor visible
+            if self._lap_cursor < self._view_offset:
+                self._view_offset = self._lap_cursor
+            elif self._lap_cursor >= self._view_offset + LAP_COUNT:
+                self._view_offset = self._lap_cursor - LAP_COUNT + 1
+            self._view_offset = max(0, min(self._view_offset, max(0, total - LAP_COUNT)))
+        else:
+            self._lap_cursor = 0
+            self._view_offset = 0
+
+        for i in range(self._view_offset, min(self._view_offset + LAP_COUNT, total)):
+            row = i - self._view_offset
+            y = lap_top + row * LAP_H
+            n, t = self._laps[i]
+            label = f"Lap{n}:  {self._fmt(t)}"
+            is_selected = (i == self._lap_cursor)
+
+            if is_selected:
+                fh = self.font.height if self.font else 8
+                display.fill_rectangle(2, y, self.width - 4, fh, 14)
                 if self.font:
-                    display.draw_text(5, lap_start + i * 10, s, self.font, gs=15)
+                    display.draw_text(4, y, label, self.font, invert=True, gs=14)
                 else:
-                    display.draw_text8x8(5, lap_start + i * 10, s, gs=15)
+                    display.draw_text8x8(4, y, label, gs=0)
+            else:
+                if self.font:
+                    display.draw_text(4, y, label, self.font, gs=15)
+                else:
+                    display.draw_text8x8(4, y, label, gs=15)
 
+        # Divider + hint
+        display.draw_hline(0, 53, self.width, 8)
         if self._running:
             hint = "ENT:Pause  DEL:Lap"
+        elif self._paused:
+            hint = "ENT:Resume  DEL:Reset"
         else:
             hint = "ENT:Start  DEL:Reset"
         if self.font:
-            display.draw_text(2, 54, hint, self.font, gs=15)
+            display.draw_text(2, 55, hint, self.font, gs=15)
         else:
-            display.draw_text8x8(2, 54, hint, gs=15)
+            display.draw_text8x8(2, 55, hint, gs=15)
+
+    # ── input ───────────────────────────────────────────────────
 
     def update(self, kb):
         event = kb.pop_key_event()
@@ -104,19 +148,23 @@ class StopwatchScreen(UIElement):
         r, c, shift = event
         label = get_key_label(r, c, shift)
 
-        # ESC: always go back (no long-hold needed for stopwatch)
         if label == "ESC":
             return "BACK"
 
-        # Per-key dedup: only block same-key re-trigger within 200ms.
-        # Different keys (e.g. ENT then DEL) pass through immediately.
         now = time.ticks_ms()
         if label == self._last_key and time.ticks_diff(now, self._last_action) < 200:
             return None
         self._last_action = now
         self._last_key = label
 
-        if label == "ENT":
+        # Navigation: scroll lap list
+        if label in ("up", "8"):
+            if self._laps and self._lap_cursor > 0:
+                self._lap_cursor -= 1
+        elif label in ("down", "2"):
+            if self._lap_cursor < len(self._laps) - 1:
+                self._lap_cursor += 1
+        elif label == "ENT":
             if self._running:
                 self._pause()
             else:

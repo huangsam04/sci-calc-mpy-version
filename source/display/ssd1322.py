@@ -577,13 +577,13 @@ class Display(object):
         self.gs4_fb.blit(fb, x, y, -1, self.palette)
 
     def draw_text(self, x, y, text, font, invert=False, gs=15,
-                  rotate=0, spacing=1):
-        """Draw text. Uses string-level cache for 1-blit rendering when possible."""
+                  rotate=0, spacing=1, raw=False):
+        """Draw text. Uses string-level cache for 1-blit rendering unless raw=True."""
         if not text:
             return
 
-        # ponytail: fast path — no rotation → 1 blit via string cache
-        if rotate == 0:
+        # Fast path: 1 blit via string cache (unless raw — for live-updating text)
+        if rotate == 0 and not raw:
             fb, tw, th = font.get_text_fb(text, spacing)
             if tw == 0:
                 return
@@ -596,9 +596,9 @@ class Display(object):
             self.gs4_fb.blit(fb, x, y, -1, self.palette)
             return
 
-        # Slow path for rotated or inverted text (rarely used)
+        # Slow path: glyph-by-glyph — no allocation, safe for frequently-changing text
         GSMAP = (0, gs)
-        need_spacing_fill = invert
+        need_spacing_fill = invert and rotate == 0
         for letter in text:
             w, h = self.draw_letter(x, y, letter, font, invert, gs, rotate)
             if w == 0 or h == 0:

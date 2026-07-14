@@ -1,4 +1,6 @@
 """Plot screen — full-screen graph with slide-in expression editor."""
+import time
+from framebuf import FrameBuffer, MONO_HMSB  # type: ignore
 from ui.element import UIElement
 from ui.inputbox import InputBox
 from calc.parser import evaluate, ParseError
@@ -8,9 +10,9 @@ from input.keyboard import get_key_label
 
 
 # Layout constants
-OVERLAY_H = 14       # height of input overlay when visible
-HINT_H = 10          # bottom hint bar
-GRAPH_PAD_X = 2      # graph left/right padding
+OVERLAY_H = 14
+HINT_H = 10
+GRAPH_PAD_X = 2
 
 
 class PlotScreen(UIElement):
@@ -23,30 +25,57 @@ class PlotScreen(UIElement):
         self.expr = ""
         self.x_min = -10.0
         self.x_max = 10.0
-        self._curve = []
         self._y_min = 0.0
         self._y_max = 1.0
+        self._err_expr = ""
         self._err_msg = ""
+        self._err_pos = 0
+        self._err_time = 0
 
-        # Animation targets — driven by anim engine
-        self._overlay_y = -OVERLAY_H   # input overlay y position
-        self._graph_top = 0            # graph area top y
+        # Pre-allocated curve buffer — rendered once, blitted each frame
+        self._curve_fb = None   # (FrameBuffer, w, h) or None if not plotted
+        self._curve_buf = None  # bytearray backing the FrameBuffer
 
-        self.mode = 0   # 0=view, 1=edit
+        self._overlay_y = -OVERLAY_H
+        self._graph_top = 0
+        self.mode = 0
 
     def activate(self):
         self.mode = 0
         self._overlay_y = -OVERLAY_H
         self._graph_top = 0
         self.input_box.activate()
-        # Preserve any text set by letter panel, else restore last expression
         if not self.input_box.get_str() and self.expr:
             self.input_box.set_str(self.expr)
+
+    # ── zoom / pan ───────────────────────────────────────────────
+
+    def _zoom_y(self, factor):
+        mid = (self._y_min + self._y_max) / 2.0
+        half = (self._y_max - self._y_min) / 2.0 * factor
+        self._y_min = mid - half
+        self._y_max = mid + half
+        if self.expr:
+            self._render_curve()
+
+    def _zoom_x(self, factor):
+        mid = (self.x_min + self.x_max) / 2.0
+        half = (self.x_max - self.x_min) / 2.0 * factor
+        self.x_min = mid - half
+        self.x_max = mid + half
+        if self.expr:
+            self._render_curve()
+
+    def _pan_x(self, fraction):
+        shift = (self.x_max - self.x_min) * fraction
+        self.x_min += shift
+        self.x_max += shift
+        if self.expr:
+            self._render_curve()
 
     # ── mode switching ──────────────────────────────────────────
 
     def _enter_edit(self, prefill=""):
-        """Slide input overlay down, optionally prefill text."""
         if prefill:
             self.input_box.insert_str(prefill)
         self.mode = 1
@@ -55,75 +84,101 @@ class PlotScreen(UIElement):
         self.input_box.cursor.is_visible = True
 
     def _leave_edit(self, plot=True):
-        """Slide input overlay up. If plot=True, re-plot with current expression."""
         self.mode = 0
         self.expr = self.input_box.get_str().strip()
         insert_animation(self, '_overlay_y', self._overlay_y, -OVERLAY_H, 180, "INDENT")
         insert_animation(self, '_graph_top', self._graph_top, 0, 180, "INDENT")
         self.input_box.cursor.is_visible = False
         if plot and self.expr:
-            self._plot()
+            self._render_curve()
 
-    # ── plotting ────────────────────────────────────────────────
+    # ── curve rendering (2-pass: find range → draw to buffer) ────
 
-    def _eval_func(self, x_val):
+    def _eval(self, x_val):
         ft = _current_func_table or {}
-        test_vars = {"x": x_val}
         try:
-            result, _ = evaluate(self.expr, test_vars, ft)
-            return float(result), True
-        except Exception:
-            return 0.0, False
+            result, _ = evaluate(self.expr, {"x": x_val}, ft)
+            return float(result), True, ""
+        except Exception as e:
+            return 0.0, False, str(e)
 
-    def _plot(self):
-        self._curve = []
+    def _render_curve(self):
+        """2-pass: find y range, then render curve to pre-allocated mono buffer."""
         self._err_msg = ""
         if not self.expr.strip():
+            self._curve_fb = None
             return
 
         graph_w = self.width - GRAPH_PAD_X * 2
         graph_left = GRAPH_PAD_X
         graph_right = self.width - GRAPH_PAD_X
+        graph_h = self.height - HINT_H
+        n = graph_right - graph_left + 1
 
-        y_vals = []
-        pts = []
+        # ── Pass 1: find y_min / y_max ──
+        y_min = float('inf')
+        y_max = float('-inf')
+        first_err = ""
+        ok_count = 0
 
         for px in range(graph_left, graph_right + 1):
             x_val = self.x_min + (px - graph_left) / graph_w * (self.x_max - self.x_min)
-            y_val, ok = self._eval_func(x_val)
+            y_val, ok, err = self._eval(x_val)
             if ok and abs(y_val) < 1e30:
-                y_vals.append(y_val)
-                pts.append((px, y_val))
-            else:
-                pts.append((px, None))
+                if y_val < y_min:
+                    y_min = y_val
+                if y_val > y_max:
+                    y_max = y_val
+                ok_count += 1
+            elif err and not first_err:
+                first_err = err
 
-        if not y_vals:
+        if ok_count == 0:
             self._y_min = -1.0
             self._y_max = 1.0
-            self._curve = []
+            self._curve_fb = None
+            self._err_expr = self.expr
+            self._err_msg = first_err or "Cannot evaluate expression"
+            self._err_time = time.ticks_ms()
+            self.mode = 2
             return
 
-        y_min = min(y_vals)
-        y_max = max(y_vals)
         pad = max((y_max - y_min) * 0.1, 0.5)
         if y_max - y_min < 1e-10:
             pad = 1.0
         self._y_min = y_min - pad
         self._y_max = y_max + pad
 
-        y_range = self._y_max - self._y_min
-        graph_h = self.height - HINT_H - self._graph_top
-        graph_bot = self.height - HINT_H
+        # ── Allocate / reuse curve buffer ──
+        buf_size = ((n + 7) // 8) * graph_h  # MONO_HMSB: 1 bit per pixel
+        if self._curve_buf is None or len(self._curve_buf) < buf_size:
+            self._curve_buf = bytearray(buf_size)
+        else:
+            # Zero existing buffer
+            for i in range(buf_size):
+                self._curve_buf[i] = 0
+        self._curve_fb = FrameBuffer(self._curve_buf, n, graph_h, MONO_HMSB)
 
-        self._curve = []
-        for px, y_val in pts:
-            if y_val is None:
-                self._curve.append((px, None))
-            else:
+        # ── Pass 2: draw curve to mono buffer ──
+        y_range = self._y_max - self._y_min
+        prev_px = prev_py = None
+        step = 2  # every 2nd pixel, line segments fill the gap
+
+        for i in range(0, n, step):
+            px = graph_left + i
+            x_val = self.x_min + i / graph_w * (self.x_max - self.x_min)
+            y_val, ok, _ = self._eval(x_val)
+            if ok and abs(y_val) < 1e30 and y_range > 0:
                 ratio = (y_val - self._y_min) / y_range
-                py = graph_bot - int(ratio * graph_h)
-                py = max(self._graph_top, min(graph_bot, py))
-                self._curve.append((px, py))
+                py = graph_h - 1 - int(ratio * (graph_h - 1))
+                py = max(0, min(graph_h - 1, py))
+                bx = i  # buffer-local x
+                self._curve_fb.pixel(bx, py, 1)
+                if prev_px is not None:
+                    self._curve_fb.line(prev_px, prev_py, bx, py, 1)
+                prev_px, prev_py = bx, py
+            else:
+                prev_px = prev_py = None
 
     # ── drawing ─────────────────────────────────────────────────
 
@@ -140,52 +195,50 @@ class PlotScreen(UIElement):
 
         # Axes
         y_range = self._y_max - self._y_min
+        x_range = self.x_max - self.x_min
+        x_zero = y_zero = None
+
         if y_range > 0 and self._y_min <= 0 <= self._y_max:
             ratio = (0 - self._y_min) / y_range
             y_zero = graph_bot - int(ratio * graph_h)
             if self._graph_top <= y_zero <= graph_bot:
                 display.draw_hline(graph_left, y_zero, graph_w + 1, 6)
 
-        x_range = self.x_max - self.x_min
         if x_range > 0 and self.x_min <= 0 <= self.x_max:
             ratio = (0 - self.x_min) / x_range
             x_zero = graph_left + int(ratio * graph_w)
             if graph_left <= x_zero <= graph_right:
                 display.draw_vline(x_zero, self._graph_top, graph_h + 1, 6)
 
-        # Curve
-        prev_x = prev_y = None
-        for px, py in self._curve:
-            if py is not None:
-                display.draw_pixel(px, py, 15)
-                if prev_x is not None:
-                    display.draw_line(prev_x, prev_y, px, py, 15)
-                prev_x, prev_y = px, py
-            else:
-                prev_x = prev_y = None
+        # Origin crosshair
+        if x_zero is not None and y_zero is not None:
+            for dx in (-2, 2):
+                display.draw_pixel(x_zero + dx, y_zero, 12)
+            for dy in (-2, 2):
+                display.draw_pixel(x_zero, y_zero + dy, 12)
+
+        # Blit pre-rendered curve (MONO → GS4 via palette)
+        if self._curve_fb is not None and y_range > 0:
+            display.palette.bg(0)
+            display.palette.fg(15)
+            display.gs4_fb.blit(self._curve_fb, graph_left, self._graph_top,
+                                -1, display.palette)
 
     def _draw_overlay(self, display):
-        """Input box overlay — only visible when _overlay_y > -OVERLAY_H."""
         oy = self._overlay_y
         if oy <= -OVERLAY_H:
             return
-        # Background
         display.fill_rectangle(0, oy, self.width, OVERLAY_H, 0)
-        # Input box
         self.input_box.y = oy + 1
         self.input_box.cursor.y = oy + 2
         self.input_box.draw(display)
-        # Divider
         display.draw_hline(0, oy + OVERLAY_H - 1, self.width, 10)
 
     def _draw_hint(self, display):
         y = self.height - HINT_H + 1
         if self.mode == 0:
-            if self._err_msg:
-                hint = self._err_msg
-            else:
-                hint = f"x:[{self.x_min:.4g},{self.x_max:.4g}]  y:[{self._y_min:.4g},{self._y_max:.4g}]"
-            hint2 = "[ENT:edit] [RPN:x] [ESC:back]"
+            hint = f"x:{self.x_min:.2g}~{self.x_max:.2g} y:{self._y_min:.2g}~{self._y_max:.2g}"
+            hint2 = "8/2:Y 4/6:pan"
         else:
             hint = "[ENT:plot] [RPN:x] [ESC:cancel]"
             hint2 = "[Sh+RPN:letters] [Sh+Tab:reset]"
@@ -197,7 +250,51 @@ class PlotScreen(UIElement):
             display.draw_text8x8(2, y, hint, gs=15)
             display.draw_text8x8(120, y, hint2, gs=10)
 
+    # ── error popup ──────────────────────────────────────────────
+
+    def _draw_error(self, display):
+        display.fill_rectangle(0, 0, self.width, 64, 3)
+        display.fill_rectangle(5, 4, self.width - 10, 56, 0)
+        display.draw_rectangle(5, 4, self.width - 10, 56, 15)
+
+        expr = self._err_expr
+        if self.font and self.font.measure_text(expr) > 190:
+            while len(expr) > 0 and self.font.measure_text(expr + "~") > 190:
+                expr = expr[:-1]
+            expr += "~"
+        if self.font:
+            display.draw_text(10, 8, expr, self.font, gs=15)
+        else:
+            display.draw_text8x8(10, 8, expr, gs=15)
+
+        msg = self._err_msg
+        if len(msg) > 32:
+            mid = msg.rfind(' ', 0, 32)
+            if mid < 0:
+                mid = 30
+            line1, line2 = msg[:mid], msg[mid:].strip()
+            if self.small_font:
+                display.draw_text(10, 28, line1, self.small_font, gs=15)
+                display.draw_text(10, 37, line2, self.small_font, gs=15)
+            else:
+                display.draw_text8x8(10, 28, line1, gs=15)
+                display.draw_text8x8(10, 37, line2, gs=15)
+        else:
+            if self.small_font:
+                display.draw_text(10, 28, msg, self.small_font, gs=15)
+            else:
+                display.draw_text8x8(10, 28, msg, gs=15)
+
+        hint = "[Any key to dismiss]"
+        if self.small_font:
+            display.draw_text(10, 50, hint, self.small_font, gs=10)
+        else:
+            display.draw_text8x8(10, 50, hint, gs=10)
+
     def draw(self, display):
+        if self.mode == 2:
+            self._draw_error(display)
+            return
         self._draw_graph(display)
         self._draw_overlay(display)
         self._draw_hint(display)
@@ -205,43 +302,46 @@ class PlotScreen(UIElement):
     # ── input ───────────────────────────────────────────────────
 
     def update(self, kb):
-        # Long-hold ESC: go back
+        if self.mode == 2:
+            if time.ticks_diff(time.ticks_ms(), self._err_time) > 10000:
+                self.mode = 0
+            elif kb.pop_key_event() is not None:
+                self.mode = 0
+            return None
+
         if kb.is_pressed(0, 0) and kb.get_hold_time(0, 0) > 1000:
             return "BACK"
 
         if self.mode == 0:
-            # ── View mode: any key opens editor ──
             event = kb.pop_key_event()
             if event is not None:
-                r, c, shift = event
-                if r == 0 and c == 0:  # ESC → back
-                    return "BACK"
-                elif r == 3 and c == 3:  # ENT → open empty editor
-                    self._enter_edit()
-                elif r == 3 and c == 5 and not shift:  # RPN → editor with 'x'
-                    self._enter_edit("x")
-                elif r == 3 and c == 5 and shift:
-                    # Shift+RPN handled by global hotkey → letter panel
+                r, c, _ = event
+                shift = kb.is_pressed(4, 0)
+                label = get_key_label(r, c, shift)
+
+                if r == 4 and c == 0:
                     pass
-                else:
-                    # Any other key: open editor and insert the character
-                    label = get_key_label(r, c, shift)
-                    if label and len(label) == 1 and label not in (
-                        "ENT", "ESC", "tab", "stab", "ang", "rpn",
-                        "left", "right", "up", "down", "DEL"
-                    ):
-                        self._enter_edit(label)
-                    elif label in ("sin", "cos", "tan", "sec", "csc", "cot",
-                                   "asin", "acos", "atan", "ln", "exp", "sqrt"):
-                        self._enter_edit(label + "(")
-                    else:
-                        self._enter_edit()
+                elif r == 0 and c == 0:
+                    return "BACK"
+                elif r == 1 and c == 1:
+                    self._zoom_y(0.5) if not shift else self._zoom_x(0.5)
+                elif r == 3 and c == 1:
+                    self._zoom_y(2.0) if not shift else self._zoom_x(2.0)
+                elif r == 2 and c == 0:
+                    self._pan_x(-0.25)
+                elif r == 2 and c == 2:
+                    self._pan_x(0.25)
+                elif r == 3 and c == 3:
+                    self._enter_edit()
+                elif r == 3 and c == 5 and shift:
+                    pass
+                elif r == 3 and c == 5:
+                    self._enter_edit("x")
+                # All other keys ignored in view mode
                 return None
 
         else:
-            # ── Edit mode ──
             action = self.input_box.update(kb)
-
             if action == "ENT":
                 self._leave_edit(plot=True)
             elif action == "rpn":

@@ -2,6 +2,7 @@
 """Expression parser using Pratt parsing (recursive descent + precedence).
 Tokenizes with position info, raises descriptive errors on failure."""
 import math
+from micropython import const  # type: ignore
 
 # Token types
 T_NUM = "NUM"
@@ -119,22 +120,26 @@ def evaluate(expr_str, vars_dict, func_table):
         raise ParseError(str(e), 0, expr_str)
 
 
+MAX_PARSE_DEPTH = const(30)
+
 def _parse_toplevel(tokens, pos, vars_dict, func_table, expr_str):
     """Parse top-level expressions, handling semicolons."""
-    pos, val, vars_dict = _parse_expr(tokens, pos, vars_dict, func_table, 0, expr_str)
+    pos, val, vars_dict = _parse_expr(tokens, pos, vars_dict, func_table, 0, expr_str, 0)
 
     while pos < len(tokens) and tokens[pos][0] == T_SEMI:
         pos += 1
         if pos >= len(tokens):
             break
-        pos, val, vars_dict = _parse_expr(tokens, pos, vars_dict, func_table, 0, expr_str)
+        pos, val, vars_dict = _parse_expr(tokens, pos, vars_dict, func_table, 0, expr_str, 0)
 
     return pos, val, vars_dict
 
 
-def _parse_expr(tokens, pos, vars_dict, func_table, min_prec, expr_str):
+def _parse_expr(tokens, pos, vars_dict, func_table, min_prec, expr_str, depth):
     """Pratt parser: parse expression with minimum precedence min_prec."""
-    pos, left, vars_dict = _parse_prefix(tokens, pos, vars_dict, func_table, expr_str)
+    if depth > MAX_PARSE_DEPTH:
+        raise ParseError("Expression too deeply nested", _tok_pos(tokens, pos), expr_str)
+    pos, left, vars_dict = _parse_prefix(tokens, pos, vars_dict, func_table, expr_str, depth)
 
     while pos < len(tokens):
         tok = tokens[pos]
@@ -173,15 +178,15 @@ def _parse_expr(tokens, pos, vars_dict, func_table, min_prec, expr_str):
                 if var_name is None:
                     tp = _tok_pos(tokens, pos - 1)
                     raise ParseError("Left side of '=' must be a variable name", tp, expr_str)
-                pos, right, vars_dict = _parse_expr(tokens, pos, vars_dict, func_table, next_min, expr_str)
+                pos, right, vars_dict = _parse_expr(tokens, pos, vars_dict, func_table, next_min, expr_str, depth + 1)
                 left, vars_dict = op_func(var_name, right, vars_dict)
             else:
-                pos, right, vars_dict = _parse_expr(tokens, pos, vars_dict, func_table, next_min, expr_str)
+                pos, right, vars_dict = _parse_expr(tokens, pos, vars_dict, func_table, next_min, expr_str, depth + 1)
                 left, vars_dict = op_func(left, right, vars_dict)
 
         elif op_kind == "prefix":
             pos += 1
-            pos, arg, vars_dict = _parse_expr(tokens, pos, vars_dict, func_table, op_prio, expr_str)
+            pos, arg, vars_dict = _parse_expr(tokens, pos, vars_dict, func_table, op_prio, expr_str, depth + 1)
             left, vars_dict = op_func(arg, vars_dict)
 
         elif op_kind == "postfix":
@@ -196,7 +201,7 @@ def _parse_expr(tokens, pos, vars_dict, func_table, min_prec, expr_str):
             pos += 1
             args = []
             while pos < len(tokens) and tokens[pos][0] != T_RP:
-                pos, arg_val, vars_dict = _parse_expr(tokens, pos, vars_dict, func_table, 0, expr_str)
+                pos, arg_val, vars_dict = _parse_expr(tokens, pos, vars_dict, func_table, 0, expr_str, depth + 1)
                 args.append(arg_val)
                 if pos < len(tokens) and tokens[pos][0] == T_COMMA:
                     pos += 1
@@ -214,8 +219,10 @@ class VarRef:
         self.pos = pos
 
 
-def _parse_prefix(tokens, pos, vars_dict, func_table, expr_str):
+def _parse_prefix(tokens, pos, vars_dict, func_table, expr_str, depth):
     """Parse a primary expression."""
+    if depth > MAX_PARSE_DEPTH:
+        raise ParseError("Expression too deeply nested", _tok_pos(tokens, pos), expr_str)
     if pos >= len(tokens):
         raise ParseError("Unexpected end of expression", len(expr_str), expr_str)
 
@@ -237,7 +244,7 @@ def _parse_prefix(tokens, pos, vars_dict, func_table, expr_str):
             pos += 2
             args = []
             while pos < len(tokens) and tokens[pos][0] != T_RP:
-                pos, arg_val, vars_dict = _parse_expr(tokens, pos, vars_dict, func_table, 0, expr_str)
+                pos, arg_val, vars_dict = _parse_expr(tokens, pos, vars_dict, func_table, 0, expr_str, depth + 1)
                 args.append(arg_val)
                 if pos < len(tokens) and tokens[pos][0] == T_COMMA:
                     pos += 1
@@ -249,7 +256,7 @@ def _parse_prefix(tokens, pos, vars_dict, func_table, expr_str):
         # Prefix function: name arg
         if op_def and op_def[2] == "prefix":
             pos += 1
-            pos, arg, vars_dict = _parse_expr(tokens, pos, vars_dict, func_table, op_def[1], expr_str)
+            pos, arg, vars_dict = _parse_expr(tokens, pos, vars_dict, func_table, op_def[1], expr_str, depth + 1)
             result, vars_dict = op_def[5](arg, vars_dict)
             return pos, result, vars_dict
 
@@ -277,7 +284,7 @@ def _parse_prefix(tokens, pos, vars_dict, func_table, expr_str):
 
     if tok[0] == T_LP:
         pos += 1
-        pos, val, vars_dict = _parse_expr(tokens, pos, vars_dict, func_table, 0, expr_str)
+        pos, val, vars_dict = _parse_expr(tokens, pos, vars_dict, func_table, 0, expr_str, depth + 1)
         if pos < len(tokens) and tokens[pos][0] == T_RP:
             pos += 1
         else:
@@ -289,12 +296,12 @@ def _parse_prefix(tokens, pos, vars_dict, func_table, expr_str):
         op_def = func_table.get(op_char, None)
         if op_def and op_def[2] == "prefix":
             pos += 1
-            pos, arg, vars_dict = _parse_expr(tokens, pos, vars_dict, func_table, op_def[1], expr_str)
+            pos, arg, vars_dict = _parse_expr(tokens, pos, vars_dict, func_table, op_def[1], expr_str, depth + 1)
             result, vars_dict = op_def[5](arg, vars_dict)
             return pos, result, vars_dict
         if op_char == '-':
             pos += 1
-            pos, right, vars_dict = _parse_expr(tokens, pos, vars_dict, func_table, 4, expr_str)
+            pos, right, vars_dict = _parse_expr(tokens, pos, vars_dict, func_table, 4, expr_str, depth + 1)
             sub_def = func_table.get('-')
             if sub_def:
                 result, vars_dict = sub_def[5](None, right, vars_dict)

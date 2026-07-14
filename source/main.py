@@ -133,13 +133,20 @@ def _draw_sidebar(display, font=None):
             _bat_voltage = "?.?V"
         _bat_frame = 50
     _bat_frame -= 1
+
+    import calc.functions
+    ang = "DEG" if calc.functions.ANGLE_MODE else "RAD"
+
     display.draw_rectangle(213, 0, 42, 63, 15)
     if font:
         display.draw_text(215, 2, "BAT", font, gs=15)
         display.draw_text(215, 14, _bat_voltage, font, gs=15)
+        display.draw_hline(215, 26, 28, 6)
+        display.draw_text(215, 30, ang, font, gs=12)
     else:
         display.draw_text8x8(215, 2, "BAT", gs=15)
         display.draw_text8x8(215, 14, _bat_voltage, gs=15)
+        display.draw_text8x8(215, 30, ang, gs=12)
 
 
 def _reload_functions(settings):
@@ -195,22 +202,26 @@ def _draw_crash(display, error):
     display.present()
 
 
-def _slide_transition(display, old, new, font_small, forward):
-    """Dual-slide INDENT transition. forward=True: push-left, False: pop-right."""
-    # Snapshot old
+def _slide_transition(display, old, new, font_small, forward, buf_a, buf_b):
+    """Dual-slide INDENT transition. Sidebar rendered fresh each frame
+    so it stays fixed — doesn't slide with the screen snapshots."""
+    w = display.width
+    h = display.height
+
+    # Snapshot old (without sidebar)
     display.clear_buffers(0)
     old.draw(display)
-    _draw_sidebar(display, font_small)
-    old_buf = bytearray(display.gs4_buf)
+    buf_a[:] = display.gs4_buf
 
-    # Snapshot new
+    # Snapshot new (without sidebar)
     new.activate()
     display.clear_buffers(0)
     new.draw(display)
-    _draw_sidebar(display, font_small)
-    new_buf = bytearray(display.gs4_buf)
+    buf_b[:] = display.gs4_buf
 
-    w = display.width
+    fb_a = FrameBuffer(buf_a, w, h, GS4_HMSB)
+    fb_b = FrameBuffer(buf_b, w, h, GS4_HMSB)
+
     for i in range(1, 11):
         t = i / 10.0
         eased = 1.0 - pow(2.0, -10.0 * t)  # INDENT
@@ -221,8 +232,9 @@ def _slide_transition(display, old, new, font_small, forward):
             new_x, old_x = -w + int(w * eased), int(w * eased)
 
         display.clear_buffers(0)
-        display.gs4_fb.blit(FrameBuffer(old_buf, w, display.height, GS4_HMSB), old_x, 0)
-        display.gs4_fb.blit(FrameBuffer(new_buf, w, display.height, GS4_HMSB), new_x, 0)
+        display.gs4_fb.blit(fb_a, old_x, 0)
+        display.gs4_fb.blit(fb_b, new_x, 0)
+        _draw_sidebar(display, font_small)  # fixed position
         display.present()
         time.sleep_ms(13)
 
@@ -235,11 +247,16 @@ def _slide_transition(display, old, new, font_small, forward):
 # ── Screen navigation ───────────────────────────────────────────
 
 class Nav:
-    """Screen stack with slide transitions. Captures display + font once."""
+    """Screen stack with slide transitions. Captures display + font once.
+    Pre-allocates transition buffers to avoid 16KB heap alloc on every switch."""
     def __init__(self, display, font_small):
         self.display = display
         self.font_small = font_small
         self.stack = []
+        # Pre-allocate transition snapshot buffers (256×64/2 = 8192 bytes each)
+        blen = display.buffer_length
+        self._buf_a = bytearray(blen)
+        self._buf_b = bytearray(blen)
 
     def boot(self, screen):
         """Set root screen (no transition)."""
@@ -254,14 +271,16 @@ class Nav:
         old = self.stack[-1]
         old.deactivate()
         self.stack.append(screen)
-        _slide_transition(self.display, old, screen, self.font_small, forward=True)
+        _slide_transition(self.display, old, screen, self.font_small,
+                          forward=True, buf_a=self._buf_a, buf_b=self._buf_b)
 
     def go_back(self):
         if len(self.stack) <= 1:
             return
         old = self.stack.pop()
         old.deactivate()
-        _slide_transition(self.display, old, self.stack[-1], self.font_small, forward=False)
+        _slide_transition(self.display, old, self.stack[-1], self.font_small,
+                          forward=False, buf_a=self._buf_a, buf_b=self._buf_b)
 
 
 def main():

@@ -3,7 +3,6 @@ import time
 from ui.element import UIElement
 from ui.inputbox import InputBox
 from calc.parser import evaluate, ParseError
-import calc.functions
 from input.keyboard import get_key_label
 
 HIST_ROW_H = 10    # ponytail: compact rows, 4 visible (0-3)
@@ -171,13 +170,11 @@ class CalculatorScreen(UIElement):
                     display.draw_text8x8(120, y, rhs, gs=15)
 
         # --- Status line (y=55..63) ---
-        rad_str = "DEG" if calc.functions.ANGLE_MODE else "RAD"
         if self.mode == 0:
             total = len(self.history)
-            mode_hint = f"[Tab:hist] [{total}]" if total else "[Tab:hist]"
+            status = f"[Tab:hist] [{total}]" if total else "[Tab:hist]"
         else:
-            mode_hint = f"[{self._cursor+1}/{len(self.history)}] [Tab:input]"
-        status = f"{mode_hint} [{rad_str}]"
+            status = f"[{self._cursor+1}/{len(self.history)}] [Tab:input]"
         if self.small_font:
             display.draw_text(2, 55, status, self.small_font, gs=15)
         else:

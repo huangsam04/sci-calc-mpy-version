@@ -116,7 +116,9 @@ class InputBox(UIElement):
         visible = self.str[self.view_offset:self.view_offset + self.visible_chars]
         if visible:
             if self.font:
-                display.draw_text(self.x + 1, self.y + 1, visible, self.font, gs=self.gs)
+                # raw=True: don't cache — input text changes every keystroke
+                display.draw_text(self.x + 1, self.y + 1, visible, self.font,
+                                  gs=self.gs, raw=True)
             else:
                 display.draw_text8x8(self.x + 1, self.y + 1, visible, gs=self.gs)
         self.cursor.draw(display)
