@@ -33,6 +33,7 @@ class Key:
         self.end_press = 0
         self.click_cnt = 0
         self._pending = 0  # timestamp of first high read for two-sample
+        self._consumed = False  # edge consumed by pop_key_event()
 
     def update(self, cur_state, cur_time):
         if cur_state:
@@ -44,6 +45,7 @@ class Key:
                     self.click_cnt += 1
                     self.is_pressed = True
                     self.state = RISING_EDGE
+                    self._consumed = False
                     self.status_time = 0
                     self.start_press = cur_time
                 elif since_release >= DEBOUNCE_MS:
@@ -55,6 +57,7 @@ class Key:
                         self.click_cnt += 1
                         self.is_pressed = True
                         self.state = RISING_EDGE
+                        self._consumed = False
                         self.status_time = 0
                         self.start_press = cur_time
                 # else: within DEBOUNCE_MS of release, ignore
