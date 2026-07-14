@@ -38,11 +38,15 @@ class LetterPanel(UIElement):
         self.text = ""
         self.upper = True   # default uppercase
         self._last_action = 0
+        self._last_key = None
+        self._skip_frame = False
 
     def activate(self):
         self.text = ""
         self.upper = True
         self._last_action = time.ticks_ms()
+        self._last_key = None
+        self._skip_frame = True   # discard the edge that triggered activation
 
     @staticmethod
     def _get_char(row, col):
@@ -76,8 +80,10 @@ class LetterPanel(UIElement):
         display.draw_text8x8(2, 55, f"[OK:done] [ESC:cancel] [Sh:{case_str}]", gs=15)
 
     def update(self, kb):
-        now = time.ticks_ms()
-        if time.ticks_diff(now, self._last_action) < 150:
+        # Skip one frame so the key that triggered activation doesn't leak into the panel
+        if self._skip_frame:
+            self._skip_frame = False
+            kb.get_rising_edge()  # discard pending edge
             return None
 
         key = kb.get_rising_edge()
@@ -85,6 +91,13 @@ class LetterPanel(UIElement):
             return None
 
         r, c = key
+        now = time.ticks_ms()
+
+        # Per-key cooldown: same-key double-tap prevention, different keys pass through
+        if (r, c) == self._last_key and time.ticks_diff(now, self._last_action) < 100:
+            return None
+        self._last_action = now
+        self._last_key = (r, c)
 
         # ESC (0,0): cancel
         if r == 0 and c == 0:
@@ -100,19 +113,16 @@ class LetterPanel(UIElement):
         if r == 4 and c == 4:
             if self.text:
                 self.text = self.text[:-1]
-            self._last_action = now
             return None
 
         # Shift (4,0): toggle case
         if r == 4 and c == 0:
             self.upper = not self.upper
-            self._last_action = now
             return None
 
         # Character key
         ch = self._get_char(r, c)
         if ch is not None:
             self.text += ch.upper() if self.upper else ch.lower()
-            self._last_action = now
 
         return None

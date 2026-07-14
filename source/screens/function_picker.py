@@ -18,6 +18,7 @@ class FunctionPicker(UIElement):
         self._cursor = 0     # flat index into _names
         self._offset = 0     # first visible row's base index (multiple of VISIBLE)
         self._cooldown = 0
+        self._last_key = None
 
     def activate(self):
         ft = self.calc_screen.func_table
@@ -25,6 +26,7 @@ class FunctionPicker(UIElement):
         self._cursor = 0
         self._offset = 0
         self._cooldown = 0
+        self._last_key = None
 
     def _clamp(self):
         n = len(self._names)
@@ -105,16 +107,19 @@ class FunctionPicker(UIElement):
             display.draw_text8x8(2, 54, hint, gs=15)
 
     def update(self, kb):
-        now = time.ticks_ms()
-        if time.ticks_diff(now, self._cooldown) < 150:
-            kb.get_rising_edge()
-            return None
-
         key = kb.get_rising_edge()
         if key is None:
             return None
 
         r, c = key
+        now = time.ticks_ms()
+
+        # Per-key cooldown: same-key rapid-fire prevention, different keys pass through
+        if (r, c) == self._last_key and time.ticks_diff(now, self._cooldown) < 150:
+            return None
+        self._cooldown = now
+        self._last_key = (r, c)
+
         shift = kb.is_pressed(4, 0)
         label = get_key_label(r, c, shift)
         n = len(self._names)
@@ -122,22 +127,18 @@ class FunctionPicker(UIElement):
         if label in ("2", "down"):
             if self._cursor < n - 1:
                 self._cursor += 1
-                self._cooldown = now
         elif label in ("8", "up"):
             if self._cursor > 0:
                 self._cursor -= 1
-                self._cooldown = now
         # Left/Right: physical 4/6 keys jump between columns
         elif r == 2 and c == 0:
             nc = self._cursor - VISIBLE
             if nc >= 0:
                 self._cursor = nc
-                self._cooldown = now
         elif r == 2 and c == 2:
             nc = self._cursor + VISIBLE
             if nc < n:
                 self._cursor = nc
-                self._cooldown = now
         elif label == "ENT":
             self._insert_selected()
             return "FUNC_PICKER_DONE"

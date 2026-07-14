@@ -13,10 +13,12 @@ class StopwatchScreen(UIElement):
         self._start_time = 0
         self._elapsed = 0
         self._laps = []
-        self._last_action = 0      # ponytail: cooldown timer for debounce
+        self._last_action = 0
+        self._last_key = ""
 
     def activate(self):
         self._last_action = 0
+        self._last_key = ""
 
     def _start(self):
         if self._paused:
@@ -106,11 +108,13 @@ class StopwatchScreen(UIElement):
         if label == "ESC":
             return "BACK"
 
-        # ponytail: 200ms cooldown to prevent contact-bounce double-trigger
+        # Per-key dedup: only block same-key re-trigger within 200ms.
+        # Different keys (e.g. ENT then DEL) pass through immediately.
         now = time.ticks_ms()
-        if time.ticks_diff(now, self._last_action) < 200:
+        if label == self._last_key and time.ticks_diff(now, self._last_action) < 200:
             return None
         self._last_action = now
+        self._last_key = label
 
         if label == "ENT":
             if self._running:

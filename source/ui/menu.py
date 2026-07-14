@@ -43,7 +43,12 @@ class Menu(UIElement):
         return None
 
     def activate(self):
-        self._update_cursor_target()
+        # Snap cursor to correct position instantly — no animation on activation
+        target_y = self.y + 2 + (self.cursor_pos - self.view_offset) * self.row_height
+        self.cursor.x = self.x + 2
+        self.cursor.y = target_y
+        self.cursor.target_x = self.x + 2
+        self.cursor.target_y = target_y
 
     def move_cursor_up(self):
         if self.cursor_pos > 0:
@@ -81,28 +86,20 @@ class Menu(UIElement):
         if 0 <= self.cursor_pos < len(self.items):
             display.fill_rectangle(self.x + 2, bar_y, self.width - 4, font_h, 14)
 
-        # Draw items — rows near the bar fade to inverted, far rows stay normal
+        # Draw items — only invert text when highlight bar fully covers it
+        # Tight threshold prevents text inversion before the animated bar arrives
         for i in range(self.view_offset,
                        min(self.view_offset + self.visible_rows, len(self.items))):
             label = self.items[i][0]
             draw_y = self.y + 2 + (i - self.view_offset) * self.row_height
             dist = abs(bar_y - draw_y)
 
-            if dist < self.row_height:
-                # Within 1 row of bar: invert with brightness proportional to proximity
-                t = 1.0 - dist / self.row_height  # 0→1
-                gs_val = int(14 * t)
-                if gs_val > 1:
-                    if self.font:
-                        display.draw_text(self.x + 4, draw_y, label, self.font, invert=True, gs=gs_val)
-                    else:
-                        display.draw_text8x8(self.x + 4, draw_y, label, gs=0)
+            if dist <= 2:
+                # Bar is on this row: invert text to contrast with highlight
+                if self.font:
+                    display.draw_text(self.x + 4, draw_y, label, self.font, invert=True, gs=14)
                 else:
-                    # Very faint — just draw normal
-                    if self.font:
-                        display.draw_text(self.x + 4, draw_y, label, self.font, gs=self.gs)
-                    else:
-                        display.draw_text8x8(self.x + 4, draw_y, label, gs=self.gs)
+                    display.draw_text8x8(self.x + 4, draw_y, label, gs=0)
             else:
                 if self.font:
                     display.draw_text(self.x + 4, draw_y, label, self.font, gs=self.gs)

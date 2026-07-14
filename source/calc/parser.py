@@ -239,8 +239,13 @@ def _parse_prefix(tokens, pos, vars_dict, func_table, expr_str):
             result, vars_dict = op_def[5](arg, vars_dict)
             return pos, result, vars_dict
 
-        # Variable reference
+        # Variable reference — peek ahead: if followed by '=', this is a
+        # reassignment target, not a value read. Return VarRef so the '='
+        # operator can extract the name.
         if name in vars_dict:
+            if pos + 1 < len(tokens) and tokens[pos + 1][0] == T_OP and tokens[pos + 1][1] == '=':
+                pos += 1
+                return pos, VarRef(name, name_pos), vars_dict
             pos += 1
             return pos, vars_dict[name], vars_dict
 

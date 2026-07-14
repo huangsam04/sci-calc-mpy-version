@@ -18,12 +18,14 @@ class VariablePanel(UIElement):
         self._cursor = 0
         self._offset = 0
         self._cooldown = 0
+        self._last_key = None
 
     def activate(self):
         self._rebuild()
         self._cursor = 0
         self._offset = 0
         self._cooldown = 0
+        self._last_key = None
 
     def _rebuild(self):
         self._names = sorted(self.calc.vars.keys())
@@ -98,16 +100,19 @@ class VariablePanel(UIElement):
         return str(val)
 
     def update(self, kb):
-        now = time.ticks_ms()
-        if time.ticks_diff(now, self._cooldown) < 150:
-            kb.get_rising_edge()
-            return None
-
         key = kb.get_rising_edge()
         if key is None:
             return None
 
         r, c = key
+        now = time.ticks_ms()
+
+        # Per-key cooldown: same-key rapid-fire prevention, different keys pass through
+        if (r, c) == self._last_key and time.ticks_diff(now, self._cooldown) < 150:
+            return None
+        self._cooldown = now
+        self._last_key = (r, c)
+
         shift = kb.is_pressed(4, 0)
         label = get_key_label(r, c, shift)
         n = len(self._names)
@@ -115,11 +120,9 @@ class VariablePanel(UIElement):
         if label in ("2", "down"):
             if self._cursor < n - 1:
                 self._cursor += 1
-                self._cooldown = now
         elif label in ("8", "up"):
             if self._cursor > 0:
                 self._cursor -= 1
-                self._cooldown = now
         elif label == "ENT":
             if self._names:
                 self.calc.input_box.insert_str(self._names[self._cursor])
@@ -132,7 +135,6 @@ class VariablePanel(UIElement):
                 self._rebuild()
                 if self._cursor >= len(self._names):
                     self._cursor = max(0, len(self._names) - 1)
-                self._cooldown = now
         elif label == "ESC":
             return "VAR_PANEL_DONE"
         # Left/Right: physical 4/6 keys
@@ -140,11 +142,9 @@ class VariablePanel(UIElement):
             nc = self._cursor - VISIBLE
             if nc >= 0:
                 self._cursor = nc
-                self._cooldown = now
         elif r == 2 and c == 2:
             nc = self._cursor + VISIBLE
             if nc < n:
                 self._cursor = nc
-                self._cooldown = now
 
         return None

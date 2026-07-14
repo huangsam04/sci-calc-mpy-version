@@ -30,18 +30,61 @@ def _init_display():
     return SSD1322(spi, cs, dc, rst)
 
 
+# --- Boot animation state ---
+_boot_fill_w = 0       # current animated bar fill width (pixels)
+_boot_title_gs = 0     # title grayscale for fade-in
+
+
 def _boot_progress(display, step, total, label=""):
-    """Draw a simple boot progress bar."""
-    display.clear_buffers(0)
-    display.draw_text8x8(75, 8, "SCI-CALC", gs=15)
-    bar_x, bar_y, bar_w, bar_h = 20, 28, 216, 8
-    display.draw_rectangle(bar_x, bar_y, bar_w, bar_h, 8)
-    fill_w = int(bar_w * step / total)
-    if fill_w > 0:
-        display.fill_rectangle(bar_x + 1, bar_y + 1, fill_w - 1, bar_h - 2, 15)
-    if label:
-        display.draw_text8x8(20, 42, label, gs=10)
-    display.present()
+    """Draw boot screen with smooth animated progress bar."""
+    global _boot_fill_w, _boot_title_gs
+
+    bar_x, bar_y, bar_w, bar_h = 20, 34, 216, 5
+    target_w = int((bar_w - 2) * step / total)
+
+    # Title fade-in: gradually brighten from 0→15 over first few steps
+    if _boot_title_gs < 15:
+        _boot_title_gs = min(15, _boot_title_gs + 3)
+
+    # Animate bar fill with ease-out (6 frames, ~96ms per step)
+    frames = 6 if target_w != _boot_fill_w else 1
+    for i in range(frames):
+        t = (i + 1) / frames
+        eased = 1 - (1 - t) ** 2
+        current_w = _boot_fill_w + int((target_w - _boot_fill_w) * eased)
+
+        display.clear_buffers(0)
+
+        # Title — centered on full 256px display (8 chars × 8px = 64px, (256-64)/2 = 96)
+        display.draw_text8x8(96, 10, "SCI-CALC", gs=_boot_title_gs)
+        # Decorative separator
+        display.draw_hline(60, 20, 136, min(_boot_title_gs, 6))
+
+        # Progress bar track
+        display.draw_rectangle(bar_x, bar_y, bar_w, bar_h, 6)
+        # Progress bar fill
+        if current_w > 0:
+            display.fill_rectangle(bar_x + 1, bar_y + 1,
+                                   max(1, current_w), bar_h - 2, 15)
+        # Glint — bright pixel at the leading edge of the fill
+        if current_w > 2:
+            gx = bar_x + 1 + current_w - 2
+            display.draw_vline(gx, bar_y + 1, bar_h - 2, 15)
+
+        # Step label
+        if label:
+            display.draw_text8x8(20, 44, label, gs=10)
+
+        # Step counter (right-aligned)
+        progress = f"{step}/{total}"
+        px = 210 - len(progress) * 8
+        display.draw_text8x8(px, 44, progress, gs=8)
+
+        display.present()
+        if frames > 1:
+            time.sleep_ms(16)
+
+    _boot_fill_w = target_w
 
 
 # --- Cached globals for sidebar ---
@@ -84,6 +127,46 @@ def _reload_functions(settings):
     if sd_names:
         load_function_files(func_table, sd_names)
     return func_table
+
+
+def _draw_crash(display, error):
+    """Render crash info directly to display. Uses only 8x8 text — no font dependency."""
+    import sys
+    try:
+        sys.print_exception(error)
+    except Exception:
+        pass
+
+    display.clear_buffers(0)
+    display.fill_rectangle(0, 0, 210, 64, 3)
+    display.draw_rectangle(4, 2, 202, 60, 15)
+
+    err_type = type(error).__name__
+    if len(err_type) > 26:
+        err_type = err_type[:25] + "~"
+    display.draw_text8x8(8, 5, "CRASH: " + err_type, gs=15)
+
+    # Word-wrap message across 4 lines, 25 chars each
+    msg = str(error) or "(no message)"
+    y = 18
+    for _ in range(4):
+        if not msg:
+            break
+        chunk = msg[:25]
+        if len(msg) > 25:
+            space = msg.rfind(' ', 0, 25)
+            if space > 10:
+                chunk = msg[:space]
+                msg = msg[space:].lstrip()
+            else:
+                msg = msg[25:]
+        else:
+            msg = ""
+        display.draw_text8x8(8, y, chunk, gs=15)
+        y += 10
+
+    display.draw_text8x8(8, 54, "Press any key to restart", gs=10)
+    display.present()
 
 
 def main():
@@ -182,96 +265,120 @@ def main():
     FRAME_MS = 66
 
     while True:
-        if _frame % 100 == 0:
-            gc.collect()
-        _frame += 1
+        try:
+            if _frame % 100 == 0:
+                gc.collect()
+            _frame += 1
 
-        kb.scan()
-        animate_all()
-        update_tmp()
+            kb.scan()
+            animate_all()
+            update_tmp()
 
-        result = current_screen.update(kb)
+            result = current_screen.update(kb)
 
-        now = time.ticks_ms()
-        needs_render = (time.ticks_diff(now, _last_render) >= FRAME_MS
-                        or has_active_animations()
-                        or result is not None)
+            now = time.ticks_ms()
+            needs_render = (time.ticks_diff(now, _last_render) >= FRAME_MS
+                            or has_active_animations()
+                            or result is not None)
 
-        if needs_render:
-            _last_render = now
-            display.clear_buffers(0)
-            current_screen.draw(display)
-            _draw_sidebar(display, font_small)
-            display.present()
+            if needs_render:
+                _last_render = now
+                display.clear_buffers(0)
+                current_screen.draw(display)
+                _draw_sidebar(display, font_small)
+                display.present()
 
-        # Screen switching
-        if result == "BACK":
-            if current_screen.parent:
+            # Screen switching
+            if result == "BACK":
+                if current_screen.parent:
+                    current_screen.deactivate()
+                    current_screen = current_screen.parent
+                    current_screen.activate()
+            elif result == "FUNC_PANEL_DONE":
+                settings = load_settings()
+                func_table = _reload_functions(settings)
+                calc_screen.func_table = func_table
                 current_screen.deactivate()
-                current_screen = current_screen.parent
+                current_screen = main_menu
                 current_screen.activate()
-        elif result == "FUNC_PANEL_DONE":
-            settings = load_settings()
-            func_table = _reload_functions(settings)
-            calc_screen.func_table = func_table
-            current_screen.deactivate()
+            elif result == "FUNC_PICKER":
+                current_screen.deactivate()
+                func_picker.activate()
+                current_screen = func_picker
+            elif result == "LETTER_PANEL":
+                current_screen.deactivate()
+                letter_panel.activate()
+                current_screen = letter_panel
+            elif result == "LETTER_DONE":
+                current_screen.deactivate()
+                calc_screen.activate()
+                current_screen = calc_screen
+            elif result == "FUNC_PICKER_DONE":
+                current_screen.deactivate()
+                calc_screen.activate()
+                current_screen = calc_screen
+            elif result == "VARIABLE_PANEL":
+                current_screen.deactivate()
+                var_panel.activate()
+                current_screen = var_panel
+            elif result == "VAR_PANEL_DONE":
+                current_screen.deactivate()
+                calc_screen.activate()
+                current_screen = calc_screen
+            elif isinstance(result, UIElement) and result is not current_screen:
+                current_screen.deactivate()
+                result.activate()
+                current_screen = result
+
+            # Global Shift+RPN → Letter Panel (calculator only)
+            rpn_pressed = kb.is_pressed(3, 5)
+            shift_held = kb.is_pressed(4, 0)
+            if (rpn_pressed and shift_held and not _rpn_shift_was_pressed
+                    and current_screen is calc_screen):
+                current_screen.deactivate()
+                letter_panel.activate()
+                current_screen = letter_panel
+            _rpn_shift_was_pressed = rpn_pressed and shift_held
+
+            # ANG key (global — toggles deg/rad, shows on status line everywhere)
+            ang_pressed = kb.is_pressed(4, 4)
+            if ang_pressed and not _angle_was_pressed:
+                calc.functions.ANGLE_MODE = 1 - calc.functions.ANGLE_MODE
+                settings["angle_mode"] = calc.functions.ANGLE_MODE
+                save_settings(settings)
+            _angle_was_pressed = ang_pressed
+
+            # Persist vars
+            if current_screen is calc_screen:
+                if calc_screen.vars != vars_dict:
+                    vars_dict = dict(calc_screen.vars)
+                    save_vars(vars_dict)
+
+            time.sleep_ms(10)
+
+        except Exception as e:
+            # Crash landing: draw error screen, wait for key, then recover
+            _draw_crash(display, e)
+
+            # Debounce: wait for key release + new press
+            time.sleep_ms(300)
+            while True:
+                kb.scan()
+                if kb.get_rising_edge() is not None:
+                    break
+                time.sleep_ms(20)
+
+            # Recover to main menu
+            try:
+                current_screen.deactivate()
+            except Exception:
+                pass
             current_screen = main_menu
-            current_screen.activate()
-        elif result == "FUNC_PICKER":
-            current_screen.deactivate()
-            func_picker.activate()
-            current_screen = func_picker
-        elif result == "LETTER_PANEL":
-            current_screen.deactivate()
-            letter_panel.activate()
-            current_screen = letter_panel
-        elif result == "LETTER_DONE":
-            current_screen.deactivate()
-            calc_screen.activate()
-            current_screen = calc_screen
-        elif result == "FUNC_PICKER_DONE":
-            current_screen.deactivate()
-            calc_screen.activate()
-            current_screen = calc_screen
-        elif result == "VARIABLE_PANEL":
-            current_screen.deactivate()
-            var_panel.activate()
-            current_screen = var_panel
-        elif result == "VAR_PANEL_DONE":
-            current_screen.deactivate()
-            calc_screen.activate()
-            current_screen = calc_screen
-        elif isinstance(result, UIElement) and result is not current_screen:
-            current_screen.deactivate()
-            result.activate()
-            current_screen = result
-
-        # Global Shift+RPN → Letter Panel
-        rpn_pressed = kb.is_pressed(3, 5)
-        shift_held = kb.is_pressed(4, 0)
-        if (rpn_pressed and shift_held and not _rpn_shift_was_pressed
-                and current_screen is not letter_panel
-                and current_screen is not func_picker):
-            current_screen.deactivate()
-            letter_panel.activate()
-            current_screen = letter_panel
-        _rpn_shift_was_pressed = rpn_pressed and shift_held
-
-        # ANG key
-        ang_pressed = kb.is_pressed(4, 4)
-        if ang_pressed and not _angle_was_pressed:
-            calc.functions.ANGLE_MODE = 1 - calc.functions.ANGLE_MODE
-            settings["angle_mode"] = calc.functions.ANGLE_MODE
-            save_settings(settings)
-        _angle_was_pressed = ang_pressed
-
-        # Persist vars
-        if current_screen is calc_screen:
-            if calc_screen.vars != vars_dict:
-                vars_dict = dict(calc_screen.vars)
-                save_vars(vars_dict)
-
-        time.sleep_ms(10)
+            try:
+                current_screen.activate()
+            except Exception:
+                pass
+            _last_render = 0
 
 
 if __name__ == "__main__":
