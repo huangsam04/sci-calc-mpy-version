@@ -11,6 +11,7 @@ T_LP = "LP"
 T_RP = "RP"
 T_COMMA = "COMMA"
 T_SEMI = "SEMI"
+T_STR = "STR"
 
 
 class ParseError(ValueError):
@@ -68,6 +69,16 @@ def tokenize(expr_str):
         elif c == ';':
             tokens.append(_tok(T_SEMI, ';', i))
             i += 1
+        elif c == '"' or c == "'":
+            # String literal — single or double quoted
+            quote = c
+            j = i + 1
+            while j < n and expr_str[j] != quote:
+                j += 1
+            if j >= n:
+                raise ParseError("Unterminated string", i, expr_str)
+            tokens.append(_tok(T_STR, expr_str[i + 1:j], i))
+            i = j + 1
         elif c in '+-*/^=':
             tokens.append(_tok(T_OP, c, i))
             i += 1
@@ -211,6 +222,9 @@ def _parse_prefix(tokens, pos, vars_dict, func_table, expr_str):
     tok = tokens[pos]
 
     if tok[0] == T_NUM:
+        return pos + 1, tok[1], vars_dict
+
+    if tok[0] == T_STR:
         return pos + 1, tok[1], vars_dict
 
     if tok[0] == T_NAME:

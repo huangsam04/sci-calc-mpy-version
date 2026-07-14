@@ -206,6 +206,11 @@ FUNCTION_GROUPS = {
 # Default: all groups enabled
 DEFAULT_ENABLED_GROUPS = ["basic", "trig", "math", "list"]
 
+# Global reference to the active function table — set by main.py after
+# SD extensions are loaded. Used by solve() and other meta-functions
+# that need to re-evaluate expressions internally.
+_current_func_table = {}
+
 
 def build_func_table(enabled_groups=None, extra_defs=None):
     """Build a function table from enabled builtin groups + optional extras.

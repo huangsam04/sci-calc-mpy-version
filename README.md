@@ -1,6 +1,6 @@
 # SCI-CALC MicroPython Edition
 
-基于 [SCI-CALC](https://github.com/shaoxiongduan/sci-calc) 的，使用MicroPython实现计算功能的固件。
+基于 [SCI-CALC](https://github.com/shaoxiongduan/sci-calc) V2.4的，使用MicroPython实现计算功能的固件。
 
 **完全使用Deepseek-v4-Pro编写，不保证功能正常**。
 
@@ -84,6 +84,7 @@ mpremote connect COM5 fs cp screens/letter_panel.py :/screens/letter_panel.py
 mpremote connect COM5 fs cp screens/variable_panel.py :/screens/variable_panel.py
 mpremote connect COM5 fs cp screens/stopwatch.py :/screens/stopwatch.py
 mpremote connect COM5 fs cp screens/about.py :/screens/about.py
+mpremote connect COM5 fs cp screens/plot.py :/screens/plot.py
 mpremote connect COM5 fs cp screens/__init__.py :/screens/__init__.py
 
 mpremote connect COM5 fs cp utils/storage.py :/utils/storage.py
@@ -91,6 +92,7 @@ mpremote connect COM5 fs cp utils/__init__.py :/utils/__init__.py
 
 mpremote connect COM5 fs cp functions/basic.py :/functions/basic.py
 mpremote connect COM5 fs cp functions/trig.py :/functions/trig.py
+mpremote connect COM5 fs cp functions/solve.py :/functions/solve.py
 ```
 
 ### 5. 复位启动
@@ -185,6 +187,32 @@ Tab 进入后：
 ### About
 
 显示版本和硬件信息，ESC 返回。
+
+### 绘图
+
+主菜单进入。全屏函数绘图，输入框滑入式编辑。
+
+![绘图界面]
+
+- **任意按键**：打开编辑模式（输入框从顶部滑入）
+- **RPN**：输入变量 `x`
+- **Shift+RPN**：打开字母面板输入其他变量名
+- **ENT**：绘图并关闭编辑（图表全屏显示）
+- **ESC**：取消编辑 / 返回主菜单
+- **Shift+Tab**：重置 x 范围到 [-10, 10]
+
+支持的表达式：`sin(x)`、`x^2`、`sinh(x)` 等，变量固定为 `x`。自动缩放 y 轴，过滤渐近线尖刺。
+
+### 方程求解（SD 扩展）
+
+将 `functions/solve.py` 放入 SD 卡 `/sd/functions/`，函数面板启用后可用。
+
+```
+solve("x^2 - 4", "x", 1)    → 2.0      (求 x²-4=0 在 x=1 附近的根)
+solve("sin(x)", "x", 3)     → 3.14159  (求 sin(x)=0 在 x=3 附近的根)
+```
+
+牛顿迭代法，支持所有内置函数和 SD 扩展函数。
 
 ---
 
@@ -355,6 +383,10 @@ x = 5; y = 3; x + y → 8
 
 # 一些常数
 pi                  → 3.141593
+
+# 字符串（单/双引号），用于 solve 等元函数
+"x^2 - 4"           → "x^2 - 4"
+'hello'             → "hello"
 ```
 
 ### 内置函数组
@@ -411,6 +443,7 @@ mp_version/
 ├── screens/
 │   ├── main_menu.py           # 主菜单
 │   ├── calculator.py          # 计算器（输入+历史+错误弹窗）
+│   ├── plot.py                # 函数绘图（全屏图表+滑入编辑）
 │   ├── function_panel.py      # 函数开关面板（内置组+SD文件）
 │   ├── function_picker.py     # 函数选择器（Shift+RPN, 双列翻页）
 │   ├── letter_panel.py        # 字母面板（RPN, A-Z大写）
@@ -423,7 +456,8 @@ mp_version/
 │
 ├── functions/
 │   ├── basic.py               # SD 卡函数示例：% 取模
-│   └── trig.py                # SD 卡函数：sinh/cosh/tanh/sind/cosd/tand/PI
+│   ├── trig.py                # SD 卡函数：sinh/cosh/tanh/sind/cosd/tand/PI
+│   └── solve.py               # SD 卡扩展：牛顿法方程求解
 │
 ├── fonts/
 │   ├── Bally7x9.c             # 主字体 7×9 比例
@@ -445,8 +479,9 @@ while True:
     current_screen.draw()       # 渲染（15fps限速）
     draw_sidebar()              # 电池电压
     display.present()           # SPI 全帧输出（16MHz, ~4ms）
-    handle screen switching     # BACK / FUNC_PANEL_DONE / etc.
+    handle screen switching     # 收拢到 next_screen，统一做转场动画
     handle global hotkeys       # ang / Shift+RPN
+    try/except crash handler    # 全局异常捕获 + 屏幕显示 + 恢复
 ```
 
 ### 性能优化
@@ -460,3 +495,46 @@ while True:
 | GC 间歇 | `gc.collect()` 每 100 帧一次（~1 秒） |
 | ADC 缓存 | 电池电压 500ms 读一次 |
 | 菜单预截断 | `add_item` 时截断标签，不每帧重算 |
+| 字体缓存上限 | `XglcdFont._cache` 硬限制 256 条，防止动态字符串 OOM |
+| 缓存 OOM 自愈 | `get_text_fb` 分配失败时自动清缓存 + GC 重试；全局崩溃恢复也会清字体缓存 |
+
+---
+
+## 界面转场动画
+
+所有界面切换都有双画面滑动动画（INDENT 缓动，`1 - 2^(-10t)`，130ms）。
+
+- **前进**（进入子界面）：旧画面向左滑出，新画面从右侧滑入
+- **后退**（返回上级）：旧画面向右滑出，新画面从左侧滑入
+
+两个画面同时移动，方向相反，形成推入/弹出的视觉层次。
+
+---
+
+## 错误处理
+
+### 启动阶段
+
+每个启动步骤（键盘、字体、设置、变量、函数、界面）都包裹 `try/except`，失败时在进度条界面显示 `FAIL: 步骤名` + 具体错误信息，停顿 2 秒后继续启动：
+
+- **Keyboard 失败**：终止启动（无键盘不可用）
+- **Fonts 失败**：回退到内置 8×8 点阵字体
+- **Settings / Vars 失败**：使用硬编码默认值 / 空字典
+- **Functions 失败**：仅加载内置四组函数
+- **Screens 失败**：终止启动
+
+### 运行时崩溃
+
+主循环包裹全局 `try/except`。任何未捕获异常显示全屏错误界面（异常类型 + 消息），同时通过 `sys.print_exception()` 输出到串口。按任意键清空字体缓存 + GC 后恢复到主菜单。
+
+计算器表达式错误以弹窗形式展示，包含表达式、错误位置指示符（`^`）、错误消息，10 秒自动消失或按任意键关闭。
+
+---
+
+## 键盘输入统一
+
+`Keyboard.pop_key_event()` 替代旧的 `get_rising_edge()`（peek 模式），提供消费式读取：
+
+- 返回 `(row, col, shift_held)` —— shift 状态与按键边沿在同一时刻原子捕获，消除 label 误判
+- 消费即标记 —— 一次边沿只给一个消费者，不会多处理
+- 所有界面已统一迁移至 `pop_key_event()`

@@ -4,6 +4,7 @@
 import time
 import gc
 from machine import Pin, SPI, ADC
+from framebuf import FrameBuffer, GS4_HMSB  # type: ignore
 
 # --- Minimal imports for splash screen ---
 from display.ssd1322 import Display as SSD1322
@@ -85,6 +86,31 @@ def _boot_progress(display, step, total, label=""):
             time.sleep_ms(16)
 
     _boot_fill_w = target_w
+
+
+def _boot_fail(display, step, total, label, error):
+    """Show boot error briefly, then continue with fallback."""
+    bar_x, bar_y, bar_w, bar_h = 20, 34, 216, 5
+    fill_w = int((bar_w - 2) * step / total)
+
+    err_str = str(error)
+    if len(err_str) > 28:
+        err_str = err_str[:27] + "~"
+
+    display.clear_buffers(0)
+    display.draw_text8x8(96, 10, "SCI-CALC", gs=15)
+    display.draw_hline(60, 20, 136, 6)
+
+    # Progress bar at current step
+    display.draw_rectangle(bar_x, bar_y, bar_w, bar_h, 6)
+    if fill_w > 0:
+        display.fill_rectangle(bar_x + 1, bar_y + 1, fill_w, bar_h - 2, 15)
+
+    # Error
+    display.draw_text8x8(16, 44, f"FAIL: {label}", gs=15)
+    display.draw_text8x8(16, 52, err_str, gs=10)
+    display.present()
+    time.sleep(2)
 
 
 # --- Cached globals for sidebar ---
@@ -169,6 +195,61 @@ def _draw_crash(display, error):
     display.present()
 
 
+def _screen_transition(display, from_screen, to_screen, font_small):
+    """Dual-slide transition matching CPP_VERSION: both screens move simultaneously
+    with INDENT easing. Direction-aware — forward vs back use opposite directions.
+
+    FORWARD: old exits LEFT, new enters from RIGHT (push-left feel).
+    BACK:    old exits RIGHT, new enters from LEFT (pop-back feel).
+    """
+    going_back = (getattr(from_screen, 'parent', None) is to_screen)
+
+    # Render old screen → snapshot
+    display.clear_buffers(0)
+    from_screen.draw(display)
+    _draw_sidebar(display, font_small)
+    old_buf = bytearray(display.gs4_buf)
+
+    # Activate new screen, render it → snapshot
+    to_screen.activate()
+    display.clear_buffers(0)
+    to_screen.draw(display)
+    _draw_sidebar(display, font_small)
+    new_buf = bytearray(display.gs4_buf)
+
+    w = display.width
+    frames = 10  # ~130ms total
+    for i in range(1, frames + 1):
+        t = i / frames
+        eased = 1.0 - pow(2.0, -10.0 * t)  # INDENT — same as CPP_VERSION
+
+        if going_back:
+            # BACK: new enters from LEFT, old exits RIGHT
+            new_x = -w + int(w * eased)
+            old_x = int(w * eased)
+        else:
+            # FORWARD: new enters from RIGHT, old exits LEFT
+            new_x = w - int(w * eased)
+            old_x = -int(w * eased)
+
+        display.clear_buffers(0)
+
+        # Old underneath, new on top — new slides over old
+        old_fb = FrameBuffer(old_buf, w, display.height, GS4_HMSB)
+        display.gs4_fb.blit(old_fb, old_x, 0)
+        new_fb = FrameBuffer(new_buf, w, display.height, GS4_HMSB)
+        display.gs4_fb.blit(new_fb, new_x, 0)
+
+        display.present()
+        time.sleep_ms(13)
+
+    # Final clean frame
+    display.clear_buffers(0)
+    to_screen.draw(display)
+    _draw_sidebar(display, font_small)
+    display.present()
+
+
 def main():
     # ============================================================
     # Phase 1: Display FIRST — show splash immediately
@@ -177,74 +258,109 @@ def main():
     _boot_progress(display, 1, 8, "Display OK")
 
     # ============================================================
-    # Phase 2: Lazy-load everything else while showing progress
+    # Phase 2: Lazy-load everything else while showing progress.
+    # Each step is wrapped — failure shows error on screen, then
+    # continues with a fallback so the calculator still boots.
     # ============================================================
-    from input.keyboard import Keyboard
-    kb = Keyboard()
-    _boot_progress(display, 2, 8, "Keyboard OK")
 
-    # Fonts
+    # Keyboard (critical — halt on failure)
+    try:
+        from input.keyboard import Keyboard
+        kb = Keyboard()
+        _boot_progress(display, 2, 8, "Keyboard OK")
+    except Exception as e:
+        _boot_fail(display, 2, 8, "Keyboard", e)
+        raise  # can't run without keyboard
+
+    # Fonts (fallback: built-in 8x8 font via draw_text8x8)
     try:
         font_main = XglcdFont("fonts/Bally7x9.c", 7, 9)
-    except Exception:
+    except Exception as e:
+        _boot_fail(display, 3, 8, "Fonts", e)
         font_main = None
     try:
         font_small = XglcdFont("fonts/Neato5x7.c", 5, 7)
     except Exception:
         font_small = None
-    _boot_progress(display, 3, 8, "Fonts OK")
+    if font_main is not None:
+        _boot_progress(display, 3, 8, "Fonts OK")
 
-    # Settings
-    from utils.storage import load_settings
-    settings = load_settings()
+    # Settings (fallback: defaults)
+    try:
+        from utils.storage import load_settings
+        settings = load_settings()
+        _boot_progress(display, 4, 8, "Settings OK")
+    except Exception as e:
+        _boot_fail(display, 4, 8, "Settings", e)
+        settings = {"angle_mode": 0, "enabled_functions": ["basic", "trig", "math", "list"], "version": "1.0.0"}
     import calc.functions
     calc.functions.ANGLE_MODE = settings.get("angle_mode", 0)
-    _boot_progress(display, 4, 8, "Settings OK")
 
-    # Variables
-    from utils.storage import load_vars
-    vars_dict = load_vars()
-    _boot_progress(display, 5, 8, "Vars OK")
+    # Variables (fallback: empty dict)
+    try:
+        from utils.storage import load_vars
+        vars_dict = load_vars()
+        _boot_progress(display, 5, 8, "Vars OK")
+    except Exception as e:
+        _boot_fail(display, 5, 8, "Vars", e)
+        vars_dict = {}
 
-    # Functions
-    func_table = _reload_functions(settings)
-    _boot_progress(display, 6, 8, "Functions OK")
+    # Functions (fallback: built-in groups only)
+    try:
+        func_table = _reload_functions(settings)
+        _boot_progress(display, 6, 8, "Functions OK")
+    except Exception as e:
+        _boot_fail(display, 6, 8, "Functions", e)
+        from calc.functions import build_func_table
+        func_table = build_func_table(["basic", "trig", "math", "list"])
+    calc.functions._current_func_table = func_table
 
-    # Screens (import + build)
-    from screens.main_menu import MainMenu
-    from screens.calculator import CalculatorScreen
-    from screens.function_panel import FunctionPanel
-    from screens.stopwatch import StopwatchScreen
-    from screens.about import AboutScreen
-    from screens.letter_panel import LetterPanel
-    from screens.function_picker import FunctionPicker
-    from screens.variable_panel import VariablePanel
-    _boot_progress(display, 7, 8, "Screens OK")
+    # Screens (import + build — skip broken ones)
+    try:
+        from screens.main_menu import MainMenu
+        from screens.calculator import CalculatorScreen
+        from screens.function_panel import FunctionPanel
+        from screens.stopwatch import StopwatchScreen
+        from screens.about import AboutScreen
+        from screens.letter_panel import LetterPanel
+        from screens.function_picker import FunctionPicker
+        from screens.variable_panel import VariablePanel
+        from screens.plot import PlotScreen
+        _boot_progress(display, 7, 8, "Screens OK")
+    except Exception as e:
+        _boot_fail(display, 7, 8, "Screens", e)
+        # If imports failed, we can't continue — the error screen already showed
+        raise
 
-    about = AboutScreen(font_main, settings.get("version", "1.0.0"))
-    func_panel = FunctionPanel(font_main)
-    stopwatch = StopwatchScreen(font_main)
-    calc_screen = CalculatorScreen(font_main, font_small)
-    calc_screen.vars = vars_dict
-    calc_screen.func_table = func_table
-    letter_panel = LetterPanel(font_main, calc_screen.input_box)
-    letter_panel.parent = calc_screen
+    try:
+        about = AboutScreen(font_main, settings.get("version", "1.0.0"))
+        func_panel = FunctionPanel(font_main)
+        stopwatch = StopwatchScreen(font_main)
+        calc_screen = CalculatorScreen(font_main, font_small)
+        calc_screen.vars = vars_dict
+        calc_screen.func_table = func_table
+        letter_panel = LetterPanel(font_main, calc_screen.input_box)
+        letter_panel.parent = calc_screen
+        func_picker = FunctionPicker(font_main, calc_screen)
+        func_picker.parent = calc_screen
+        var_panel = VariablePanel(font_main, calc_screen)
+        var_panel.parent = calc_screen
+        plot_screen = PlotScreen(font_main, font_small)
 
-    func_picker = FunctionPicker(font_main, calc_screen)
-    func_picker.parent = calc_screen
-
-    var_panel = VariablePanel(font_main, calc_screen)
-    var_panel.parent = calc_screen
-
-    main_menu = MainMenu(font_main)
-    main_menu.add_screen("Calculator", calc_screen)
-    main_menu.add_screen("Function Panel", func_panel)
-    main_menu.add_screen("Stopwatch", stopwatch)
-    main_menu.add_screen("About", about)
-    calc_screen.parent = main_menu
-    func_panel.parent = main_menu
-    stopwatch.parent = main_menu
-    about.parent = main_menu
+        main_menu = MainMenu(font_main)
+        main_menu.add_screen("Calculator", calc_screen)
+        main_menu.add_screen("Plot", plot_screen)
+        main_menu.add_screen("Function Panel", func_panel)
+        main_menu.add_screen("Stopwatch", stopwatch)
+        main_menu.add_screen("About", about)
+        calc_screen.parent = main_menu
+        plot_screen.parent = main_menu
+        func_panel.parent = main_menu
+        stopwatch.parent = main_menu
+        about.parent = main_menu
+    except Exception as e:
+        _boot_fail(display, 7, 8, "Init", e)
+        raise
 
     _boot_progress(display, 8, 8, "Ready.")
     time.sleep_ms(400)
@@ -260,6 +376,7 @@ def main():
     current_screen.activate()
     _angle_was_pressed = False
     _rpn_shift_was_pressed = False
+    _letter_parent = calc_screen  # screen to return to after letter panel closes
     _frame = 0
     _last_render = 0
     FRAME_MS = 66
@@ -288,57 +405,48 @@ def main():
                 _draw_sidebar(display, font_small)
                 display.present()
 
-            # Screen switching
+            # ── Screen switching (collect target, transition at end) ──
+            next_screen = None
+
             if result == "BACK":
                 if current_screen.parent:
-                    current_screen.deactivate()
-                    current_screen = current_screen.parent
-                    current_screen.activate()
+                    next_screen = current_screen.parent
             elif result == "FUNC_PANEL_DONE":
                 settings = load_settings()
                 func_table = _reload_functions(settings)
+                calc.functions._current_func_table = func_table
                 calc_screen.func_table = func_table
-                current_screen.deactivate()
-                current_screen = main_menu
-                current_screen.activate()
+                next_screen = main_menu
             elif result == "FUNC_PICKER":
-                current_screen.deactivate()
-                func_picker.activate()
-                current_screen = func_picker
+                next_screen = func_picker
             elif result == "LETTER_PANEL":
-                current_screen.deactivate()
-                letter_panel.activate()
-                current_screen = letter_panel
+                next_screen = letter_panel
             elif result == "LETTER_DONE":
-                current_screen.deactivate()
-                calc_screen.activate()
-                current_screen = calc_screen
+                next_screen = _letter_parent
             elif result == "FUNC_PICKER_DONE":
-                current_screen.deactivate()
-                calc_screen.activate()
-                current_screen = calc_screen
+                next_screen = calc_screen
             elif result == "VARIABLE_PANEL":
-                current_screen.deactivate()
-                var_panel.activate()
-                current_screen = var_panel
+                next_screen = var_panel
             elif result == "VAR_PANEL_DONE":
-                current_screen.deactivate()
-                calc_screen.activate()
-                current_screen = calc_screen
+                next_screen = calc_screen
             elif isinstance(result, UIElement) and result is not current_screen:
-                current_screen.deactivate()
-                result.activate()
-                current_screen = result
+                next_screen = result
 
-            # Global Shift+RPN → Letter Panel (calculator only)
+            # Global Shift+RPN → Letter Panel (calculator or plot screen)
             rpn_pressed = kb.is_pressed(3, 5)
             shift_held = kb.is_pressed(4, 0)
             if (rpn_pressed and shift_held and not _rpn_shift_was_pressed
-                    and current_screen is calc_screen):
-                current_screen.deactivate()
-                letter_panel.activate()
-                current_screen = letter_panel
+                    and (current_screen is calc_screen or current_screen is plot_screen)):
+                letter_panel.input_box = current_screen.input_box
+                _letter_parent = current_screen
+                next_screen = letter_panel
             _rpn_shift_was_pressed = rpn_pressed and shift_held
+
+            # Execute transition if screen changed
+            if next_screen is not None and next_screen is not current_screen:
+                current_screen.deactivate()
+                _screen_transition(display, current_screen, next_screen, font_small)
+                current_screen = next_screen
 
             # ANG key (global — toggles deg/rad, shows on status line everywhere)
             ang_pressed = kb.is_pressed(4, 4)
