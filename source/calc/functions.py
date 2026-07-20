@@ -1,239 +1,287 @@
-# ponytail: all built-in math operators as pluggable functions
-"""Built-in function definitions for the calculator.
+"""Function registry and built-in operations for SCI-CALC.
 
-Each function receives individual arguments (not a list, except list-type)
-and the vars dict. Returns (result, vars_dict).
-
-All trig functions work in radians. Angle mode conversion is handled
-by the global settings checked at call time (via angle_mode argument
-passed through).
+The public seam is intentionally small: plugins receive a FunctionRegistry and
+register callbacks by kind.  Internally definitions stay as compact tuples to
+keep heap use predictable on MicroPython.
 """
 import math
 
-# Global state - set by main loop
-ANGLE_MODE = 0  # 0=rad, 1=deg
+
+KIND_INFIX = "infix"
+KIND_PREFIX = "prefix"
+KIND_POSTFIX = "postfix"
+KIND_LIST = "list"
+_KINDS = (KIND_INFIX, KIND_PREFIX, KIND_POSTFIX, KIND_LIST)
 
 
-_DEG = math.pi / 180.0
-_RAD = 180.0 / math.pi
+class EvalContext:
+    """Mutable state shared by one or more evaluations."""
+
+    def __init__(self, variables, registry):
+        self.variables = variables
+        self.registry = registry
+        self.dirty = False
+
+    @property
+    def angle_mode(self):
+        return self.registry.angle_mode
+
+    def set_var(self, name, value):
+        if self.variables.get(name, _MISSING) != value:
+            self.variables[name] = value
+            self.dirty = True
+        return value
+
+    def delete_var(self, name):
+        if name in self.variables:
+            del self.variables[name]
+            self.dirty = True
+
+    def consume_dirty(self):
+        value = self.dirty
+        self.dirty = False
+        return value
 
 
-def to_rad(x):
-    """Convert degrees to radians if in degree mode."""
-    return x * _DEG if ANGLE_MODE else x
+_MISSING = object()
 
 
-def from_rad(x):
-    """Convert radians to degrees if in degree mode."""
-    return x * _RAD if ANGLE_MODE else x
+class FunctionRegistry:
+    """Live registry shared by calculator, plotter and plugins.
+
+    Definition tuple: (name, precedence, kind, min_args, associativity, callback)
+    """
+
+    def __init__(self):
+        self._defs = {}
+        self.angle_mode = 0
+
+    def _add(self, name, callback, kind, precedence, associativity, min_args):
+        if not isinstance(name, str) or not name:
+            raise ValueError("Function name must be a non-empty string")
+        if name in ("(", ")", ",", ";", "'", '"') or any(c.isspace() for c in name):
+            raise ValueError("Reserved or whitespace function name: " + name)
+        identifier = name[0].isalpha() or name[0] == "_"
+        if identifier:
+            if not all(c.isalnum() or c == "_" for c in name):
+                raise ValueError("Invalid identifier function name: " + name)
+        elif any(c.isalnum() or c == "_" for c in name):
+            raise ValueError("Symbol operators cannot mix letters or digits: " + name)
+        if kind not in _KINDS:
+            raise ValueError("Invalid function kind: " + str(kind))
+        if kind in (KIND_PREFIX, KIND_LIST) and not identifier:
+            raise ValueError("Prefix and list functions require an identifier: " + name)
+        if not callable(callback):
+            raise ValueError("Function callback is not callable: " + name)
+        if not isinstance(precedence, int) or precedence < 0:
+            raise ValueError("Precedence must be a non-negative integer")
+        if kind == KIND_INFIX and associativity not in ("left", "right"):
+            raise ValueError("Infix associativity must be left or right")
+        if kind != KIND_INFIX:
+            associativity = None
+        if not isinstance(min_args, int) or min_args < 0:
+            raise ValueError("min_args must be a non-negative integer")
+        if name in self._defs:
+            raise ValueError("Function already registered: " + name)
+        self._defs[name] = (name, precedence, kind, min_args, associativity, callback)
+        return self
+
+    def infix(self, name, callback, precedence=10, associativity="left"):
+        return self._add(name, callback, KIND_INFIX, precedence, associativity, 0)
+
+    def prefix(self, name, callback, precedence=50):
+        return self._add(name, callback, KIND_PREFIX, precedence, None, 0)
+
+    def postfix(self, name, callback, precedence=60):
+        return self._add(name, callback, KIND_POSTFIX, precedence, None, 0)
+
+    def list_function(self, name, callback, min_args=0, precedence=50):
+        return self._add(name, callback, KIND_LIST, precedence, None, min_args)
+
+    def get(self, name, default=None):
+        return self._defs.get(name, default)
+
+    def keys(self):
+        return self._defs.keys()
+
+    def items(self):
+        return self._defs.items()
+
+    def __contains__(self, name):
+        return name in self._defs
+
+    def __len__(self):
+        return len(self._defs)
+
+    def clear(self):
+        self._defs.clear()
+
+    def replace(self, other):
+        """Replace definitions in-place so existing users keep a live reference."""
+        self._defs.clear()
+        self._defs.update(other._defs)
+        self.angle_mode = other.angle_mode
+
+    def merge(self, other):
+        for name in other._defs:
+            if name in self._defs:
+                raise ValueError("Function already registered: " + name)
+        self._defs.update(other._defs)
+        return self
+
+    def symbolic_names(self):
+        names = []
+        for name in self._defs:
+            if not (name[0].isalpha() or name[0] == "_"):
+                names.append(name)
+        names.sort(key=len, reverse=True)
+        return names
 
 
-# --- Infix operators ---
-
-def add_func(a, b, vars_dict):
-    if a is None:
-        return b, vars_dict
-    return a + b, vars_dict
+def _to_rad(value, context):
+    return value * math.pi / 180.0 if context.angle_mode else value
 
 
-def sub_func(a, b, vars_dict):
-    if a is None:
-        return -b, vars_dict
-    return a - b, vars_dict
+def _from_rad(value, context):
+    return value * 180.0 / math.pi if context.angle_mode else value
 
 
-def mul_func(a, b, vars_dict):
-    if a is None:
-        return 0, vars_dict
-    return a * b, vars_dict
+def _add(a, b, context):
+    return a + b
 
 
-def div_func(a, b, vars_dict):
-    if a is None:
-        return 0, vars_dict
+def _sub(a, b, context):
+    return a - b
+
+
+def _mul(a, b, context):
+    return a * b
+
+
+def _div(a, b, context):
     if b == 0:
         raise ZeroDivisionError("Division by zero")
-    return a / b, vars_dict
+    return a / b
 
 
-def pow_func(a, b, vars_dict):
-    if a is None:
-        return 0, vars_dict
-    return math.pow(a, b), vars_dict
+def _pow(a, b, context):
+    return math.pow(a, b)
 
 
-def assign_func(a, b, vars_dict):
-    """Assignment: a is variable name (str), b is value."""
-    vars_dict[a] = b
-    return b, vars_dict
+def _assign(name, value, context):
+    return context.set_var(name, value)
 
 
-def comma_func(a, b, vars_dict):
-    """Comma: build a tuple/list. Used internally by list functions."""
-    if isinstance(a, tuple):
-        return a + (b,), vars_dict
-    return (a, b), vars_dict
+def _negative(value, context):
+    return -value
 
 
-# --- Prefix functions ---
-
-def sin_func(a, vars_dict):
-    return math.sin(to_rad(a)), vars_dict
+def _positive(value, context):
+    return value
 
 
-def cos_func(a, vars_dict):
-    return math.cos(to_rad(a)), vars_dict
+def _sin(value, context):
+    return math.sin(_to_rad(value, context))
 
 
-def tan_func(a, vars_dict):
-    return math.tan(to_rad(a)), vars_dict
+def _cos(value, context):
+    return math.cos(_to_rad(value, context))
 
 
-def asin_func(a, vars_dict):
-    return from_rad(math.asin(a)), vars_dict
+def _tan(value, context):
+    return math.tan(_to_rad(value, context))
 
 
-def acos_func(a, vars_dict):
-    return from_rad(math.acos(a)), vars_dict
+def _asin(value, context):
+    return _from_rad(math.asin(value), context)
 
 
-def atan_func(a, vars_dict):
-    return from_rad(math.atan(a)), vars_dict
+def _acos(value, context):
+    return _from_rad(math.acos(value), context)
 
 
-def sec_func(a, vars_dict):
-    return 1.0 / math.cos(to_rad(a)), vars_dict
+def _atan(value, context):
+    return _from_rad(math.atan(value), context)
 
 
-def csc_func(a, vars_dict):
-    return 1.0 / math.sin(to_rad(a)), vars_dict
+def _sec(value, context):
+    return 1.0 / math.cos(_to_rad(value, context))
 
 
-def cot_func(a, vars_dict):
-    return 1.0 / math.tan(to_rad(a)), vars_dict
+def _csc(value, context):
+    return 1.0 / math.sin(_to_rad(value, context))
 
 
-def sqrt_func(a, vars_dict):
-    return math.sqrt(a), vars_dict
+def _cot(value, context):
+    return 1.0 / math.tan(_to_rad(value, context))
 
 
-def ln_func(a, vars_dict):
-    return math.log(a), vars_dict
+def _sqrt(value, context):
+    return math.sqrt(value)
 
 
-def exp_func(a, vars_dict):
-    return math.exp(a), vars_dict
+def _ln(value, context):
+    return math.log(value)
 
 
-def log_func(a, vars_dict):
-    return math.log10(a), vars_dict
+def _exp(value, context):
+    return math.exp(value)
 
 
-def abs_func(a, vars_dict):
-    return abs(a), vars_dict
+def _log(value, context):
+    return math.log10(value)
 
 
-# --- List functions ---
-
-def max_func(args, vars_dict):
-    if not args:
-        return 0, vars_dict
-    return max(args), vars_dict
+def _abs(value, context):
+    return abs(value)
 
 
-def min_func(args, vars_dict):
-    if not args:
-        return 0, vars_dict
-    return min(args), vars_dict
+def _max(args, context):
+    return max(args)
 
 
-# --- Master function table ---
-# Format: (name, priority, kind, arity, associativity, callable)
-# name: used as trigger string in expressions
-# priority: 0=lowest, higher = evaluated first
-# kind: "infix" | "prefix" | "postfix" | "list"
-# arity: for list functions, min number of args (0 = any)
-# associativity: "left" | "right" | None
-
-BUILTIN_FUNCTIONS = {
-    # Basic infix operators
-    "+":    ("+",    1, "infix",   0, "left",   add_func),
-    "-":    ("-",    1, "infix",   0, "left",   sub_func),
-    "*":    ("*",    2, "infix",   0, "left",   mul_func),
-    "/":    ("/",    2, "infix",   0, "left",   div_func),
-    "^":    ("^",    3, "infix",   0, "right",  pow_func),
-    "=":    ("=",    0, "infix",   0, "left",   assign_func),
-    ",":    (",",   -1, "infix",   0, "left",   comma_func),
-
-    # Prefix functions (trig, math)
-    "sin":  ("sin",  4, "prefix",  0, None,     sin_func),
-    "cos":  ("cos",  4, "prefix",  0, None,     cos_func),
-    "tan":  ("tan",  4, "prefix",  0, None,     tan_func),
-    "asin": ("asin", 4, "prefix",  0, None,     asin_func),
-    "acos": ("acos", 4, "prefix",  0, None,     acos_func),
-    "atan": ("atan", 4, "prefix",  0, None,     atan_func),
-    "sec":  ("sec",  4, "prefix",  0, None,     sec_func),
-    "csc":  ("csc",  4, "prefix",  0, None,     csc_func),
-    "cot":  ("cot",  4, "prefix",  0, None,     cot_func),
-    "sqrt": ("sqrt", 4, "prefix",  0, None,     sqrt_func),
-    "ln":   ("ln",   4, "prefix",  0, None,     ln_func),
-    "exp":  ("exp",  4, "prefix",  0, None,     exp_func),
-    "log":  ("log",  4, "prefix",  0, None,     log_func),
-    "abs":  ("abs",  4, "prefix",  0, None,     abs_func),
-
-    # List functions
-    "max":  ("max",  4, "list",    0, None,     max_func),
-    "min":  ("min",  4, "list",    0, None,     min_func),
-}
+def _min(args, context):
+    return min(args)
 
 
-def merge_functions(base_table, new_defs):
-    """Merge new function definitions into the table. Conflicts: last wins."""
-    for name, prio, kind, arity, assoc, func in new_defs:
-        base_table[name] = (name, prio, kind, arity, assoc, func)
-    return base_table
-
-
-# ponytail: group definitions for function panel toggling
-# Each group maps to function names in BUILTIN_FUNCTIONS
 FUNCTION_GROUPS = {
-    "basic":    ["+", "-", "*", "/", "^", "=", ","],
-    "trig":     ["sin", "cos", "tan", "asin", "acos", "atan", "sec", "csc", "cot"],
-    "math":     ["sqrt", "ln", "exp", "log", "abs"],
-    "list":     ["max", "min"],
+    "basic": ("+", "-", "*", "/", "^", "="),
+    "trig": ("sin", "cos", "tan", "asin", "acos", "atan", "sec", "csc", "cot"),
+    "math": ("sqrt", "ln", "exp", "log", "abs"),
+    "list": ("max", "min"),
 }
-
-# Default: all groups enabled
-DEFAULT_ENABLED_GROUPS = ["basic", "trig", "math", "list"]
-
-# Global reference to the active function table — set by main.py after
-# SD extensions are loaded. Used by solve() and other meta-functions
-# that need to re-evaluate expressions internally.
-_current_func_table = {}
+DEFAULT_ENABLED_GROUPS = ("basic", "trig", "math", "list")
 
 
-def build_func_table(enabled_groups=None, extra_defs=None):
-    """Build a function table from enabled builtin groups + optional extras.
+def register_builtins(registry, enabled_groups=None):
+    enabled = enabled_groups if enabled_groups is not None else DEFAULT_ENABLED_GROUPS
+    enabled = set(enabled)
+    if "basic" in enabled:
+        registry.infix("+", _add, 20)
+        registry.infix("-", _sub, 20)
+        registry.infix("*", _mul, 30)
+        registry.infix("/", _div, 30)
+        registry.infix("^", _pow, 40, "right")
+        registry.infix("=", _assign, 10, "right")
+    if "trig" in enabled:
+        for name, callback in (("sin", _sin), ("cos", _cos), ("tan", _tan),
+                               ("asin", _asin), ("acos", _acos), ("atan", _atan),
+                               ("sec", _sec), ("csc", _csc), ("cot", _cot)):
+            registry.prefix(name, callback)
+    if "math" in enabled:
+        for name, callback in (("sqrt", _sqrt), ("ln", _ln), ("exp", _exp),
+                               ("log", _log), ("abs", _abs)):
+            registry.prefix(name, callback)
+    if "list" in enabled:
+        registry.list_function("max", _max, 1)
+        registry.list_function("min", _min, 1)
+    return registry
 
-    Args:
-        enabled_groups: list of group names to enable, or None for all
-        extra_defs: list of (name, prio, kind, arity, assoc, func) to add on top
 
-    Returns:
-        dict: {name: (name, prio, kind, arity, assoc, func)}
-    """
-    if enabled_groups is None:
-        enabled_groups = DEFAULT_ENABLED_GROUPS
+def build_registry(enabled_groups=None):
+    return register_builtins(FunctionRegistry(), enabled_groups)
 
-    table = {}
-    for group_name in enabled_groups:
-        if group_name in FUNCTION_GROUPS:
-            for func_name in FUNCTION_GROUPS[group_name]:
-                if func_name in BUILTIN_FUNCTIONS:
-                    table[func_name] = BUILTIN_FUNCTIONS[func_name]
 
-    # Add extra definitions on top (overrides)
-    if extra_defs:
-        merge_functions(table, extra_defs)
-
-    return table
+# Unary callbacks are parser grammar, but kept here so they share angle/context
+# conventions with registered callbacks.
+UNARY_CALLBACKS = {"-": _negative, "+": _positive}

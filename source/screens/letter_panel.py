@@ -3,6 +3,7 @@ Shift key toggles case for lowercase letters (pi, e, variable names).
 Semicolon supports multi-statement input."""
 import time
 from ui.element import UIElement
+from ui.theme import draw_footer
 
 
 # Physical key → char (None = special). Case applied at input time.
@@ -39,33 +40,32 @@ class LetterPanel(UIElement):
         self.upper = True   # default uppercase
         self._last_action = 0
         self._last_key = None
-        self._skip_frame = False
 
     def activate(self):
         self.text = ""
         self.upper = True
         self._last_action = time.ticks_ms()
         self._last_key = None
-        self._skip_frame = True   # discard the edge that triggered activation
 
     @staticmethod
     def _get_char(row, col):
         return _KEY_MAP.get((row, col))
 
     def draw(self, display):
-        # [HELLO]|
+        # Keep the editable tail visible inside the 210px content area.
+        visible = self.text[-22:]
         prefix = "["
         display.draw_text8x8(2, 1, prefix, gs=15)
         cx = 2 + 8
-        if self.text:
-            display.draw_text8x8(cx, 1, self.text, gs=15)
-            cx += len(self.text) * 8
+        if visible:
+            display.draw_text8x8(cx, 1, visible, gs=15)
+            cx += len(visible) * 8
         display.draw_vline(cx, 1, 8, 15)
         display.draw_text8x8(cx + 2, 1, "]", gs=15)
 
         # Key legend — show current case
         for row_idx, keys in enumerate(_DISPLAY_ROWS):
-            y = 13 + row_idx * 9
+            y = 12 + row_idx * 8
             x = 4
             for _ci, (r, c) in enumerate(keys):
                 ch = self._get_char(r, c)
@@ -77,16 +77,9 @@ class LetterPanel(UIElement):
                 x += 32
 
         case_str = "ABC" if self.upper else "abc"
-        display.draw_text8x8(2, 55, f"[OK:done] [ESC:cancel] [Sh:{case_str}]", gs=15)
+        draw_footer(display, "OK save  ESC cancel", self.font, case_str)
 
-    def update(self, kb):
-        # Skip one frame so the key that triggered activation doesn't leak into the panel
-        if self._skip_frame:
-            self._skip_frame = False
-            kb.pop_key_event()  # consume and discard pending edge
-            return None
-
-        event = kb.pop_key_event()
+    def update(self, kb, event=None):
         if event is None:
             return None
 
@@ -123,6 +116,8 @@ class LetterPanel(UIElement):
         # Character key
         ch = self._get_char(r, c)
         if ch is not None:
-            self.text += ch.upper() if self.upper else ch.lower()
+            remaining = self.input_box.max_char - len(self.input_box.get_str())
+            if len(self.text) < remaining:
+                self.text += ch.upper() if self.upper else ch.lower()
 
         return None

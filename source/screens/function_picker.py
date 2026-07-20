@@ -2,6 +2,7 @@
 import time
 from ui.element import UIElement
 from input.keyboard import get_key_label
+from ui.theme import draw_footer, draw_header
 
 VISIBLE = 4      # rows visible at once
 ROW_H = 10       # pixel height per row
@@ -21,7 +22,7 @@ class FunctionPicker(UIElement):
         self._last_key = None
 
     def activate(self):
-        ft = self.calc_screen.func_table
+        ft = self.calc_screen.context.registry
         self._names = sorted(ft.keys())
         self._cursor = 0
         self._offset = 0
@@ -44,7 +45,7 @@ class FunctionPicker(UIElement):
         if not self._names:
             return
         name = self._names[self._cursor]
-        ft = self.calc_screen.func_table
+        ft = self.calc_screen.context.registry
         entry = ft.get(name)
         if entry:
             kind = entry[2]
@@ -75,12 +76,7 @@ class FunctionPicker(UIElement):
                 display.draw_text8x8(x + 2, y, label[:12], gs=15)
 
     def draw(self, display):
-        # Title
-        if self.font:
-            display.draw_text(2, 0, "Functions", self.font, gs=15)
-        else:
-            display.draw_text8x8(2, 0, "Functions", gs=15)
-        display.draw_hline(0, 10, 210, 15)
+        draw_header(display, "Functions", self.font)
 
         self._clamp()
         n = len(self._names)
@@ -98,16 +94,13 @@ class FunctionPicker(UIElement):
 
         # Status
         total = len(self._names)
-        hint = f"[{self._cursor+1}/{total}] [U/D:nav] [L/R:col] [ENT:ins]"
+        hint = "UP/DN move  4/6 column"
+        right = f"{self._cursor+1}/{total} ENT" if total else ""
         if total == 0:
             hint = "[No functions loaded]"
-        if self.font:
-            display.draw_text(2, 54, hint, self.font, gs=15)
-        else:
-            display.draw_text8x8(2, 54, hint, gs=15)
+        draw_footer(display, hint, self.font, right)
 
-    def update(self, kb):
-        event = kb.pop_key_event()
+    def update(self, kb, event=None):
         if event is None:
             return None
 

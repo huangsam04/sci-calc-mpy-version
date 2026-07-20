@@ -1,17 +1,13 @@
-# SCI-CALC: Basic arithmetic operators
-# These are mostly handled by built-in functions in calc/functions.py
-# This file provides extensions and overrides if needed.
+"""Example symbolic-operator plugin."""
 
-def flist():
-    """Return custom function definitions."""
-    return [
-        # You can add custom operators here.
-        # Format: (name, priority, kind, arity, associativity, callable)
-        # Example: modulo operator
-        # ("%", 2, "infix", 0, "left", mod_func),
-    ]
+WELCOME = "Modulo operator loaded."
 
 
-def welcome():
-    print("Basic operators active.")
-    return "Basic operators loaded."
+def _mod(left, right, context):
+    if right == 0:
+        raise ZeroDivisionError("Modulo by zero")
+    return left % right
+
+
+def register(registry):
+    registry.infix("%", _mod, precedence=30, associativity="left")

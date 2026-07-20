@@ -116,12 +116,13 @@ def _boot_fail(display, step, total, label, error):
 # --- Cached globals for sidebar ---
 _adc = None
 _bat_voltage = "?.?V"
-_bat_frame = 0
+_bat_next_read = 0
 
 
-def _draw_sidebar(display, font=None):
-    global _adc, _bat_voltage, _bat_frame
-    if _bat_frame <= 0:
+def _draw_sidebar(display, font=None, registry=None):
+    global _adc, _bat_voltage, _bat_next_read
+    now = time.ticks_ms()
+    if _bat_next_read == 0 or time.ticks_diff(now, _bat_next_read) >= 0:
         try:
             if _adc is None:
                 _adc = ADC(Pin(BAT_PIN))
@@ -131,11 +132,9 @@ def _draw_sidebar(display, font=None):
             _bat_voltage = f"{voltage:.1f}V"
         except Exception:
             _bat_voltage = "?.?V"
-        _bat_frame = 50
-    _bat_frame -= 1
+        _bat_next_read = time.ticks_add(now, 500)
 
-    import calc.functions
-    ang = "DEG" if calc.functions.ANGLE_MODE else "RAD"
+    ang = "DEG" if registry is not None and registry.angle_mode else "RAD"
 
     display.draw_rectangle(213, 0, 42, 63, 15)
     if font:
@@ -149,17 +148,20 @@ def _draw_sidebar(display, font=None):
         display.draw_text8x8(215, 30, ang, gs=12)
 
 
-def _reload_functions(settings):
-    import calc.functions
-    from calc.functions import build_func_table, DEFAULT_ENABLED_GROUPS
+def _reload_functions(settings, registry=None):
+    from calc.functions import build_registry, DEFAULT_ENABLED_GROUPS, FUNCTION_GROUPS
     from calc.loader import load_function_files
     enabled = settings.get("enabled_functions", DEFAULT_ENABLED_GROUPS)
-    groups = [g for g in enabled if g in calc.functions.FUNCTION_GROUPS]
-    sd_names = [g for g in enabled if g not in calc.functions.FUNCTION_GROUPS]
-    func_table = build_func_table(groups)
+    groups = [g for g in enabled if g in FUNCTION_GROUPS]
+    sd_names = [g[7:] for g in enabled if g.startswith("plugin:")]
+    staged = build_registry(groups)
     if sd_names:
-        load_function_files(func_table, sd_names)
-    return func_table
+        load_function_files(staged, sd_names)
+    if registry is not None:
+        staged.angle_mode = registry.angle_mode
+        registry.replace(staged)
+        return registry
+    return staged
 
 
 def _draw_crash(display, error):
@@ -202,61 +204,24 @@ def _draw_crash(display, error):
     display.present()
 
 
-def _slide_transition(display, old, new, font_small, forward, buf_a, buf_b):
-    """Dual-slide INDENT transition. Sidebar rendered fresh each frame
-    so it stays fixed — doesn't slide with the screen snapshots."""
-    w = display.width
-    h = display.height
-
-    # Snapshot old (without sidebar)
-    display.clear_buffers(0)
-    old.draw(display)
-    buf_a[:] = display.gs4_buf
-
-    # Snapshot new (without sidebar)
-    new.activate()
-    display.clear_buffers(0)
-    new.draw(display)
-    buf_b[:] = display.gs4_buf
-
-    fb_a = FrameBuffer(buf_a, w, h, GS4_HMSB)
-    fb_b = FrameBuffer(buf_b, w, h, GS4_HMSB)
-
-    for i in range(1, 11):
-        t = i / 10.0
-        eased = 1.0 - pow(2.0, -10.0 * t)  # INDENT
-
-        if forward:
-            new_x, old_x = w - int(w * eased), -int(w * eased)
-        else:
-            new_x, old_x = -w + int(w * eased), int(w * eased)
-
-        display.clear_buffers(0)
-        display.gs4_fb.blit(fb_a, old_x, 0)
-        display.gs4_fb.blit(fb_b, new_x, 0)
-        _draw_sidebar(display, font_small)  # fixed position
-        display.present()
-        time.sleep_ms(13)
-
-    display.clear_buffers(0)
-    new.draw(display)
-    _draw_sidebar(display, font_small)
-    display.present()
-
-
 # ── Screen navigation ───────────────────────────────────────────
 
 class Nav:
     """Screen stack with slide transitions. Captures display + font once.
     Pre-allocates transition buffers to avoid 16KB heap alloc on every switch."""
-    def __init__(self, display, font_small):
+    def __init__(self, display, font_small, registry):
         self.display = display
         self.font_small = font_small
+        self.registry = registry
         self.stack = []
+        self._transition = None
+        self._input_locked = False
         # Pre-allocate transition snapshot buffers (256×64/2 = 8192 bytes each)
         blen = display.buffer_length
         self._buf_a = bytearray(blen)
         self._buf_b = bytearray(blen)
+        self._fb_a = FrameBuffer(self._buf_a, display.width, display.height, GS4_HMSB)
+        self._fb_b = FrameBuffer(self._buf_b, display.width, display.height, GS4_HMSB)
 
     def boot(self, screen):
         """Set root screen (no transition)."""
@@ -271,16 +236,60 @@ class Nav:
         old = self.stack[-1]
         old.deactivate()
         self.stack.append(screen)
-        _slide_transition(self.display, old, screen, self.font_small,
-                          forward=True, buf_a=self._buf_a, buf_b=self._buf_b)
+        self._start_transition(old, screen, True)
 
     def go_back(self):
         if len(self.stack) <= 1:
             return
         old = self.stack.pop()
         old.deactivate()
-        _slide_transition(self.display, old, self.stack[-1], self.font_small,
-                          forward=False, buf_a=self._buf_a, buf_b=self._buf_b)
+        self._start_transition(old, self.stack[-1], False)
+
+    def _start_transition(self, old, new, forward):
+        from anim.engine import cancel_animations
+        cancel_animations(old)
+        self.display.clear_buffers(0)
+        old.draw(self.display)
+        self._buf_a[:] = self.display.gs4_buf
+        new.activate()
+        self.display.clear_buffers(0)
+        new.draw(self.display)
+        self._buf_b[:] = self.display.gs4_buf
+        self._transition = (time.ticks_ms(), forward)
+        self._input_locked = True
+
+    def is_transitioning(self):
+        return self._transition is not None
+
+    def filter_event(self, keyboard, event):
+        if self._transition is not None:
+            return None
+        if self._input_locked:
+            if keyboard.any_pressed():
+                return None
+            self._input_locked = False
+        return event
+
+    def draw_transition(self, now):
+        if self._transition is None:
+            return False
+        started, forward = self._transition
+        elapsed = max(0, time.ticks_diff(now, started))
+        t = min(1.0, elapsed / 180.0)
+        eased = 1.0 if t >= 1.0 else 1.0 - pow(2.0, -10.0 * t)
+        width = self.display.width
+        if forward:
+            new_x, old_x = width - int(width * eased), -int(width * eased)
+        else:
+            new_x, old_x = -width + int(width * eased), int(width * eased)
+        self.display.clear_buffers(0)
+        self.display.gs4_fb.blit(self._fb_a, old_x, 0)
+        self.display.gs4_fb.blit(self._fb_b, new_x, 0)
+        _draw_sidebar(self.display, self.font_small, self.registry)
+        self.display.present()
+        if t >= 1.0:
+            self._transition = None
+        return True
 
 
 def main():
@@ -307,12 +316,12 @@ def main():
 
     # Fonts (fallback: built-in 8x8 font via draw_text8x8)
     try:
-        font_main = XglcdFont("fonts/Bally7x9.c", 7, 9)
+        font_main = XglcdFont("/sd/fonts/Bally7x9.c", 7, 9)
     except Exception as e:
         _boot_fail(display, 3, 8, "Fonts", e)
         font_main = None
     try:
-        font_small = XglcdFont("fonts/Neato5x7.c", 5, 7)
+        font_small = XglcdFont("/sd/fonts/Neato5x7.c", 5, 7)
     except Exception:
         font_small = None
     if font_main is not None:
@@ -325,10 +334,7 @@ def main():
         _boot_progress(display, 4, 8, "Settings OK")
     except Exception as e:
         _boot_fail(display, 4, 8, "Settings", e)
-        settings = {"angle_mode": 0, "enabled_functions": ["basic", "trig", "math", "list"], "version": "1.0.2"}
-    import calc.functions
-    calc.functions.ANGLE_MODE = settings.get("angle_mode", 0)
-
+        settings = {"angle_mode": 0, "enabled_functions": ["basic", "trig", "math", "list"], "version": "1.1.0", "diagnostics": False}
     # Variables (fallback: empty dict)
     try:
         from utils.storage import load_vars
@@ -340,13 +346,14 @@ def main():
 
     # Functions (fallback: built-in groups only)
     try:
-        func_table = _reload_functions(settings)
+        registry = _reload_functions(settings)
+        registry.angle_mode = settings.get("angle_mode", 0)
         _boot_progress(display, 6, 8, "Functions OK")
     except Exception as e:
         _boot_fail(display, 6, 8, "Functions", e)
-        from calc.functions import build_func_table
-        func_table = build_func_table(["basic", "trig", "math", "list"])
-    calc.functions._current_func_table = func_table
+        from calc.functions import build_registry
+        registry = build_registry(["basic", "trig", "math", "list"])
+        registry.angle_mode = settings.get("angle_mode", 0)
 
     # Screens (import + build — skip broken ones)
     try:
@@ -366,16 +373,14 @@ def main():
         raise
 
     try:
-        about = AboutScreen(font_main, settings.get("version", "1.0.2"))
+        about = AboutScreen(font_main, settings.get("version", "1.1.0"))
         func_panel = FunctionPanel(font_main)
         stopwatch = StopwatchScreen(font_main)
-        calc_screen = CalculatorScreen(font_main, font_small)
-        calc_screen.vars = vars_dict
-        calc_screen.func_table = func_table
+        calc_screen = CalculatorScreen(font_main, font_small, registry, vars_dict)
         letter_panel = LetterPanel(font_main, calc_screen.input_box)
         func_picker = FunctionPicker(font_main, calc_screen)
         var_panel = VariablePanel(font_main, calc_screen)
-        plot_screen = PlotScreen(font_main, font_small)
+        plot_screen = PlotScreen(font_main, font_small, registry)
 
         main_menu = MainMenu(font_main)
         main_menu.add_screen("Calculator", calc_screen)
@@ -394,16 +399,21 @@ def main():
     # Phase 3: Main loop
     # ============================================================
     from ui.element import UIElement
-    from anim.engine import animate_all, update_tmp, has_active_animations
+    from anim.engine import animate_all, update_tmp, has_active_animations, active_animation_count
     from utils.storage import save_settings, save_vars
 
-    nav = Nav(display, font_small)
+    nav = Nav(display, font_small, registry)
     nav.boot(main_menu)
-    _angle_was_pressed = False
-    _rpn_shift_was_pressed = False
     _frame = 0
-    _last_render = 0
-    FRAME_MS = 66
+    _last_render = time.ticks_add(time.ticks_ms(), -500)
+    IDLE_FRAME_MS = 66
+    ACTIVE_FRAME_MS = 33
+    diagnostics = bool(settings.get("diagnostics", False))
+    _diag_last = time.ticks_ms()
+    _diag_render_us = 0
+    _diag_present_us = 0
+    _diag_frames = 0
+    _dirty = True
 
     while True:
         try:
@@ -415,29 +425,75 @@ def main():
             animate_all()
             update_tmp()
 
+            event = kb.pop_key_event()
+            event = nav.filter_event(kb, event)
+            had_event = event is not None
+
             cur = nav.current
-            result = cur.update(kb)
+            result = None
+            if not nav.is_transitioning() and event is not None:
+                erow, ecol, eshift = event
+                if (erow, ecol) == (3, 5) and eshift and cur in (calc_screen, plot_screen):
+                    letter_panel.input_box = cur.input_box
+                    nav.go_to(letter_panel)
+                    cur = nav.current
+                    event = None
+                elif (erow, ecol) == (4, 4):
+                    registry.angle_mode = 1 - registry.angle_mode
+                    settings["angle_mode"] = registry.angle_mode
+                    if not save_settings(settings):
+                        calc_screen.set_storage_error("Settings save failed")
+                    event = None
+            if (not nav.is_transitioning()
+                    and (event is not None or kb.is_pressed(0, 0) or kb.is_pressed(4, 3))):
+                result = cur.update(kb, event)
 
             now = time.ticks_ms()
-            needs_render = (time.ticks_diff(now, _last_render) >= FRAME_MS
-                            or has_active_animations()
-                            or result is not None)
+            if had_event or result is not None:
+                _dirty = True
+            active = nav.is_transitioning() or has_active_animations()
+            frame_ms = ACTIVE_FRAME_MS if active else IDLE_FRAME_MS
+            needs_render = (time.ticks_diff(now, _last_render) >= frame_ms
+                            and (active or _dirty
+                                 or cur is stopwatch and stopwatch._running
+                                 or time.ticks_diff(now, _last_render) >= 500))
 
             if needs_render:
                 _last_render = now
-                display.clear_buffers(0)
-                cur.draw(display)
-                _draw_sidebar(display, font_small)
-                display.present()
+                render_started = time.ticks_us()
+                if not nav.draw_transition(now):
+                    display.clear_buffers(0)
+                    cur.draw(display)
+                    _draw_sidebar(display, font_small, registry)
+                    present_started = time.ticks_us()
+                    display.present()
+                    _diag_present_us += time.ticks_diff(time.ticks_us(), present_started)
+                _diag_render_us += time.ticks_diff(time.ticks_us(), render_started)
+                _diag_frames += 1
+                _dirty = False
+
+            if diagnostics and time.ticks_diff(now, _diag_last) >= 5000:
+                heap_before = gc.mem_free() if hasattr(gc, "mem_free") else -1
+                gc.collect()
+                heap_after = gc.mem_free() if hasattr(gc, "mem_free") else -1
+                divisor = max(1, _diag_frames)
+                print("PERF frames=" + str(_diag_frames)
+                      + " render_us=" + str(_diag_render_us // divisor)
+                      + " present_us=" + str(_diag_present_us // divisor)
+                      + " heap_before=" + str(heap_before)
+                      + " heap_after=" + str(heap_after)
+                      + " animations=" + str(active_animation_count()))
+                _diag_last = now
+                _diag_render_us = 0
+                _diag_present_us = 0
+                _diag_frames = 0
 
             # ── Screen switching ──
             if result == "BACK":
                 nav.go_back()
             elif result == "FUNC_PANEL_DONE":
                 settings = load_settings()
-                func_table = _reload_functions(settings)
-                calc.functions._current_func_table = func_table
-                calc_screen.func_table = func_table
+                _reload_functions(settings, registry)
                 nav.go_back()
             elif result in ("FUNC_PICKER_DONE", "LETTER_DONE", "VAR_PANEL_DONE"):
                 nav.go_back()
@@ -448,28 +504,11 @@ def main():
             elif isinstance(result, UIElement) and result is not cur:
                 nav.go_to(result)
 
-            # Global Shift+RPN → Letter Panel
-            rpn_pressed = kb.is_pressed(3, 5)
-            shift_held = kb.is_pressed(4, 0)
-            if (rpn_pressed and shift_held and not _rpn_shift_was_pressed
-                    and nav.current in (calc_screen, plot_screen)):
-                letter_panel.input_box = nav.current.input_box
-                nav.go_to(letter_panel)
-            _rpn_shift_was_pressed = rpn_pressed and shift_held
-
-            # ANG key
-            ang_pressed = kb.is_pressed(4, 4)
-            if ang_pressed and not _angle_was_pressed:
-                calc.functions.ANGLE_MODE = 1 - calc.functions.ANGLE_MODE
-                settings["angle_mode"] = calc.functions.ANGLE_MODE
-                save_settings(settings)
-            _angle_was_pressed = ang_pressed
-
             # Persist vars
-            if nav.current is calc_screen:
-                if calc_screen.vars != vars_dict:
-                    vars_dict = dict(calc_screen.vars)
-                    save_vars(vars_dict)
+            if calc_screen.context.consume_dirty():
+                if not save_vars(calc_screen.vars):
+                    calc_screen.set_storage_error("Variable save failed")
+                    _dirty = True
 
             time.sleep_ms(10)
 

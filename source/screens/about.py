@@ -4,7 +4,7 @@ from input.keyboard import get_key_label
 
 
 class AboutScreen(UIElement):
-    def __init__(self, font, version="1.0.2"):
+    def __init__(self, font, version="1.1.0"):
         super().__init__(0, 0, 210, 64)
         self.font = font
         self.version = version
@@ -29,8 +29,7 @@ class AboutScreen(UIElement):
                 else:
                     display.draw_text8x8(5, y, line, gs=15)
 
-    def update(self, kb):
-        event = kb.pop_key_event()
+    def update(self, kb, event=None):
         if event is None:
             return None
         r, c, shift = event

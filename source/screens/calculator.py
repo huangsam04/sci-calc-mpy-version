@@ -2,15 +2,17 @@
 import time
 from ui.element import UIElement
 from ui.inputbox import InputBox
+from calc.functions import EvalContext
 from calc.parser import evaluate, ParseError
 from input.keyboard import get_key_label
+from ui.theme import draw_footer
 
 HIST_ROW_H = 10    # ponytail: compact rows, 4 visible (0-3)
 HIST_VISIBLE = 4
 
 
 class CalculatorScreen(UIElement):
-    def __init__(self, font, small_font=None):
+    def __init__(self, font, small_font=None, registry=None, variables=None):
         super().__init__(0, 0, 210, 64)
         self.font = font
         self.small_font = small_font or font
@@ -22,8 +24,9 @@ class CalculatorScreen(UIElement):
         self._cooldown = 0
         self._hist_last_key = None
         self._esc_guard = 0       # prevent ESC double-fire after exiting history
-        self.vars = {}
-        self.func_table = {}
+        self.context = EvalContext(variables if variables is not None else {}, registry)
+        self.storage_error = ""
+        self._storage_error_time = 0
         # Error popup
         self._err_expr = ""
         self._err_pos = 0
@@ -34,12 +37,15 @@ class CalculatorScreen(UIElement):
         self.input_box.activate()
         self.mode = 0
 
+    def animation_children(self):
+        return (self.input_box,)
+
     def _enter(self):
         expr = self.input_box.get_str().strip()
         if not expr:
             return
         try:
-            result, self.vars = evaluate(expr, self.vars, self.func_table)
+            result = evaluate(expr, self.context)
             self.history.insert(0, (expr, result))
             if len(self.history) > 20:
                 self.history.pop()
@@ -172,29 +178,28 @@ class CalculatorScreen(UIElement):
                     display.draw_text8x8(120, y, rhs, gs=15)
 
         # --- Status line (y=55..63) ---
-        if self.mode == 0:
+        if self.storage_error and time.ticks_diff(time.ticks_ms(), self._storage_error_time) < 5000:
+            status = self.storage_error
+        elif self.mode == 0:
             total = len(self.history)
             status = f"[Tab:hist] [{total}]" if total else "[Tab:hist]"
         else:
             status = f"[{self._cursor+1}/{len(self.history)}] [Tab:input]"
-        if self.small_font:
-            display.draw_text(2, 55, status, self.small_font, gs=15)
-        else:
-            display.draw_text8x8(2, 55, status, gs=15)
+        draw_footer(display, status, self.small_font)
 
-    def update(self, kb):
+    def update(self, kb, event=None):
         if self.mode == 2:
-            if kb.pop_key_event() is not None:
+            if event is not None:
                 self.mode = 0
                 self._err_msg = ""
             return None
 
         # Long-hold ESC: go back
-        if kb.is_pressed(0, 0) and kb.get_hold_time(0, 0) > 1000:
+        if kb.consume_long_press(0, 0, 1000):
             return "BACK"
 
         if self.mode == 0:
-            action = self.input_box.update(kb)
+            action = self.input_box.update(kb, event)
             if action == "ENT":
                 if kb.is_pressed(4, 0):
                     self.input_box.insert_str("=")
@@ -221,7 +226,6 @@ class CalculatorScreen(UIElement):
                     return "FUNC_PICKER"
         else:
             # History nav mode
-            event = kb.pop_key_event()
             if event is None:
                 return None
 
@@ -263,3 +267,11 @@ class CalculatorScreen(UIElement):
                 self._esc_guard = time.ticks_ms()
 
         return None
+
+    @property
+    def vars(self):
+        return self.context.variables
+
+    def set_storage_error(self, message):
+        self.storage_error = message
+        self._storage_error_time = time.ticks_ms()

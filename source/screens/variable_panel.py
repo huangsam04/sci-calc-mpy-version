@@ -2,6 +2,7 @@
 import time
 from ui.element import UIElement
 from input.keyboard import get_key_label
+from ui.theme import draw_empty, draw_footer, draw_header
 
 VISIBLE = 4
 ROW_H = 10
@@ -61,17 +62,13 @@ class VariablePanel(UIElement):
                 display.draw_text8x8(x + 2, y, label[:12], gs=15)
 
     def draw(self, display):
-        if self.font:
-            display.draw_text(2, 0, "Variables", self.font, gs=15)
-        else:
-            display.draw_text8x8(2, 0, "Variables", gs=15)
-        display.draw_hline(0, 10, 210, 15)
+        draw_header(display, "Variables", self.font)
 
         self._clamp()
         n = len(self._names)
 
         if n == 0:
-            display.draw_text8x8(4, 30, "(no variables defined)", gs=10)
+            draw_empty(display, "No variables defined", self.font)
         else:
             for row in range(VISIBLE):
                 y = 12 + row * ROW_H
@@ -87,11 +84,9 @@ class VariablePanel(UIElement):
                     self._draw_item(display, COL2_X, y, name, val, ri == self._cursor)
 
         total = len(self._names)
-        hint = f"[{self._cursor+1}/{total}] [ENT:ins] [DEL:del] [L/R:col]" if total else "[No variables]"
-        if self.font:
-            display.draw_text(2, 54, hint, self.font, gs=15)
-        else:
-            display.draw_text8x8(2, 54, hint, gs=15)
+        hint = "ENT insert  DEL remove" if total else "No variables"
+        right = f"{self._cursor+1}/{total}" if total else ""
+        draw_footer(display, hint, self.font, right)
 
     def _fmt(self, val):
         if isinstance(val, float):
@@ -99,8 +94,7 @@ class VariablePanel(UIElement):
             return s if s else "0"
         return str(val)
 
-    def update(self, kb):
-        event = kb.pop_key_event()
+    def update(self, kb, event=None):
         if event is None:
             return None
 
@@ -129,7 +123,7 @@ class VariablePanel(UIElement):
             if self._names and 0 <= self._cursor < n:
                 name = self._names[self._cursor]
                 if name in self.calc.vars:
-                    del self.calc.vars[name]
+                    self.calc.context.delete_var(name)
                 self._rebuild()
                 if self._cursor >= len(self._names):
                     self._cursor = max(0, len(self._names) - 1)

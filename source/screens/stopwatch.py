@@ -2,6 +2,7 @@
 import time
 from ui.element import UIElement
 from input.keyboard import get_key_label
+from ui.theme import draw_footer
 
 LAP_H = 9        # row height for lap entries
 LAP_COUNT = 4    # visible lap rows
@@ -30,7 +31,7 @@ class StopwatchScreen(UIElement):
 
     def _start(self):
         if self._paused:
-            self._start_time = time.ticks_ms() - self._elapsed
+            self._start_time = time.ticks_add(time.ticks_ms(), -self._elapsed)
             self._paused = False
         else:
             self._start_time = time.ticks_ms()
@@ -125,23 +126,20 @@ class StopwatchScreen(UIElement):
                 else:
                     display.draw_text8x8(4, y, label, gs=15)
 
-        # Divider + hint
-        display.draw_hline(0, 53, self.width, 8)
         if self._running:
-            hint = "ENT:Pause  DEL:Lap"
+            hint = "ENT pause"
+            right = "DEL lap"
         elif self._paused:
-            hint = "ENT:Resume  DEL:Reset"
+            hint = "ENT resume"
+            right = "DEL reset"
         else:
-            hint = "ENT:Start  DEL:Reset"
-        if self.font:
-            display.draw_text(2, 55, hint, self.font, gs=15)
-        else:
-            display.draw_text8x8(2, 55, hint, gs=15)
+            hint = "ENT start"
+            right = "DEL reset"
+        draw_footer(display, hint, self.font, right)
 
     # ── input ───────────────────────────────────────────────────
 
-    def update(self, kb):
-        event = kb.pop_key_event()
+    def update(self, kb, event=None):
         if event is None:
             return None
 

@@ -1,322 +1,286 @@
-# ponytail: recursive descent by precedence, all ops are pluggable functions
-"""Expression parser using Pratt parsing (recursive descent + precedence).
-Tokenizes with position info, raises descriptive errors on failure."""
+"""Compile and evaluate SCI-CALC expressions with a Pratt parser."""
 import math
 from micropython import const  # type: ignore
 
-# Token types
-T_NUM = "NUM"
-T_NAME = "NAME"
-T_OP = "OP"
-T_LP = "LP"
-T_RP = "RP"
-T_COMMA = "COMMA"
-T_SEMI = "SEMI"
-T_STR = "STR"
+from calc.functions import KIND_INFIX, KIND_LIST, KIND_POSTFIX, KIND_PREFIX
+from calc.functions import UNARY_CALLBACKS
+
+
+T_NUM = const(1)
+T_NAME = const(2)
+T_OP = const(3)
+T_LP = const(4)
+T_RP = const(5)
+T_COMMA = const(6)
+T_SEMI = const(7)
+T_STR = const(8)
+MAX_PARSE_DEPTH = const(30)
 
 
 class ParseError(ValueError):
-    """Error with position info for displaying in UI."""
-    def __init__(self, msg, pos=0, expr=""):
-        super().__init__(msg)
+    def __init__(self, message, pos=0, expr=""):
+        super().__init__(message)
         self.pos = pos
         self.expr = expr
 
 
-def _tok(type_, val, pos):
-    """Create a token tuple with position."""
-    return (type_, val, pos)
+def _token(type_, value, pos):
+    return (type_, value, pos)
 
 
-def tokenize(expr_str):
-    """Convert expression string to token list. Each token is (type, value, pos)."""
+def tokenize(expr, registry):
     tokens = []
+    symbols = registry.symbolic_names()
     i = 0
-    n = len(expr_str)
-    while i < n:
-        c = expr_str[i]
-        if c.isspace():
+    length = len(expr)
+    while i < length:
+        char = expr[i]
+        if char.isspace():
             i += 1
             continue
-        if c.isdigit() or (c == '.' and i + 1 < n and expr_str[i + 1].isdigit()):
+        if char.isdigit() or (char == "." and i + 1 < length and expr[i + 1].isdigit()):
             start = i
-            j = i
             dots = 0
-            while j < n and (expr_str[j].isdigit() or expr_str[j] == '.'):
-                if expr_str[j] == '.':
+            while i < length and (expr[i].isdigit() or expr[i] == "."):
+                if expr[i] == ".":
                     dots += 1
                     if dots > 1:
-                        break
-                j += 1
-            # Scientific notation: 1.5e-7 or 2E+10
-            if j < n and expr_str[j] in ('e', 'E') and j + 1 < n:
-                k = j + 1
-                if expr_str[k] in ('+', '-'):
-                    k += 1
-                if k < n and expr_str[k].isdigit():
-                    j = k
-                    while j < n and expr_str[j].isdigit():
-                        j += 1
-            val = float(expr_str[i:j])
-            tokens.append(_tok(T_NUM, val, start))
-            i = j
-        elif c.isalpha() or c == '_':
+                        raise ParseError("Invalid number", i, expr)
+                i += 1
+            if i < length and expr[i] in ("e", "E"):
+                exponent = i
+                i += 1
+                if i < length and expr[i] in ("+", "-"):
+                    i += 1
+                digit_start = i
+                while i < length and expr[i].isdigit():
+                    i += 1
+                if digit_start == i:
+                    i = exponent
+            try:
+                value = float(expr[start:i])
+            except ValueError:
+                raise ParseError("Invalid number", start, expr)
+            tokens.append(_token(T_NUM, value, start))
+            continue
+        if char.isalpha() or char == "_":
             start = i
-            j = i
-            while j < n and (expr_str[j].isalpha() or expr_str[j].isdigit() or expr_str[j] == '_'):
-                j += 1
-            tokens.append(_tok(T_NAME, expr_str[i:j], start))
-            i = j
-        elif c == '(':
-            tokens.append(_tok(T_LP, '(', i))
             i += 1
-        elif c == ')':
-            tokens.append(_tok(T_RP, ')', i))
+            while i < length and (expr[i].isalnum() or expr[i] == "_"):
+                i += 1
+            tokens.append(_token(T_NAME, expr[start:i], start))
+            continue
+        if char in ("'", '"'):
+            quote = char
+            start = i
             i += 1
-        elif c == ',':
-            tokens.append(_tok(T_COMMA, ',', i))
+            value = ""
+            while i < length and expr[i] != quote:
+                if expr[i] == "\\" and i + 1 < length:
+                    i += 1
+                value += expr[i]
+                i += 1
+            if i >= length:
+                raise ParseError("Unterminated string", start, expr)
             i += 1
-        elif c == ';':
-            tokens.append(_tok(T_SEMI, ';', i))
+            tokens.append(_token(T_STR, value, start))
+            continue
+        structural = {"(": T_LP, ")": T_RP, ",": T_COMMA, ";": T_SEMI}
+        if char in structural:
+            tokens.append(_token(structural[char], char, i))
             i += 1
-        elif c == '"' or c == "'":
-            # String literal — single or double quoted
-            quote = c
-            j = i + 1
-            while j < n and expr_str[j] != quote:
-                j += 1
-            if j >= n:
-                raise ParseError("Unterminated string", i, expr_str)
-            tokens.append(_tok(T_STR, expr_str[i + 1:j], i))
-            i = j + 1
-        elif c in '+-*/^=':
-            tokens.append(_tok(T_OP, c, i))
-            i += 1
-        else:
-            raise ParseError(f"Invalid character: '{c}'", i, expr_str)
+            continue
+        matched = None
+        for symbol in symbols:
+            if expr.startswith(symbol, i):
+                matched = symbol
+                break
+        if matched is None:
+            raise ParseError("Invalid character: '" + char + "'", i, expr)
+        tokens.append(_token(T_OP, matched, i))
+        i += len(matched)
     return tokens
 
 
-def _tok_pos(tokens, pos):
-    """Get source position of token at index pos, or end of string."""
-    if 0 <= pos < len(tokens):
-        return tokens[pos][2]
-    return 0
+class _Compiler:
+    def __init__(self, expr, registry):
+        self.expr = expr
+        self.registry = registry
+        self.tokens = tokenize(expr, registry)
+        self.pos = 0
+
+    def current(self):
+        if self.pos < len(self.tokens):
+            return self.tokens[self.pos]
+        return None
+
+    def compile(self):
+        if not self.tokens:
+            return ("literal", None, 0)
+        statements = [self.parse_expr(0, 0)]
+        while self.current() is not None and self.current()[0] == T_SEMI:
+            self.pos += 1
+            if self.current() is not None:
+                statements.append(self.parse_expr(0, 0))
+        if self.current() is not None:
+            token = self.current()
+            raise ParseError("Unexpected '" + str(token[1]) + "'", token[2], self.expr)
+        if len(statements) == 1:
+            return statements[0]
+        return ("sequence", tuple(statements), statements[0][-1])
+
+    def parse_expr(self, min_precedence, depth):
+        if depth > MAX_PARSE_DEPTH:
+            raise ParseError("Expression too deeply nested", self._position(), self.expr)
+        left = self.parse_prefix(depth)
+        while True:
+            token = self.current()
+            if token is None or token[0] in (T_RP, T_COMMA, T_SEMI):
+                break
+            definition = self.registry.get(token[1])
+            if (token[0] not in (T_OP, T_NAME) or definition is None
+                    or definition[2] not in (KIND_INFIX, KIND_POSTFIX)):
+                if token[0] != T_OP:
+                    raise ParseError("Expected operator, got '" + str(token[1]) + "'", token[2], self.expr)
+                raise ParseError("Unexpected operator: '" + str(token[1]) + "'", token[2], self.expr)
+            precedence = definition[1]
+            if precedence < min_precedence:
+                break
+            self.pos += 1
+            if definition[2] == KIND_POSTFIX:
+                left = ("postfix", token[1], left, token[2])
+                continue
+            next_min = precedence + 1 if definition[4] == "left" else precedence
+            right = self.parse_expr(next_min, depth + 1)
+            if token[1] == "=" and left[0] != "variable":
+                raise ParseError("Left side of '=' must be a variable name", token[2], self.expr)
+            left = ("infix", token[1], left, right, token[2])
+        return left
+
+    def parse_prefix(self, depth):
+        token = self.current()
+        if token is None:
+            raise ParseError("Unexpected end of expression", len(self.expr), self.expr)
+        self.pos += 1
+        if token[0] == T_NUM or token[0] == T_STR:
+            return ("literal", token[1], token[2])
+        if token[0] == T_LP:
+            value = self.parse_expr(0, depth + 1)
+            closing = self.current()
+            if closing is None or closing[0] != T_RP:
+                raise ParseError("Missing closing ')'", token[2], self.expr)
+            self.pos += 1
+            return value
+        if token[0] == T_OP and token[1] in UNARY_CALLBACKS:
+            # Power binds tighter than unary signs, while signs remain legal on
+            # the right side of a power expression (2^-2).
+            value = self.parse_expr(40, depth + 1)
+            return ("unary", token[1], value, token[2])
+        if token[0] == T_NAME:
+            definition = self.registry.get(token[1])
+            if definition is not None and definition[2] == KIND_LIST:
+                return self.parse_call(token, definition, depth)
+            if definition is not None and definition[2] == KIND_PREFIX:
+                if self.current() is not None and self.current()[0] == T_LP:
+                    self.pos += 1
+                    value = self.parse_expr(0, depth + 1)
+                    closing = self.current()
+                    if closing is None or closing[0] != T_RP:
+                        raise ParseError("Missing closing ')'", token[2], self.expr)
+                    self.pos += 1
+                else:
+                    value = self.parse_expr(definition[1], depth + 1)
+                return ("prefix", token[1], value, token[2])
+            return ("variable", token[1], token[2])
+        raise ParseError("Unexpected '" + str(token[1]) + "'", token[2], self.expr)
+
+    def parse_call(self, token, definition, depth):
+        opening = self.current()
+        if opening is None or opening[0] != T_LP:
+            raise ParseError("'" + token[1] + "' requires parentheses", token[2], self.expr)
+        self.pos += 1
+        args = []
+        if self.current() is not None and self.current()[0] != T_RP:
+            while True:
+                args.append(self.parse_expr(0, depth + 1))
+                current = self.current()
+                if current is not None and current[0] == T_COMMA:
+                    self.pos += 1
+                    if self.current() is None or self.current()[0] == T_RP:
+                        raise ParseError("Missing argument after comma", current[2], self.expr)
+                    continue
+                break
+        closing = self.current()
+        if closing is None or closing[0] != T_RP:
+            raise ParseError("Missing closing ')'", token[2], self.expr)
+        self.pos += 1
+        if len(args) < definition[3]:
+            raise ParseError("'" + token[1] + "' needs at least " + str(definition[3]) + " arguments", token[2], self.expr)
+        return ("list", token[1], tuple(args), token[2])
+
+    def _position(self):
+        token = self.current()
+        return token[2] if token is not None else len(self.expr)
 
 
-def evaluate(expr_str, vars_dict, func_table):
-    """Evaluate an expression string. Returns (result, updated_vars_dict)."""
-    if not expr_str or not expr_str.strip():
-        return None, vars_dict
+def compile_expression(expr, registry):
+    if not isinstance(expr, str):
+        raise TypeError("Expression must be a string")
+    return _Compiler(expr, registry).compile()
 
-    tokens = tokenize(expr_str)
-    if not tokens:
-        return None, vars_dict
 
+def _evaluate(node, context):
+    kind = node[0]
+    if kind == "literal":
+        return node[1]
+    if kind == "sequence":
+        value = None
+        for statement in node[1]:
+            value = _evaluate(statement, context)
+        return value
+    if kind == "variable":
+        name = node[1]
+        if name in context.variables:
+            return context.variables[name]
+        if name == "pi":
+            return math.pi
+        if name == "e":
+            return math.e
+        raise ParseError("Undefined variable: '" + name + "'", node[2])
+    if kind == "unary":
+        return UNARY_CALLBACKS[node[1]](_evaluate(node[2], context), context)
+    definition = context.registry.get(node[1])
+    if definition is None:
+        raise ParseError("Function is no longer loaded: '" + node[1] + "'", node[-1])
+    callback = definition[5]
+    if kind == "prefix" or kind == "postfix":
+        return callback(_evaluate(node[2], context), context)
+    if kind == "list":
+        args = []
+        for child in node[2]:
+            args.append(_evaluate(child, context))
+        return callback(args, context)
+    if kind == "infix":
+        if node[1] == "=":
+            return callback(node[2][1], _evaluate(node[3], context), context)
+        return callback(_evaluate(node[2], context), _evaluate(node[3], context), context)
+    raise ParseError("Invalid compiled expression", node[-1])
+
+
+def evaluate_program(program, context):
     try:
-        pos, result, vars_dict = _parse_toplevel(tokens, 0, vars_dict, func_table, expr_str)
-        # If we didn't consume all tokens, something is wrong
-        if pos < len(tokens):
-            tp = _tok_pos(tokens, pos)
-            raise ParseError(f"Unexpected '{tokens[pos][1]}'", tp, expr_str)
-        if isinstance(result, VarRef):
-            raise ParseError(f"Undefined variable: '{result.name}'", result.pos, expr_str)
-        return result, vars_dict
+        return _evaluate(program, context)
     except ParseError:
         raise
-    except Exception as e:
-        # Wrap generic errors with position if possible
-        raise ParseError(str(e), 0, expr_str)
+    except Exception as error:
+        raise ParseError(str(error), program[-1] if isinstance(program, tuple) else 0)
 
 
-MAX_PARSE_DEPTH = const(30)
-
-def _parse_toplevel(tokens, pos, vars_dict, func_table, expr_str):
-    """Parse top-level expressions, handling semicolons."""
-    pos, val, vars_dict = _parse_expr(tokens, pos, vars_dict, func_table, 0, expr_str, 0)
-
-    while pos < len(tokens) and tokens[pos][0] == T_SEMI:
-        pos += 1
-        if pos >= len(tokens):
-            break
-        pos, val, vars_dict = _parse_expr(tokens, pos, vars_dict, func_table, 0, expr_str, 0)
-
-    return pos, val, vars_dict
-
-
-def _parse_expr(tokens, pos, vars_dict, func_table, min_prec, expr_str, depth):
-    """Pratt parser: parse expression with minimum precedence min_prec."""
-    if depth > MAX_PARSE_DEPTH:
-        raise ParseError("Expression too deeply nested", _tok_pos(tokens, pos), expr_str)
-    pos, left, vars_dict = _parse_prefix(tokens, pos, vars_dict, func_table, expr_str, depth)
-
-    while pos < len(tokens):
-        tok = tokens[pos]
-
-        if tok[0] in (T_RP, T_COMMA, T_SEMI):
-            break
-
-        if tok[0] != T_OP:
-            # Non-operator token after complete expression — unexpected
-            tp = tok[2]
-            raise ParseError(f"Expected operator, got '{tok[1]}'", tp, expr_str)
-
-        op_char = tok[1]
-        op_def = func_table.get(op_char, None)
-        if op_def is None:
-            tp = tok[2]
-            raise ParseError(f"Unknown operator: '{op_char}' (not loaded in function table)", tp, expr_str)
-
-        _, op_prio, op_kind, op_arity, op_assoc, op_func = op_def
-
-        eff_prio = op_prio
-        if op_assoc == "right":
-            eff_prio -= 0.5
-
-        if eff_prio < min_prec:
-            break
-
-        if op_kind == "infix":
-            pos += 1
-            next_min = op_prio + 1 if op_assoc == "left" else op_prio
-
-            if op_char == "=":
-                var_name = None
-                if isinstance(left, VarRef):
-                    var_name = left.name
-                if var_name is None:
-                    tp = _tok_pos(tokens, pos - 1)
-                    raise ParseError("Left side of '=' must be a variable name", tp, expr_str)
-                pos, right, vars_dict = _parse_expr(tokens, pos, vars_dict, func_table, next_min, expr_str, depth + 1)
-                left, vars_dict = op_func(var_name, right, vars_dict)
-            else:
-                pos, right, vars_dict = _parse_expr(tokens, pos, vars_dict, func_table, next_min, expr_str, depth + 1)
-                left, vars_dict = op_func(left, right, vars_dict)
-
-        elif op_kind == "prefix":
-            pos += 1
-            pos, arg, vars_dict = _parse_expr(tokens, pos, vars_dict, func_table, op_prio, expr_str, depth + 1)
-            left, vars_dict = op_func(arg, vars_dict)
-
-        elif op_kind == "postfix":
-            pos += 1
-            left, vars_dict = op_func(left, vars_dict)
-
-        elif op_kind == "list":
-            pos += 1
-            if pos >= len(tokens) or tokens[pos][0] != T_LP:
-                tp = _tok_pos(tokens, pos - 1)
-                raise ParseError(f"'{op_char}' requires parentheses with arguments", tp, expr_str)
-            pos += 1
-            args = []
-            while pos < len(tokens) and tokens[pos][0] != T_RP:
-                pos, arg_val, vars_dict = _parse_expr(tokens, pos, vars_dict, func_table, 0, expr_str, depth + 1)
-                args.append(arg_val)
-                if pos < len(tokens) and tokens[pos][0] == T_COMMA:
-                    pos += 1
-            if pos < len(tokens) and tokens[pos][0] == T_RP:
-                pos += 1
-            left, vars_dict = op_func(args, vars_dict)
-
-    return pos, left, vars_dict
-
-
-class VarRef:
-    """Reference to a variable by name, with source position."""
-    def __init__(self, name, pos=0):
-        self.name = name
-        self.pos = pos
-
-
-def _parse_prefix(tokens, pos, vars_dict, func_table, expr_str, depth):
-    """Parse a primary expression."""
-    if depth > MAX_PARSE_DEPTH:
-        raise ParseError("Expression too deeply nested", _tok_pos(tokens, pos), expr_str)
-    if pos >= len(tokens):
-        raise ParseError("Unexpected end of expression", len(expr_str), expr_str)
-
-    tok = tokens[pos]
-
-    if tok[0] == T_NUM:
-        return pos + 1, tok[1], vars_dict
-
-    if tok[0] == T_STR:
-        return pos + 1, tok[1], vars_dict
-
-    if tok[0] == T_NAME:
-        name = tok[1]
-        name_pos = tok[2]
-        op_def = func_table.get(name, None)
-
-        # List function: name(...)
-        if op_def and op_def[2] == "list" and pos + 1 < len(tokens) and tokens[pos + 1][0] == T_LP:
-            pos += 2
-            args = []
-            while pos < len(tokens) and tokens[pos][0] != T_RP:
-                pos, arg_val, vars_dict = _parse_expr(tokens, pos, vars_dict, func_table, 0, expr_str, depth + 1)
-                args.append(arg_val)
-                if pos < len(tokens) and tokens[pos][0] == T_COMMA:
-                    pos += 1
-            if pos < len(tokens) and tokens[pos][0] == T_RP:
-                pos += 1
-            result, vars_dict = op_def[5](args, vars_dict)
-            return pos, result, vars_dict
-
-        # Prefix function: name arg
-        if op_def and op_def[2] == "prefix":
-            pos += 1
-            pos, arg, vars_dict = _parse_expr(tokens, pos, vars_dict, func_table, op_def[1], expr_str, depth + 1)
-            result, vars_dict = op_def[5](arg, vars_dict)
-            return pos, result, vars_dict
-
-        # Variable reference — peek ahead: if followed by '=', this is a
-        # reassignment target, not a value read. Return VarRef so the '='
-        # operator can extract the name.
-        if name in vars_dict:
-            if pos + 1 < len(tokens) and tokens[pos + 1][0] == T_OP and tokens[pos + 1][1] == '=':
-                pos += 1
-                return pos, VarRef(name, name_pos), vars_dict
-            pos += 1
-            return pos, vars_dict[name], vars_dict
-
-        # Constants
-        if name == "pi":
-            pos += 1
-            return pos, math.pi, vars_dict
-        if name == "e":
-            pos += 1
-            return pos, math.e, vars_dict
-
-        # Unknown name — might be for assignment, return VarRef
-        pos += 1
-        return pos, VarRef(name, name_pos), vars_dict
-
-    if tok[0] == T_LP:
-        pos += 1
-        pos, val, vars_dict = _parse_expr(tokens, pos, vars_dict, func_table, 0, expr_str, depth + 1)
-        if pos < len(tokens) and tokens[pos][0] == T_RP:
-            pos += 1
-        else:
-            raise ParseError("Missing closing ')'", _tok_pos(tokens, pos - 1), expr_str)
-        return pos, val, vars_dict
-
-    if tok[0] == T_OP:
-        op_char = tok[1]
-        op_def = func_table.get(op_char, None)
-        if op_def and op_def[2] == "prefix":
-            pos += 1
-            pos, arg, vars_dict = _parse_expr(tokens, pos, vars_dict, func_table, op_def[1], expr_str, depth + 1)
-            result, vars_dict = op_def[5](arg, vars_dict)
-            return pos, result, vars_dict
-        if op_char == '-':
-            pos += 1
-            pos, right, vars_dict = _parse_expr(tokens, pos, vars_dict, func_table, 4, expr_str, depth + 1)
-            sub_def = func_table.get('-')
-            if sub_def:
-                result, vars_dict = sub_def[5](None, right, vars_dict)
-            else:
-                result = -right
-            return pos, result, vars_dict
-        raise ParseError(f"Unexpected operator: '{op_char}'", tok[2], expr_str)
-
-    raise ParseError(f"Unexpected '{tok[1]}'", tok[2], expr_str)
+def evaluate(expr, context):
+    program = compile_expression(expr, context.registry)
+    try:
+        return evaluate_program(program, context)
+    except ParseError as error:
+        if not error.expr:
+            error.expr = expr
+        raise

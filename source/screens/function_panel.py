@@ -2,6 +2,7 @@
 from ui.element import UIElement
 from ui.menu import Menu
 from utils.storage import save_settings, load_settings
+from ui.theme import draw_footer, draw_header
 
 
 class FunctionPanel(UIElement):
@@ -12,14 +13,19 @@ class FunctionPanel(UIElement):
         self._items = []       # list of (name, is_on, is_group)
         self._toggled = {}     # ponytail: session overrides so _refresh doesn't undo toggles
         self._dirty = False
+        self._save_error = ""
 
     def activate(self):
         self._dirty = False
+        self._save_error = ""
         self._toggled = {}
         self._refresh()
         self.menu.cursor_pos = 0
         self.menu.view_offset = 0
         self.menu.activate()
+
+    def animation_children(self):
+        return (self.menu,)
 
     def deactivate(self):
         if self._dirty:
@@ -54,14 +60,15 @@ class FunctionPanel(UIElement):
         # --- SD card files ---
         sd_files = list_function_files()
         for name, filename in sd_files:
-            if name in self._toggled:
-                is_on = self._toggled[name]
+            setting_name = "plugin:" + name
+            if setting_name in self._toggled:
+                is_on = self._toggled[setting_name]
             else:
-                is_on = name in saved_enabled
+                is_on = setting_name in saved_enabled
             prefix = "[x]" if is_on else "[ ]"
             label = f"{prefix} {name}"
             self.menu.add_item(label, None)
-            self._items.append((name, is_on, False))
+            self._items.append((setting_name, is_on, False))
 
     def get_enabled_list(self):
         """Return list of enabled group/file names."""
@@ -70,24 +77,23 @@ class FunctionPanel(UIElement):
     def _save(self):
         settings = load_settings()
         settings["enabled_functions"] = self.get_enabled_list()
-        save_settings(settings)
-        self._dirty = False
+        if save_settings(settings):
+            self._dirty = False
+            self._save_error = ""
+            return True
+        self._save_error = "Save failed"
+        return False
 
     def draw(self, display):
-        if self.font:
-            display.draw_text(2, 1, "Functions", self.font, gs=15)
-        else:
-            display.draw_text8x8(2, 1, "Functions", gs=15)
-        display.draw_hline(0, 11, 210, 15)
+        draw_header(display, "Functions", self.font)
         self.menu.draw(display)
-        hint = "ENT:toggle  ESC:back"
-        if self.font:
-            display.draw_text(2, 55, hint, self.font, gs=15)
+        if self._save_error:
+            draw_footer(display, self._save_error, self.font, "ESC retry")
         else:
-            display.draw_text8x8(2, 55, hint, gs=15)
+            draw_footer(display, "ENT toggle", self.font, "ESC back")
 
-    def update(self, kb):
-        action = self.menu.update(kb)
+    def update(self, kb, event=None):
+        action = self.menu.update(kb, event)
         if action == "ENTER":
             idx = self.menu.cursor_pos
             if 0 <= idx < len(self._items):
@@ -101,7 +107,7 @@ class FunctionPanel(UIElement):
                 self.menu._clamp_view()
                 self.menu._update_cursor_target()
         elif action == "BACK":
-            if self._dirty:
-                self._save()
+            if self._dirty and not self._save():
+                return None
             return "FUNC_PANEL_DONE"
         return None

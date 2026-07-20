@@ -34,6 +34,7 @@ class Key:
         self.click_cnt = 0
         self._pending = 0  # timestamp of first high read for two-sample
         self._consumed = False  # edge consumed by pop_key_event()
+        self._hold_consumed = False
 
     def update(self, cur_state, cur_time):
         if cur_state:
@@ -48,6 +49,7 @@ class Key:
                     self._consumed = False
                     self.status_time = 0
                     self.start_press = cur_time
+                    self._hold_consumed = False
                 elif since_release >= DEBOUNCE_MS:
                     # Recent release: require two consecutive high reads (bounce filter)
                     if self._pending == 0:
@@ -60,11 +62,12 @@ class Key:
                         self._consumed = False
                         self.status_time = 0
                         self.start_press = cur_time
+                        self._hold_consumed = False
                 # else: within DEBOUNCE_MS of release, ignore
             else:
                 self._pending = 0
                 self.state = PRESSED
-                self.status_time = cur_time - self.start_press
+                self.status_time = time.ticks_diff(cur_time, self.start_press)
         else:
             self._pending = 0
             if self.is_pressed:
@@ -73,9 +76,10 @@ class Key:
                 self.status_time = 0
                 self.end_press = cur_time
                 self.start_press = 0
+                self._hold_consumed = False
             else:
                 self.state = NOT_PRESSED
-                self.status_time = cur_time - self.end_press
+                self.status_time = time.ticks_diff(cur_time, self.end_press)
                 if self.status_time > CLICK_WINDOW:
                     self.click_cnt = 0
 
@@ -84,6 +88,13 @@ class Key:
         if self.is_pressed:
             return time.ticks_diff(time.ticks_ms(), self.start_press)
         return 0
+
+    def consume_long_press(self, now, threshold_ms):
+        if (self.is_pressed and not self._hold_consumed
+                and time.ticks_diff(now, self.start_press) >= threshold_ms):
+            self._hold_consumed = True
+            return True
+        return False
 
 
 class Keyboard:
@@ -126,6 +137,22 @@ class Keyboard:
 
     def get_hold_time(self, row, col):
         return self.keys[row][col].get_hold_time()
+
+    def consume_long_press(self, row, col, threshold_ms):
+        return self.keys[row][col].consume_long_press(time.ticks_ms(), threshold_ms)
+
+    def discard_pending_events(self):
+        for row in self.keys:
+            for key in row:
+                if key.state == RISING_EDGE:
+                    key._consumed = True
+
+    def any_pressed(self):
+        for row in self.keys:
+            for key in row:
+                if key.is_pressed:
+                    return True
+        return False
 
 
 # --- Key label lookup (matches original calcLayout) ---

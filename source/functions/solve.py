@@ -1,85 +1,44 @@
-# SCI-CALC: Equation solver extension
-# Newton's method root finder — uses string arguments for expression + variable
-#
-# Usage:  solve("x^2 - 4", "x", 1)   → finds root of x²-4=0 near x=1  → 2.0
-#         solve("sin(x)", "x", 3)     → finds root of sin(x)=0 near x=3 → 3.14159...
-#
-# Requires: string support in parser (calc/parser.py with T_STR token).
+"""Newton root solver plugin using a once-compiled expression."""
+import math
 
-from calc.parser import evaluate
-from calc.functions import _current_func_table
+from calc.functions import EvalContext
+from calc.parser import compile_expression, evaluate_program
+
+WELCOME = 'Solver loaded: solve("expr", "var", guess)'
 
 
-def flist():
-    """Return custom function definitions."""
-    return [
-        ("solve", 4, "list", 3, None, solve_func),
-    ]
-
-
-def welcome():
-    return "Solver loaded: solve(expr, var, guess)"
-
-
-def solve_func(args, vars_dict):
-    """Newton's method root finder.
-
-    solve("expression", "variable", guess)
-
-    Args:
-        args[0]: expression string, e.g. "x^2 - 4"
-        args[1]: variable name, e.g. "x"
-        args[2]: initial guess (number)
-
-    Returns (root, vars_dict).
-    """
-    # --- Parse arguments ---
+def _solve(args, parent_context):
     if len(args) < 3:
-        raise ValueError("solve needs 3 args: solve(\"expr\", \"var\", guess)")
+        raise ValueError("solve needs 3 args: expression, variable, guess")
+    expression = str(args[0])
+    variable = str(args[1])
+    value = float(args[2])
+    program = compile_expression(expression, parent_context.registry)
+    variables = dict(parent_context.variables)
+    context = EvalContext(variables, parent_context.registry)
+    tolerance = 1e-9
+    step_size = 1e-5
 
-    expr = str(args[0])
-    var = str(args[1])
-    x = float(args[2])
+    def sample(point):
+        variables[variable] = point
+        result = float(evaluate_program(program, context))
+        if not math.isfinite(result):
+            raise ValueError("solve produced a non-finite value")
+        return result
 
-    # Use the full function table (including SD extensions) set by main.py
-    ft = _current_func_table or {}
-    if not ft:
-        # Fallback: build basic table if global hasn't been set yet
-        from calc.functions import build_func_table
-        ft = build_func_table(["basic", "trig", "math", "list"])
+    for _ in range(60):
+        function_value = sample(value)
+        if abs(function_value) < tolerance:
+            return value
+        derivative = (sample(value + step_size) - sample(value - step_size)) / (2.0 * step_size)
+        if abs(derivative) < 1e-12:
+            raise ValueError("solve derivative is too small; choose another guess")
+        delta = function_value / derivative
+        value -= delta
+        if abs(delta) < tolerance * max(1.0, abs(value)):
+            return value
+    raise ValueError("solve did not converge")
 
-    # --- Newton iteration ---
-    max_iter = 100
-    tol = 1e-10
-    h = 1e-7  # step for numerical derivative
 
-    def _eval(val):
-        """Evaluate expression at var=val, return float result."""
-        test_vars = dict(vars_dict)
-        test_vars[var] = val
-        result, _ = evaluate(expr, test_vars, ft)
-        return float(result)
-
-    for i in range(max_iter):
-        fx = _eval(x)
-
-        if abs(fx) < tol:
-            return x, vars_dict
-
-        # Central difference derivative
-        deriv = (_eval(x + h) - _eval(x - h)) / (2.0 * h)
-
-        if abs(deriv) < 1e-15:
-            raise ValueError(
-                f"solve: derivative too small at x={x:.6g} — try a different guess"
-            )
-
-        step = fx / deriv
-        x = x - step
-
-        # Early exit if step is tiny (converged)
-        if abs(step) < tol * max(1.0, abs(x)):
-            return x, vars_dict
-
-    # Max iterations reached — return best approximation
-    return x, vars_dict
+def register(registry):
+    registry.list_function("solve", _solve, min_args=3)

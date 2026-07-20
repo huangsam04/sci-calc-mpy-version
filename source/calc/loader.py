@@ -1,97 +1,62 @@
-# ponytail: import .py files from /sd/functions/, merge flist() results
-"""Function file loader for user-defined calculator functions.
-
-Scans /sd/functions/ for .py files, imports them, calls flist() on each,
-and merges into the function table.
-"""
-import sys
+"""Load isolated SCI-CALC plugins from the SD card."""
 import os
 
+from calc.functions import FunctionRegistry
 
-def load_function_files(func_table, enabled_files=None):
-    """Load function definitions from SD card.
 
-    Args:
-        func_table: dict to merge functions into (modified in place)
-        enabled_files: list of filenames (without .py) to load, or None for all
+class LoadReport:
+    def __init__(self):
+        self.loaded = []
+        self.errors = []
 
-    Returns:
-        list of (filename, flist_result, welcome_msg) for loaded files
-    """
-    loaded = []
-    func_dir = "/sd/functions"
 
+def _join(directory, filename):
+    if directory.endswith("/") or directory.endswith("\\"):
+        return directory + filename
+    separator = "\\" if "\\" in directory and "/" not in directory else "/"
+    return directory + separator + filename
+
+
+def _execute_plugin(path, module_name):
+    namespace = {"__name__": module_name, "__file__": path}
+    with open(path, "r") as source_file:
+        source = source_file.read()
+    exec(compile(source, path, "exec"), namespace)
+    return namespace
+
+
+def load_function_files(registry, enabled_files=None, func_dir="/sd/functions"):
+    """Register enabled plugins, isolating each file until it succeeds."""
+    report = LoadReport()
     try:
-        files = [f for f in os.listdir(func_dir) if f.endswith('.py')]
+        files = [name for name in os.listdir(func_dir) if name.endswith(".py")]
     except OSError:
-        return loaded  # No functions directory
+        return report
 
     for filename in sorted(files):
-        name = filename[:-3]  # strip .py
-
+        name = filename[:-3]
         if enabled_files is not None and name not in enabled_files:
             continue
-
         try:
-            # Clear cached import if re-loading
-            mod_name = "functions." + name
-            if mod_name in sys.modules:
-                del sys.modules[mod_name]
-
-            # Import the module
-            path = func_dir + "/" + filename
-            mod = _import_file(name, path)
-
-            if not hasattr(mod, 'flist'):
-                print(f"Warning: {filename} has no flist() function, skipping")
-                continue
-
-            # Get function list
-            func_defs = mod.flist()
-
-            # Call welcome if available
-            welcome_msg = None
-            if hasattr(mod, 'welcome'):
-                welcome_msg = mod.welcome()
-
-            # Check for conflicts
-            for defn in func_defs:
-                def_name = defn[0]
-                if def_name in func_table:
-                    print(f"Warning: function '{def_name}' from {filename} "
-                          f"overrides existing function")
-
-            # Merge into table
-            from calc.functions import merge_functions
-            merge_functions(func_table, func_defs)
-
-            loaded.append((name, func_defs, welcome_msg))
-            print(f"Loaded: {filename} ({len(func_defs)} functions)")
-
-        except Exception as e:
-            print(f"Error loading {filename}: {e}")
-
-    return loaded
+            namespace = _execute_plugin(_join(func_dir, filename), "scicalc_plugin_" + name)
+            register = namespace.get("register")
+            if not callable(register):
+                raise ValueError(filename + " must define register(registry)")
+            staging = FunctionRegistry()
+            staging.angle_mode = registry.angle_mode
+            register(staging)
+            registry.merge(staging)
+            message = namespace.get("WELCOME", "")
+            report.loaded.append((name, len(staging), message))
+        except Exception as error:
+            report.errors.append((name, str(error)))
+            print("Plugin error " + filename + ": " + str(error))
+    return report
 
 
-def _import_file(name, path):
-    """Import a Python file by path."""
-    # ponytail: importlib not available in MicroPython, use built-in __import__
-    # Read and compile
-    with open(path, 'r') as f:
-        source = f.read()
-    code = compile(source, path, 'exec')
-    mod = type(sys)(name)
-    mod.__file__ = path
-    exec(code, mod.__dict__)
-    return mod
-
-
-def list_function_files():
-    """Return list of (filename, display_name) in the functions directory."""
-    func_dir = "/sd/functions"
+def list_function_files(func_dir="/sd/functions"):
     try:
-        files = [f for f in os.listdir(func_dir) if f.endswith('.py')]
-        return [(f[:-3], f) for f in sorted(files)]
+        files = [name for name in os.listdir(func_dir) if name.endswith(".py")]
+        return [(name[:-3], name) for name in sorted(files)]
     except OSError:
         return []

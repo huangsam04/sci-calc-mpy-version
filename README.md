@@ -1,531 +1,217 @@
 # SCI-CALC MicroPython Edition
 
-基于 [SCI-CALC](https://github.com/shaoxiongduan/sci-calc) V2.4的，使用MicroPython实现计算功能的固件。
+SCI-CALC 的 MicroPython 固件，目标硬件为 ESP32-WROOM-32E、SSD1322
+256×64 灰阶 OLED、5×6 矩阵键盘和 FAT32 SD 卡。
 
-**完全使用Deepseek-v4-Pro编写，不保证功能正常**。
+当前应用版本为 **1.1.0**，解释器基线是本仓库 `micropython/` 中的
+**MicroPython 1.29.0-preview**。项目不修改 MicroPython 核心。
 
-## 安装
+## 目录与启动方式
 
-### 1. 安装 esptool 和 mpremote
+设备采用“内部启动器 + SD 应用”布局：
 
-```bash
-pip install esptool mpremote
+```text
+内部 Flash
+├── boot.py             # 挂载 SD，随后立即退出
+├── main.py             # execfile('/sd/main.py')
+├── recovery.py         # SD/应用损坏时的恢复界面
+└── display/            # 恢复界面所需的最小显示驱动
+
+SD 卡 /sd
+├── main.py
+├── settings.json
+├── vars.json
+├── anim/ calc/ display/ input/ screens/ ui/ utils/
+├── fonts/
+└── functions/          # 可开关的 Python 插件
 ```
 
-### 2. 刷写 MicroPython 固件
+MicroPython 按 `_boot.py → /boot.py → /main.py` 启动。无 SD 卡、挂载失败或
+`/sd/main.py` 无法执行时，内部恢复界面会显示错误；串口同时保留完整错误信息。
 
-从 [micropython.org/download/ESP32_GENERIC](https://micropython.org/download/ESP32_GENERIC) 下载 `.bin`。
+## 构建和刷入解释器
 
-```bash
-# 擦除
-esptool.py --port COM5 --baud 460800 erase_flash
-
-# 刷入（替换为实际文件名）
-esptool.py --port COM5 --baud 460800 write_flash 0x1000 ESP32_GENERIC-20240602-v1.23.0.bin
-```
-COM5应当替换为你的串口，使用设备管理器查看，后面同。
-![COM5](image.png)
-
-### 3. 写入 boot.py
-
-从这里往后都需要切换命令行目录到 ./source 。
-
-将 `internal_boot.py` 写入内部 Flash 作为开机自启脚本：
+ESP32 port 需要 ESP-IDF 5。准确依赖和命令以
+[`micropython/ports/esp32/README.md`](../micropython/ports/esp32/README.md)
+为准。构建默认 ESP32_GENERIC 固件：
 
 ```bash
-cd mp_version
-mpremote connect COM5 fs cp internal_boot.py :/boot.py
+cd micropython
+make -C mpy-cross
+cd ports/esp32
+make submodules
+make BOARD=ESP32_GENERIC
 ```
 
-此脚本开机自动挂载 SD 卡并启动 `main.py`。无 SD 卡时回退到内部 Flash。
+生成文件位于 `micropython/ports/esp32/build-ESP32_GENERIC/firmware.bin`。
+首次刷写前擦除 Flash，然后按实际串口写入：
 
-### 4. 上传项目文件到SD卡
-
-```bash
-cd mp_version # 如果上文执行过了就不需要执行
-mpremote connect COM5 fs cp main.py :/main.py
-mpremote connect COM5 fs cp settings.json :/settings.json
-mpremote connect COM5 fs cp vars.json :/vars.json
-
-# 目录
-mpremote connect COM5 fs cp display/ssd1322.py :/display/ssd1322.py
-mpremote connect COM5 fs cp display/xglcd_font.py :/display/xglcd_font.py
-mpremote connect COM5 fs cp display/mono_palette.py :/display/mono_palette.py
-
-mpremote connect COM5 fs cp fonts/Bally7x9.c :/fonts/Bally7x9.c
-mpremote connect COM5 fs cp fonts/Neato5x7.c :/fonts/Neato5x7.c
-mpremote connect COM5 fs cp fonts/FixedFont5x8.c :/fonts/FixedFont5x8.c
-
-mpremote connect COM5 fs cp ui/element.py :/ui/element.py
-mpremote connect COM5 fs cp ui/cursor.py :/ui/cursor.py
-mpremote connect COM5 fs cp ui/inputbox.py :/ui/inputbox.py
-mpremote connect COM5 fs cp ui/menu.py :/ui/menu.py
-
-mpremote connect COM5 fs cp anim/engine.py :/anim/engine.py
-
-mpremote connect COM5 fs cp calc/functions.py :/calc/functions.py
-mpremote connect COM5 fs cp calc/parser.py :/calc/parser.py
-mpremote connect COM5 fs cp calc/loader.py :/calc/loader.py
-
-mpremote connect COM5 fs cp input/keyboard.py :/input/keyboard.py
-
-mpremote connect COM5 fs cp screens/main_menu.py :/screens/main_menu.py
-mpremote connect COM5 fs cp screens/calculator.py :/screens/calculator.py
-mpremote connect COM5 fs cp screens/function_panel.py :/screens/function_panel.py
-mpremote connect COM5 fs cp screens/function_picker.py :/screens/function_picker.py
-mpremote connect COM5 fs cp screens/letter_panel.py :/screens/letter_panel.py
-mpremote connect COM5 fs cp screens/variable_panel.py :/screens/variable_panel.py
-mpremote connect COM5 fs cp screens/stopwatch.py :/screens/stopwatch.py
-mpremote connect COM5 fs cp screens/about.py :/screens/about.py
-mpremote connect COM5 fs cp screens/plot.py :/screens/plot.py
-
-mpremote connect COM5 fs cp utils/storage.py :/utils/storage.py
-
-mpremote connect COM5 fs cp functions/basic.py :/functions/basic.py
-mpremote connect COM5 fs cp functions/trig.py :/functions/trig.py
-mpremote connect COM5 fs cp functions/solve.py :/functions/solve.py
+```powershell
+..\.venv\python.exe -m esptool --chip esp32 --port COM4 erase_flash
+..\.venv\python.exe -m esptool --chip esp32 --port COM4 write_flash 0x1000 `
+  ..\micropython\ports\esp32\build-ESP32_GENERIC\firmware.bin
 ```
 
-### 5. 复位启动
+不要照搬 `COM4`；先运行以下命令确认设备：
 
-```bash
-mpremote connect COM5 reset
+```powershell
+..\.venv\python.exe -m mpremote devs
 ```
 
-看到进度条即安装成功。
+## 一键部署应用
 
----
+在 `mp_version` 目录执行：
 
-## 界面
+```powershell
+.\deploy.ps1 -Port COM4 -Reset
+```
+
+脚本会：
+
+1. 安装内部启动和恢复文件；
+2. 主动挂载 SD 卡并创建目录；
+3. 上传完整应用到 `/sd`；
+4. 对关键入口执行 SHA-256 校验；
+5. 仅在传入 `-Reset` 时复位设备。
+
+脚本可重复执行。部署不会自动擦除 SD 上不属于当前源码的文件。
+
+## 操作说明
 
 ### 主菜单
 
-上下键选择，ENT 进入，ESC 无操作。
-
-![主界面](image-1.png)
+- `8 / 2`：上、下选择
+- `ENT`：进入
+- `ESC`：主菜单中无操作
 
 ### 计算器
 
-一行输入，ENT 求值，历史 4 行可滚动。
+- `ENT`：计算；`Shift+ENT` 输入赋值符号 `=`
+- `Tab`：进入或退出历史记录
+- `Shift+Tab`：变量表
+- `RPN`：函数选择器
+- `Shift+RPN`：字母面板
+- `ANG`：切换 DEG/RAD 并保存
+- `ESC`：先清空输入；空输入时返回。长按一秒直接返回
 
-原谅我改了改RPN按键的用法。
+历史模式中，`8/2` 选择记录，`ENT` 插入结果，物理 `4/6` 插入原表达式。
 
-| 按键 | 功能 |
-|---|---|
-| **Tab** | 切换历史记录 |
-| **Shift+Tab** | 打开变量表 |
-| **RPN** | 打开函数选择器（快速插入函数） |
-| **Shift+RPN** | 打开字母面板（输入变量名 A-Z） |
+支持示例：
 
-#### 历史记录
+```text
+2 + 3 * 4             -> 14
+2^3^2                 -> 512
+-2^2                  -> -4
+2^-2                  -> 0.25
+x=y=2; x+y            -> 4
+max(3, 5, 4)          -> 5
+```
 
-Tab 进入后：
-- **上/下**：滚动选择
-- **ENT**：追加选中结果的**值**到输入行
-- **左/右**（物理 4/6 键）：追加选中**表达式**到输入行
-- **Tab / ESC**：退出历史模式
-
-### 函数选择器 (RPN)
-
-列出所有已加载的函数，双列 8 项可见，整页翻动。
-
-![RPN界面](image-2.png)
-
-- **ENT**：插入选中函数（prefix/list 类自动加 `(`）
-- **上/下**：导航
-- **4/6 键**：左右跳列
-- **ESC**：关闭
-
-### 字母面板 (Shift+RPN)
-
-默认大写。按 **Sh** 键切换大小写，可输入小写字母（`pi`、`e`、变量名）。分号 `;` 支持多语句。
-
-![字母面板](image-3.png)
-
-- **Sh**：切换大小写（`ABC` ↔ `abc`），默认大写
-- **OK**：写入已输入内容到计算器，关闭
-- **ESC**：取消不写入
-- **Bk**：退格
-- **`;`**：分号，多语句分隔
-
-### 变量表 (Shift+Tab)
-
-双列表格，显示所有已定义变量。
-
-![变量表](image-5.png)
-
-- **ENT**：插入变量名到输入行
-- **DEL**：删除选中变量
-- **左/右**（4/6 键）：跳列
-- **ESC**：关闭
-
-### 函数面板
-
-主菜单进入。开关内置函数组和 SD 卡函数文件。
-
-![函数面板](image-4.png)
-
-- **ENT**：切换启用/禁用
-- **ESC**：保存并退出，自动重载函数表
-
-### 秒表
-![秒表](image-6.png)
-
-- **ENT**：开始 / 暂停
-- **DEL**：计圈 / 复位
-- **ESC**：返回
-
-### About
-
-显示版本和硬件信息，ESC 返回。
+函数名和变量名区分大小写，不支持隐式乘法。
 
 ### 绘图
 
-主菜单进入。全屏函数绘图，输入框滑入式编辑。
+- 查看模式：`8/2` 缩放 Y，Shift+`8/2` 缩放 X，物理 `4/6` 平移
+- `ENT`：打开表达式编辑
+- `RPN`：快速输入 `x`
+- 编辑模式下 `ENT` 绘图、`ESC` 取消、`Shift+Tab` 重置 X 范围
 
-![绘图界面]
+表达式只编译一次，再用于全部采样点。非有限值和大幅跳变不会被连接成贯穿
+屏幕的伪曲线。
 
-- **任意按键**：打开编辑模式（输入框从顶部滑入）
-- **RPN**：输入变量 `x`
-- **Shift+RPN**：打开字母面板输入其他变量名
-- **ENT**：绘图并关闭编辑（图表全屏显示）
-- **ESC**：取消编辑 / 返回主菜单
-- **Shift+Tab**：重置 x 范围到 [-10, 10]
+### 其他页面
 
-支持的表达式：`sin(x)`、`x^2`、`sinh(x)` 等，变量固定为 `x`。自动缩放 y 轴，过滤渐近线尖刺。
+- 函数面板：`ENT` 开关函数组或插件，`ESC` 保存并返回
+- 变量表：`ENT` 插入变量，`DEL` 删除，物理 `4/6` 切换列
+- 秒表：`ENT` 开始/暂停/继续，运行时 `DEL` 计圈，停止时 `DEL` 复位
+- 字母面板：`Sh` 切换大小写，`OK` 写入，`ESC` 取消，`Bk` 退格
 
-### 方程求解（SD 扩展）
+## 插件接口
 
-将 `functions/solve.py` 放入 SD 卡 `/sd/functions/`，函数面板启用后可用。
-
-```
-solve("x^2 - 4", "x", 1)    → 2.0      (求 x²-4=0 在 x=1 附近的根)
-solve("sin(x)", "x", 3)     → 3.14159  (求 sin(x)=0 在 x=3 附近的根)
-```
-
-牛顿迭代法，支持所有内置函数和 SD 扩展函数。
-
----
-
-## 设计思路
-
-除了括号 `()` 和分号 `;` 外，我把所有运算符都做成插件形式。
-
-### 1. 函数定义：6 元组
-
-每个运算符由 6 个字段描述，统一存在 `func_table` 字典里：
+插件位于 `/sd/functions/*.py`，实现 `register(registry)`。旧版 `flist()` 六元组
+接口已移除。
 
 ```python
-# (name, priority, kind, arity, associativity, callable)
-BUILTIN_FUNCTIONS = {
-    "+":   ("+",   1, "infix",  0, "left",  add_func),
-    "-":   ("-",   1, "infix",  0, "left",  sub_func),
-    "^":   ("^",   3, "infix",  0, "right", pow_func),
-    "sin": ("sin", 4, "prefix", 0, None,    sin_func),
-    "max": ("max", 4, "list",   0, None,    max_func),
-}
+WELCOME = "Statistics loaded"
+
+def average(args, context):
+    return sum(args) / len(args)
+
+def modulo(left, right, context):
+    return left % right
+
+def register(registry):
+    registry.list_function("avg", average, min_args=1)
+    registry.infix("%", modulo, precedence=30, associativity="left")
 ```
 
-| 字段 | 含义 |
-|---|---|
-| `name` | 表达式中的触发名，也是字典键 |
-| `priority` | 优先级，越大越先计算。`=` 和 `,` 为 0（最低），三角函数为 4（最高） |
-| `kind` | `"infix"` 中缀 `a+b` / `"prefix"` 前缀 `sin 30` / `"list"` 多参 `max(3,5)` / `"postfix"` 后缀 |
-| `arity` | 仅 list 型使用，最少参数个数 |
-| `associativity` | 仅 infix 型使用，`"left"` 左结合 / `"right"` 右结合（如 `^`） |
-| `callable` | Python 函数，签名 `func(args..., vars_dict) → (result, vars_dict)` |
+注册方法：
 
-### 2. 函数签名约定
+- `registry.infix(name, callback, precedence, associativity)`
+- `registry.prefix(name, callback, precedence=50)`
+- `registry.postfix(name, callback, precedence=60)`
+- `registry.list_function(name, callback, min_args=0, precedence=50)`
 
-所有函数接收参数 + 变量字典，**返回 `(结果, 变量字典)` 元组**。如果想要修改变量，只需要修改变量字典并返回就行。
+回调的最后一个参数是 `EvalContext`。读取变量使用 `context.variables`；需要持久化
+变量时必须调用 `context.set_var(name, value)` 或 `context.delete_var(name)`。
+`context.registry` 始终指向当前实时注册表，因此求解器和元函数不会持有过期表。
 
-```python
-# 中缀: a + b
-def add_func(a, b, vars):
-    if a is None:           # 处理一元情况
-        return b, vars
-    return a + b, vars
+单个插件先在隔离注册表中完成加载和校验，成功后才合并。损坏插件只会记录串口
+错误，不影响其他插件或内置函数。
 
-# 前缀: sin(30)
-def sin_func(a, vars):
-    import math
-    return math.sin(math.radians(a) if ANGLE_MODE else a), vars
+设置文件使用 `plugin:文件名` 标识插件，例如 `plugin:solve`，因此 `basic.py` 与
+内置 `basic` 函数组不会发生名称冲突。插件默认关闭，可在函数面板中启用。
 
-# 赋值: x = 5（a 是变量名字符串，不求值）
-def assign_func(a, b, vars):
-    vars[a] = b
-    return b, vars
+随附插件：
 
-# 多参列表: max(3, 5, 7)
-def max_func(args, vars):
-    return max(args), vars
+- `basic.py`：`%` 取模运算符
+- `trig.py`：双曲函数、显式角度制函数和 `PI()`
+- `solve.py`：`solve("x^2-4", "x", 1)` 牛顿法求根
+
+## 架构
+
+```text
+Keyboard.scan
+  -> 主循环唯一一次 pop_key_event
+  -> 全局快捷键或 Screen.update(keyboard, event)
+
+compile_expression
+  -> Pratt parser / tuple AST
+  -> evaluate_program(program, EvalContext)
+  -> FunctionRegistry callback
 ```
 
-`-` 的一元处理：当 `-` 前没有操作数时（表达式开头或 `(` 之后），左操作数传入 `None`，`sub_func(None, b)` → `-b`。`-` 始终是同一个 infix 函数，不存在"一元减号"这个特殊 Token。
+页面转场由主循环以约 30 FPS 驱动，不再阻塞键盘扫描。静止页面只在输入、状态栏
+更新或 500ms 保活周期时刷新；普通页面上限约 15 FPS。转场结束后必须等触发键
+释放才重新接收业务输入。
 
-### 3. 解析器：Pratt 算法
+设置与变量采用 `文件.tmp → 文件` 提交，并保留上一份 `.bak`。主文件损坏时优先
+读取备份；写入失败不会清除当前内存状态，UI 会显示保存失败。
 
-使用 **Pratt 解析器**（递归下降 + 优先级攀爬）。核心在 `_parse_expr()`：
+## 主机测试与兼容检查
 
-```python
-def _parse_expr(tokens, pos, vars, func_table, min_prec):
-    # NUD: 解析前缀——数字、变量、括号、前缀函数
-    pos, left, vars = _parse_prefix(tokens, pos, vars, func_table)
+项目测试依赖固定在 `requirements-dev.txt`。在 `mp_version` 目录运行：
 
-    # LED: 只要下一个运算符优先级够高，就继续绑定
-    while pos < len(tokens):
-        op_char = tokens[pos][1]
-        op_def = func_table.get(op_char)  # 从函数表动态查找
-        if op_def is None:
-            raise ParseError(f"Unknown operator: '{op_char}'")
-
-        _, prio, kind, assoc, _, func = op_def
-        if prio < min_prec: break         # 优先级不够，停止
-
-        if kind == "infix":
-            pos += 1
-            next_min = prio + 1 if assoc == "left" else prio
-            pos, right, vars = _parse_expr(tokens, pos, vars, func_table, next_min)
-            left, vars = func(left, right, vars)  # 动态调用
-        elif kind == "prefix":
-            pos += 1
-            pos, arg, vars = _parse_expr(tokens, pos, vars, func_table, prio)
-            left, vars = func(arg, vars)           # 动态调用
+```powershell
+.\check.ps1
 ```
 
-以 `2 + 3 * 4` 为例：
+它会依次运行：
 
-```
-_parse_expr(min_prec=0)
-  NUD → 2
-  LED: +, prio=1 ≥ 0 → 右半部 _parse_expr(min_prec=2)
-    NUD → 3
-    LED: *, prio=2 ≥ 2 → 右半部 _parse_expr(min_prec=3)
-      NUD → 4
-    ← mul_func(3, 4) → 12
-  ← add_func(2, 12) → 14
-```
+- pytest 行为测试；
+- CPython 语法编译；
+- 仓库 MicroPython 1.29.0-preview 的 mpy-cross 逐文件编译。
 
-结合性：`-` 左结合，`next_min = prio + 1`，`a - b - c` → `(a - b) - c`。`^` 右结合，`next_min = prio`，`a ^ b ^ c` → `a ^ (b ^ c)`。
+`check.ps1` 会核对编译器版本，拒绝使用不匹配的 mpy-cross。首次运行前，按前文
+命令从仓库中的 `micropython/mpy-cross` 构建；Windows 可使用 GCC/Make 便携工具链。
 
-### 4. 函数组与动态开关
+## 实机回归清单
 
-内置函数按类型分组：
+1. 有卡、无卡、损坏 `/sd/main.py` 各启动一次，确认恢复界面和串口错误。
+2. 计算、赋值、重启，确认变量持久化；开关插件后再次进入函数选择器。
+3. 快速输入、长按 DEL/ESC、Shift+RPN、Shift+Tab，确认没有重复事件。
+4. 连续往返页面 50 次；启用 `settings.json` 的 `diagnostics` 后检查串口堆内存。
+5. 运行秒表 30 分钟，并检查绘图、缩放、求解和错误弹窗。
 
-```python
-FUNCTION_GROUPS = {
-    "basic": ["+", "-", "*", "/", "^", "=", ","],
-    "trig":  ["sin", "cos", "tan", "asin", "acos", "atan", "sec", "csc", "cot"],
-    "math":  ["sqrt", "ln", "exp", "log", "abs"],
-    "list":  ["max", "min"],
-}
-```
-
-`build_func_table(enabled_groups)` 根据启用组**选择性组装**函数表。关闭 "trig" → `sin` 不在表中 → 解析器报 `Unknown operator`。不是隐藏——函数真的不存在。
-
-### 5. SD 卡热扩展
-
-`/sd/functions/*.py` 实现 `flist()` 返回 6 元组列表：
-
-```python
-# /sd/functions/my_stats.py
-def flist():
-    return [("avg", 4, "list", 0, None, avg_func)]
-def avg_func(args, vars):
-    return sum(args) / len(args), vars
-```
-
-系统 import → 调 `flist()` → 合并到 `func_table`。同名冲突：后加载覆盖。函数面板可开关——关闭后下次重载不再导入。
-
-### 6. 为什么这样做
-
-这是之前我闲的没事想出来的一个计算器实现思路，如今有空就用LLM实现了一遍。
-
-解析器只管语法（括号、优先级、结合性），具体运算全部委托给函数表。
-
-函数表是运行时可变的字典，函数面板即时生效、SD 卡热加载、RPN 面板列出所有函数可选，都源于这个架构。
-
----
-
-## 表达式语法
-
-```
-# 基本运算
-2 + 3 * 4          → 14
-(2 + 3) * 4        → 20
-2^8                → 256
--5                 → -5
-
-# 函数（括号可选）
-sin(30)            → 0.5 (DEG)
-sin 30             → 同上
-sqrt(16)           → 4.0
-
-# 多参数
-max(3, 5, 7)       → 7
-min(3, 5, 7)       → 3
-
-# 变量赋值
-x = 5              → 5
-x + 3              → 8
-
-# 多语句（分号分隔）
-x = 5; y = 3; x + y → 8
-
-# 一些常数
-pi                  → 3.141593
-
-# 字符串（单/双引号），用于 solve 等元函数
-"x^2 - 4"           → "x^2 - 4"
-'hello'             → "hello"
-```
-
-### 内置函数组
-
-| 组 | 函数 |
-|---|---|
-| **basic** | `+` `-` `*` `/` `^` `=` `,` |
-| **trig** | `sin` `cos` `tan` `asin` `acos` `atan` `sec` `csc` `cot` |
-| **math** | `sqrt` `ln` `exp` `log` `abs` |
-| **list** | `max` `min` |
-
-### SD 卡扩展函数
-
-将 `.py` 文件放入 `/sd/functions/`，实现 `flist()` 返回函数定义即可。自带：
-
-- `basic.py` — 基础运算符（模运算 `%` 示例）
-- `trig.py` — 双曲函数 `sinh/cosh/tanh`、角度制 `sind/cosd/tand`、常量 `PI()`
-
----
-
-## 代码结构
-
-```
-mp_version/
-├── main.py                    # 入口：硬件初始化→开机动画→主循环
-├── boot.py                    # 启动脚本：挂载 SD 卡
-├── settings.json              # 持久化设置（默认值）
-├── vars.json                  # 持久化变量表（默认空）
-│
-├── display/
-│   ├── ssd1322.py             # SSD1322 OLED 驱动（SPI, 256×64, 4-bit灰度）
-│   ├── xglcd_font.py          # XGLCD 字体加载器（含字母缓存+字符串缓存）
-│   └── mono_palette.py        # 单色→灰度调色板
-│
-├── ui/
-│   ├── element.py             # UIElement 基类（位置/尺寸/动画目标）
-│   ├── cursor.py              # 光标组件（线/框模式，动画过渡）
-│   ├── inputbox.py            # 单行输入框（光标、滚动、DEL长按）
-│   ├── menu.py                # 滚动菜单列表（预截断、动画高亮）
-│   ├── text.py                # 文本标签
-│   └── checkbox.py            # 复选框（动画勾选）
-│
-├── anim/
-│   └── engine.py              # 动画引擎（INDENT/BOUNCE/LINEAR 缓动，全局注册表）
-│
-├── calc/
-│   ├── parser.py              # Pratt 解析器（递归下降+优先级，含位置追踪）
-│   ├── functions.py           # 内置函数表 + 函数组装建器
-│   └── loader.py              # SD 卡函数文件加载器
-│
-├── input/
-│   └── keyboard.py            # 5×6 矩阵键盘扫描（防抖+状态机+键位映射）
-│
-├── screens/
-│   ├── main_menu.py           # 主菜单
-│   ├── calculator.py          # 计算器（输入+历史+错误弹窗）
-│   ├── plot.py                # 函数绘图（全屏图表+滑入编辑）
-│   ├── function_panel.py      # 函数开关面板（内置组+SD文件）
-│   ├── function_picker.py     # 函数选择器（Shift+RPN, 双列翻页）
-│   ├── letter_panel.py        # 字母面板（RPN, A-Z大写）
-│   ├── variable_panel.py      # 变量表（Shift+Tab, 双列）
-│   ├── stopwatch.py           # 秒表
-│   └── about.py               # 关于页
-│
-├── utils/
-│   └── storage.py             # JSON 读写（内存缓存+SD/内部Flash自动检测）
-│
-├── functions/
-│   ├── basic.py               # SD 卡函数示例：% 取模
-│   ├── trig.py                # SD 卡函数：sinh/cosh/tanh/sind/cosd/tand/PI
-│   └── solve.py               # SD 卡扩展：牛顿法方程求解
-│
-├── fonts/
-│   ├── Bally7x9.c             # 主字体 7×9 比例
-│   ├── Neato5x7.c             # 小字体 5×7 比例
-│   └── FixedFont5x8.c         # 备用等宽字体
-│
-├── test_parser.py             # 解析器单元测试
-├── README.md
-└── INSTALL.md
-```
-
-### 主循环流程
-
-```
-while True:
-    kb.scan()                   # 扫描键盘矩阵（15ms间隔）
-    animate_all()               # 驱动所有动画
-    current_screen.update(kb)   # 当前界面逻辑
-    current_screen.draw()       # 渲染（15fps限速）
-    draw_sidebar()              # 电池电压
-    display.present()           # SPI 全帧输出（16MHz, ~4ms）
-    handle screen switching     # 收拢到 next_screen，统一做转场动画
-    handle global hotkeys       # ang / Shift+RPN
-    try/except crash handler    # 全局异常捕获 + 屏幕显示 + 恢复
-```
-
-### 性能优化
-
-| 优化 | 说明 |
-|---|---|
-| 字母缓存 | `XglcdFont` 缓存已渲染的字符 `FrameBuffer` |
-| 字符串缓存 | 整句渲染结果缓存为 `FrameBuffer`，1 blit 代替 N blit |
-| 间距跳过 | 黑底黑字时 `fill_rectangle` 间距为无操作，直接跳过 |
-| 帧率限速 | 15fps 渲染限速，无输入时大幅降低 CPU 和 SPI 负载 |
-| GC 间歇 | `gc.collect()` 每 100 帧一次（~1 秒） |
-| ADC 缓存 | 电池电压 500ms 读一次 |
-| 菜单预截断 | `add_item` 时截断标签，不每帧重算 |
-| 字体缓存上限 | `XglcdFont._cache` 硬限制 256 条，防止动态字符串 OOM |
-| 缓存 OOM 自愈 | `get_text_fb` 分配失败时自动清缓存 + GC 重试；全局崩溃恢复也会清字体缓存 |
-
----
-
-## 界面转场动画
-
-所有界面切换都有双画面滑动动画（INDENT 缓动，`1 - 2^(-10t)`，130ms）。
-
-- **前进**（进入子界面）：旧画面向左滑出，新画面从右侧滑入
-- **后退**（返回上级）：旧画面向右滑出，新画面从左侧滑入
-
-两个画面同时移动，方向相反，形成推入/弹出的视觉层次。
-
----
-
-## 错误处理
-
-### 启动阶段
-
-每个启动步骤（键盘、字体、设置、变量、函数、界面）都包裹 `try/except`，失败时在进度条界面显示 `FAIL: 步骤名` + 具体错误信息，停顿 2 秒后继续启动：
-
-- **Keyboard 失败**：终止启动（无键盘不可用）
-- **Fonts 失败**：回退到内置 8×8 点阵字体
-- **Settings / Vars 失败**：使用硬编码默认值 / 空字典
-- **Functions 失败**：仅加载内置四组函数
-- **Screens 失败**：终止启动
-
-### 运行时崩溃
-
-主循环包裹全局 `try/except`。任何未捕获异常显示全屏错误界面（异常类型 + 消息），同时通过 `sys.print_exception()` 输出到串口。按任意键清空字体缓存 + GC 后恢复到主菜单。
-
-计算器表达式错误以弹窗形式展示，包含表达式、错误位置指示符（`^`）、错误消息，10 秒自动消失或按任意键关闭。
-
----
-
-## 键盘输入统一
-
-`Keyboard.pop_key_event()` 替代旧的 `get_rising_edge()`（peek 模式），提供消费式读取：
-
-- 返回 `(row, col, shift_held)` —— shift 状态与按键边沿在同一时刻原子捕获，消除 label 误判
-- 消费即标记 —— 一次边沿只给一个消费者，不会多处理
-- 所有界面已统一迁移至 `pop_key_event()`
+诊断模式每五秒输出平均渲染耗时、present 耗时、空闲堆和活动动画数量。执行
+`gc.collect()` 后，50 次页面往返的空闲堆下降应不超过 4 KiB。

@@ -3,10 +3,11 @@ import time
 from framebuf import FrameBuffer, MONO_HMSB  # type: ignore
 from ui.element import UIElement
 from ui.inputbox import InputBox
-from calc.parser import evaluate, ParseError
-from calc.functions import _current_func_table
+from calc.parser import compile_expression, evaluate_program, ParseError
+from calc.functions import EvalContext
 from anim.engine import insert_animation
 from input.keyboard import get_key_label
+from ui.theme import draw_footer
 
 
 # Layout constants
@@ -16,7 +17,7 @@ GRAPH_PAD_X = 2
 
 
 class PlotScreen(UIElement):
-    def __init__(self, font, small_font=None):
+    def __init__(self, font, small_font=None, registry=None):
         super().__init__(0, 0, 210, 64)
         self.font = font
         self.small_font = small_font or font
@@ -39,6 +40,10 @@ class PlotScreen(UIElement):
         self._overlay_y = -OVERLAY_H
         self._graph_top = 0
         self.mode = 0
+        self.registry = registry
+        self._program = None
+        self._eval_vars = {"x": 0.0}
+        self._eval_context = EvalContext(self._eval_vars, registry)
 
     def activate(self):
         self.mode = 0
@@ -47,6 +52,9 @@ class PlotScreen(UIElement):
         self.input_box.activate()
         if not self.input_box.get_str() and self.expr:
             self.input_box.set_str(self.expr)
+
+    def animation_children(self):
+        return (self.input_box,)
 
     # ── zoom / pan ───────────────────────────────────────────────
 
@@ -95,9 +103,9 @@ class PlotScreen(UIElement):
     # ── curve rendering (2-pass: find range → draw to buffer) ────
 
     def _eval(self, x_val):
-        ft = _current_func_table or {}
         try:
-            result, _ = evaluate(self.expr, {"x": x_val}, ft)
+            self._eval_vars["x"] = x_val
+            result = evaluate_program(self._program, self._eval_context)
             return float(result), True, ""
         except Exception as e:
             return 0.0, False, str(e)
@@ -107,6 +115,17 @@ class PlotScreen(UIElement):
         self._err_msg = ""
         if not self.expr.strip():
             self._curve_fb = None
+            return
+
+        try:
+            self._program = compile_expression(self.expr, self.registry)
+        except ParseError as error:
+            self._curve_fb = None
+            self._err_expr = self.expr
+            self._err_msg = str(error)
+            self._err_pos = error.pos
+            self._err_time = time.ticks_ms()
+            self.mode = 2
             return
 
         graph_w = self.width - GRAPH_PAD_X * 2
@@ -183,7 +202,9 @@ class PlotScreen(UIElement):
                 py = max(0, min(graph_h - 1, py))
                 bx = i  # buffer-local x
                 self._curve_fb.pixel(bx, py, 1)
-                if prev_px is not None:
+                # Large vertical jumps are usually asymptotes.  Leave a gap
+                # instead of drawing a misleading full-height spike.
+                if prev_px is not None and abs(py - prev_py) <= graph_h * 3 // 4:
                     self._curve_fb.line(prev_px, prev_py, bx, py, 1)
                 prev_px, prev_py = bx, py
             else:
@@ -244,20 +265,13 @@ class PlotScreen(UIElement):
         display.draw_hline(0, oy + OVERLAY_H - 1, self.width, 10)
 
     def _draw_hint(self, display):
-        y = self.height - HINT_H + 1
         if self.mode == 0:
             hint = f"x:{self.x_min:.2g}~{self.x_max:.2g} y:{self._y_min:.2g}~{self._y_max:.2g}"
-            hint2 = "8/2:Y 4/6:pan"
+            hint2 = "8/2 zoom 4/6 pan"
         else:
-            hint = "[ENT:plot] [RPN:x] [ESC:cancel]"
-            hint2 = "[Sh+RPN:letters] [Sh+Tab:reset]"
-
-        if self.small_font:
-            display.draw_text(2, y, hint, self.small_font, gs=15)
-            display.draw_text(120, y, hint2, self.small_font, gs=10)
-        else:
-            display.draw_text8x8(2, y, hint, gs=15)
-            display.draw_text8x8(120, y, hint2, gs=10)
+            hint = "ENT plot  ESC cancel"
+            hint2 = "RPN x"
+        draw_footer(display, hint, self.small_font, hint2)
 
     # ── error popup ──────────────────────────────────────────────
 
@@ -310,19 +324,18 @@ class PlotScreen(UIElement):
 
     # ── input ───────────────────────────────────────────────────
 
-    def update(self, kb):
+    def update(self, kb, event=None):
         if self.mode == 2:
             if time.ticks_diff(time.ticks_ms(), self._err_time) > 10000:
                 self.mode = 0
-            elif kb.pop_key_event() is not None:
+            elif event is not None:
                 self.mode = 0
             return None
 
-        if kb.is_pressed(0, 0) and kb.get_hold_time(0, 0) > 1000:
+        if kb.consume_long_press(0, 0, 1000):
             return "BACK"
 
         if self.mode == 0:
-            event = kb.pop_key_event()
             if event is not None:
                 r, c, _ = event
                 shift = kb.is_pressed(4, 0)
@@ -350,7 +363,7 @@ class PlotScreen(UIElement):
                 return None
 
         else:
-            action = self.input_box.update(kb)
+            action = self.input_box.update(kb, event)
             if action == "ENT":
                 self._leave_edit(plot=True)
             elif action == "rpn":

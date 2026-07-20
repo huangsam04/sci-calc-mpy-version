@@ -1,6 +1,7 @@
 """Main menu screen - top-level navigation."""
 from ui.element import UIElement
 from ui.menu import Menu
+from ui.theme import draw_header
 
 
 class MainMenu(UIElement):
@@ -14,24 +15,20 @@ class MainMenu(UIElement):
         self.menu.add_item(label, screen)
         self._items.append((label, screen))
 
+    def animation_children(self):
+        return (self.menu,)
+
     def activate(self):
         self.menu.cursor_pos = 0
         self.menu.view_offset = 0
         self.menu.activate()
 
     def draw(self, display):
-        # Title
-        if self.font:
-            display.draw_text(2, 1, "SCI-CALC", self.font, gs=15)
-        else:
-            display.draw_text8x8(2, 1, "SCI-CALC", gs=15)
-
-        display.draw_hline(0, 11, 210, 15)
-
+        draw_header(display, "SCI-CALC", self.font)
         self.menu.draw(display)
 
-    def update(self, kb):
-        action = self.menu.update(kb)
+    def update(self, kb, event=None):
+        action = self.menu.update(kb, event)
         if action == "ENTER":
             target = self.menu.get_selected()
             if target:

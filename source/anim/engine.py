@@ -144,3 +144,34 @@ def is_animating(target):
 def has_active_animations():
     """Check if any animations are currently running."""
     return len(_animations) > 0
+
+
+def active_animation_count():
+    return len(_animations)
+
+
+def cancel_all_animations():
+    """Release every animation target before changing screen ownership."""
+    _animations.clear()
+    _tmp_targets[:] = []
+
+
+def cancel_animations(root):
+    """Cancel animations owned by one explicit UI element tree."""
+    target_ids = {}
+    stack = [root]
+    while stack:
+        target = stack.pop()
+        target_ids[id(target)] = True
+        children = getattr(target, "animation_children", None)
+        if children:
+            for child in children():
+                stack.append(child)
+    for key in list(_animations.keys()):
+        if key[0] in target_ids:
+            del _animations[key]
+    kept = []
+    for target in _tmp_targets:
+        if id(target) not in target_ids:
+            kept.append(target)
+    _tmp_targets[:] = kept

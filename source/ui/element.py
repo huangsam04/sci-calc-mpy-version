@@ -29,9 +29,13 @@ class UIElement:
         """Render to display. Override in subclasses."""
         pass
 
-    def update(self, kb):
+    def update(self, kb, event=None):
         """Handle input and logic. Override in subclasses."""
         pass
+
+    def animation_children(self):
+        """Return owned UI elements whose animations share this lifecycle."""
+        return ()
 
     def move_to(self, x, y, w=None, h=None):
         """Instantly set position without animation."""

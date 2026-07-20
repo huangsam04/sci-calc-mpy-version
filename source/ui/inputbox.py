@@ -33,6 +33,9 @@ class InputBox(UIElement):
     def deactivate(self):
         self.cursor.is_visible = False
 
+    def animation_children(self):
+        return (self.cursor,)
+
     def get_str(self):
         return self.str
 
@@ -124,7 +127,7 @@ class InputBox(UIElement):
                 display.draw_text8x8(self.x + 1, self.y + 1, visible, gs=self.gs)
         self.cursor.draw(display)
 
-    def update(self, kb):
+    def update(self, kb, event=None):
         # DEL long-press repeat (backspace behavior)
         if kb.is_pressed(4, 3):
             hold = kb.get_hold_time(4, 3)
@@ -138,7 +141,6 @@ class InputBox(UIElement):
         else:
             self._delete_repeat = False
 
-        event = kb.pop_key_event()
         if event is None:
             return None
 

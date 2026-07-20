@@ -45,6 +45,9 @@ class Menu(UIElement):
         self.cursor.target_x = self.x + 2
         self.cursor.target_y = target_y
 
+    def animation_children(self):
+        return (self.cursor,)
+
     def move_cursor_up(self):
         if self.cursor_pos > 0:
             self.cursor_pos -= 1
@@ -104,8 +107,7 @@ class Menu(UIElement):
                 else:
                     display.draw_text8x8(self.x + 4, draw_y, label, gs=self.gs)
 
-    def update(self, kb):
-        event = kb.pop_key_event()
+    def update(self, kb, event=None):
         if event is None:
             return None
 

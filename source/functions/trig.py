@@ -1,56 +1,42 @@
-# SCI-CALC: Trigonometry function extensions
-# The core trig functions (sin, cos, tan) are built-in.
-# This file demonstrates how to add custom functions.
-
+"""Hyperbolic and explicit-degree trigonometry plugin."""
 import math
 
-
-def flist():
-    """Return custom trig function definitions."""
-    return [
-        # Hyperbolic functions
-        ("sinh", 4, "prefix", 0, None, sinh_func),
-        ("cosh", 4, "prefix", 0, None, cosh_func),
-        ("tanh", 4, "prefix", 0, None, tanh_func),
-
-        # Degrees-based trig (always in degrees regardless of mode)
-        ("sind", 4, "prefix", 0, None, sind_func),
-        ("cosd", 4, "prefix", 0, None, cosd_func),
-        ("tand", 4, "prefix", 0, None, tand_func),
-
-        # Constants via zero-arg list functions
-        ("PI", 5, "list", 0, None, pi_func),
-    ]
+WELCOME = "Hyperbolic and degree trig functions loaded."
 
 
-def welcome():
-    print("Trig extensions loaded.")
-    return "Trig extensions (sinh, cosh, tanh, sind, cosd, tand) loaded."
+def _sinh(value, context):
+    return math.sinh(value)
 
 
-def sinh_func(a, vars_dict):
-    return math.sinh(a), vars_dict
+def _cosh(value, context):
+    return math.cosh(value)
 
 
-def cosh_func(a, vars_dict):
-    return math.cosh(a), vars_dict
+def _tanh(value, context):
+    return math.tanh(value)
 
 
-def tanh_func(a, vars_dict):
-    return math.tanh(a), vars_dict
+def _sind(value, context):
+    return math.sin(value * math.pi / 180.0)
 
 
-def sind_func(a, vars_dict):
-    return math.sin(math.radians(a)), vars_dict
+def _cosd(value, context):
+    return math.cos(value * math.pi / 180.0)
 
 
-def cosd_func(a, vars_dict):
-    return math.cos(math.radians(a)), vars_dict
+def _tand(value, context):
+    return math.tan(value * math.pi / 180.0)
 
 
-def tand_func(a, vars_dict):
-    return math.tan(math.radians(a)), vars_dict
+def _pi(args, context):
+    return math.pi
 
 
-def pi_func(args, vars_dict):
-    return math.pi, vars_dict
+def register(registry):
+    registry.prefix("sinh", _sinh)
+    registry.prefix("cosh", _cosh)
+    registry.prefix("tanh", _tanh)
+    registry.prefix("sind", _sind)
+    registry.prefix("cosd", _cosd)
+    registry.prefix("tand", _tand)
+    registry.list_function("PI", _pi)
