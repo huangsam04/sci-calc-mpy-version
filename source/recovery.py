@@ -5,7 +5,7 @@ from machine import Pin, SPI
 def show_recovery(error):
     from display.ssd1322 import Display
 
-    spi = SPI(2, baudrate=16_000_000, polarity=0, phase=0, bits=8,
+    spi = SPI(2, baudrate=10_000_000, polarity=0, phase=0, bits=8,
               sck=Pin(18), mosi=Pin(23))
     display = Display(spi, Pin(5, Pin.OUT), Pin(16, Pin.OUT), Pin(17, Pin.OUT))
     display.clear_buffers(0)

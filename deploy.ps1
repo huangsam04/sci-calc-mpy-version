@@ -17,10 +17,17 @@ if (-not (Test-Path -LiteralPath $Python)) {
 
 function Invoke-MpRemote {
     param([Parameter(ValueFromRemainingArguments = $true)][string[]]$Arguments)
-    & $Python -m mpremote connect $Port @Arguments
-    if ($LASTEXITCODE -ne 0) {
-        throw "mpremote failed: $($Arguments -join ' ')"
+    for ($Attempt = 1; $Attempt -le 3; $Attempt++) {
+        & $Python -m mpremote connect $Port @Arguments
+        if ($LASTEXITCODE -eq 0) {
+            return
+        }
+        if ($Attempt -lt 3) {
+            Write-Warning "mpremote attempt $Attempt failed; reconnecting..."
+            Start-Sleep -Milliseconds 500
+        }
     }
+    throw "mpremote failed after 3 attempts: $($Arguments -join ' ')"
 }
 
 function Wait-SdMount {
@@ -40,6 +47,7 @@ function Wait-SdMount {
 Write-Host "Installing internal launch and recovery files on $Port..."
 Invoke-MpRemote exec "import os`ntry: os.mkdir('/display')`nexcept OSError: pass"
 Invoke-MpRemote fs cp (Join-Path $Source "boot.py") :/boot.py
+Invoke-MpRemote fs cp (Join-Path $Source "sdcard.py") :/sdcard.py
 Invoke-MpRemote fs cp (Join-Path $Source "internal_main.py") :/main.py
 Invoke-MpRemote fs cp (Join-Path $Source "recovery.py") :/recovery.py
 Invoke-MpRemote fs cp (Join-Path $Source "display\ssd1322.py") :/display/ssd1322.py
@@ -59,7 +67,7 @@ $CreateDirectories = "import os`n" + (($Directories | ForEach-Object {
 Invoke-MpRemote exec $CreateDirectories
 
 Write-Host "Uploading SD application..."
-$Excluded = @("boot.py", "internal_main.py", "recovery.py")
+$Excluded = @("boot.py", "internal_main.py", "recovery.py", "sdcard.py")
 Get-ChildItem -LiteralPath $Source -Recurse -File | ForEach-Object {
     $Relative = $_.FullName.Substring($Source.Length + 1).Replace("\", "/")
     $AllowedExtension = $_.Extension -in @(".py", ".json", ".c")

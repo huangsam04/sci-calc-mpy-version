@@ -3,8 +3,9 @@
 SCI-CALC 的 MicroPython 固件，目标硬件为 ESP32-WROOM-32E、SSD1322
 256×64 灰阶 OLED、5×6 矩阵键盘和 FAT32 SD 卡。
 
-当前应用版本为 **1.1.0**，解释器基线是本仓库 `micropython/` 中的
-**MicroPython 1.29.0-preview**。项目不修改 MicroPython 核心。
+当前应用版本为 **1.1.0**。源码编译基线是本仓库 `micropython/` 中的
+**MicroPython 1.29.0-preview**，并已在设备的 **MicroPython 1.28.0
+(2026-04-06)** 上完成冷启动验证。项目不修改 MicroPython 核心。
 
 ## 目录与启动方式
 
@@ -13,6 +14,7 @@ SCI-CALC 的 MicroPython 固件，目标硬件为 ESP32-WROOM-32E、SSD1322
 ```text
 内部 Flash
 ├── boot.py             # 挂载 SD，随后立即退出
+├── sdcard.py           # 官方 Python SPI SD 驱动
 ├── main.py             # execfile('/sd/main.py')
 ├── recovery.py         # SD/应用损坏时的恢复界面
 └── display/            # 恢复界面所需的最小显示驱动
@@ -69,7 +71,7 @@ make BOARD=ESP32_GENERIC
 脚本会：
 
 1. 安装内部启动和恢复文件；
-2. 执行一次必要的硬复位，释放旧应用占用的 SPI1；
+2. 执行一次必要的硬复位，释放旧应用占用的 SPI 状态；
 3. 等待新 `/boot.py` 挂载 SD 卡并创建目录；
 4. 上传完整应用到 `/sd`；
 5. 对关键入口执行 SHA-256 校验；
@@ -77,6 +79,10 @@ make BOARD=ESP32_GENERIC
 
 脚本可重复执行。中途硬复位用于切换启动器，不能省略；它可避免旧固件的 SPI
 对象导致 `ESP_ERR_INVALID_STATE`。部署不会自动擦除 SD 上不属于当前源码的文件。
+
+SD 卡和 OLED 共用 GPIO18/23 上的 SPI2，通过 CS4/CS5 分隔事务。内部
+`sdcard.py` 使用官方 Python block-device 驱动；不要替换成独占 SPI host 的
+`machine.SDCard(slot=2)`。
 
 ## 操作说明
 

@@ -17,6 +17,10 @@ except Exception as error:
         for module_name in ("recovery", "display.ssd1322", "display.mono_palette", "display"):
             if module_name in sys.modules:
                 del sys.modules[module_name]
+        try:
+            sys.print_exception(error)
+        except Exception:
+            pass
         from recovery import show_recovery
         show_recovery(error)
     except Exception as recovery_error:

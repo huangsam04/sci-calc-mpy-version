@@ -1,0 +1,1 @@
+"""SCI-CALC plugin package."""

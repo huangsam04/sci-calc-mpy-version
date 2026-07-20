@@ -22,7 +22,7 @@ BAT_PIN = 36
 def _init_display():
     """Initialize SSD1322 display — called FIRST for fast splash."""
     spi = SPI(2,
-              baudrate=16_000_000,
+              baudrate=10_000_000,
               polarity=0, phase=0, bits=8,
               sck=Pin(SPI_CLK), mosi=Pin(SPI_DATA))
     cs = Pin(SPI_CS, Pin.OUT)

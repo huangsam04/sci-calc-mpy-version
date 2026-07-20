@@ -28,6 +28,11 @@ def _token(type_, value, pos):
     return (type_, value, pos)
 
 
+def _is_name_char(char):
+    code = ord(char)
+    return char == "_" or 48 <= code <= 57 or 65 <= code <= 90 or 97 <= code <= 122
+
+
 def tokenize(expr, registry):
     tokens = []
     symbols = registry.symbolic_names()
@@ -66,7 +71,7 @@ def tokenize(expr, registry):
         if char.isalpha() or char == "_":
             start = i
             i += 1
-            while i < length and (expr[i].isalnum() or expr[i] == "_"):
+            while i < length and _is_name_char(expr[i]):
                 i += 1
             tokens.append(_token(T_NAME, expr[start:i], start))
             continue

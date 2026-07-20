@@ -14,6 +14,16 @@ KIND_LIST = "list"
 _KINDS = (KIND_INFIX, KIND_PREFIX, KIND_POSTFIX, KIND_LIST)
 
 
+def _is_alpha(char):
+    code = ord(char)
+    return 65 <= code <= 90 or 97 <= code <= 122
+
+
+def _is_alnum(char):
+    code = ord(char)
+    return 48 <= code <= 57 or 65 <= code <= 90 or 97 <= code <= 122
+
+
 class EvalContext:
     """Mutable state shared by one or more evaluations."""
 
@@ -61,11 +71,11 @@ class FunctionRegistry:
             raise ValueError("Function name must be a non-empty string")
         if name in ("(", ")", ",", ";", "'", '"') or any(c.isspace() for c in name):
             raise ValueError("Reserved or whitespace function name: " + name)
-        identifier = name[0].isalpha() or name[0] == "_"
+        identifier = _is_alpha(name[0]) or name[0] == "_"
         if identifier:
-            if not all(c.isalnum() or c == "_" for c in name):
+            if not all(_is_alnum(c) or c == "_" for c in name):
                 raise ValueError("Invalid identifier function name: " + name)
-        elif any(c.isalnum() or c == "_" for c in name):
+        elif any(_is_alnum(c) or c == "_" for c in name):
             raise ValueError("Symbol operators cannot mix letters or digits: " + name)
         if kind not in _KINDS:
             raise ValueError("Invalid function kind: " + str(kind))
@@ -132,7 +142,7 @@ class FunctionRegistry:
     def symbolic_names(self):
         names = []
         for name in self._defs:
-            if not (name[0].isalpha() or name[0] == "_"):
+            if not (_is_alpha(name[0]) or name[0] == "_"):
                 names.append(name)
         names.sort(key=len, reverse=True)
         return names
