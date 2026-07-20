@@ -9,6 +9,7 @@ from framebuf import FrameBuffer, GS4_HMSB  # type: ignore
 # --- Minimal imports for splash screen ---
 from display.ssd1322 import Display as SSD1322
 from display.xglcd_font import XglcdFont
+from ui.theme import CONTENT_W
 
 # SPI pins for display
 SPI_CLK = 18
@@ -17,7 +18,7 @@ SPI_CS = 5
 SPI_DC = 16
 SPI_RESET = 17
 BAT_PIN = 36
-TRANSITION_MS = 220
+TRANSITION_MS = 260
 
 
 def _init_display():
@@ -217,12 +218,15 @@ class Nav:
         self.stack = []
         self._transition = None
         self._input_locked = False
-        # Pre-allocate transition snapshot buffers (256×64/2 = 8192 bytes each)
-        blen = display.buffer_length
+        # Store only the 210px application area. The sidebar is redrawn once
+        # after compositing and therefore never travels with either page.
+        blen = ((CONTENT_W + 1) // 2) * display.height
         self._buf_a = bytearray(blen)
         self._buf_b = bytearray(blen)
-        self._fb_a = FrameBuffer(self._buf_a, display.width, display.height, GS4_HMSB)
-        self._fb_b = FrameBuffer(self._buf_b, display.width, display.height, GS4_HMSB)
+        self._fb_a = FrameBuffer(self._buf_a, CONTENT_W, display.height, GS4_HMSB)
+        self._fb_b = FrameBuffer(self._buf_b, CONTENT_W, display.height, GS4_HMSB)
+        from anim.engine import easing_out_quint
+        self._transition_easing = easing_out_quint
 
     def boot(self, screen):
         """Set root screen (no transition)."""
@@ -251,11 +255,13 @@ class Nav:
         cancel_animations(old)
         self.display.clear_buffers(0)
         old.draw(self.display)
-        self._buf_a[:] = self.display.gs4_buf
+        self._fb_a.fill(0)
+        self._fb_a.blit(self.display.gs4_fb, 0, 0)
         new.activate()
         self.display.clear_buffers(0)
         new.draw(self.display)
-        self._buf_b[:] = self.display.gs4_buf
+        self._fb_b.fill(0)
+        self._fb_b.blit(self.display.gs4_fb, 0, 0)
         self._transition = (time.ticks_ms(), forward)
         self._input_locked = True
 
@@ -277,11 +283,8 @@ class Nav:
         started, forward = self._transition
         elapsed = max(0, time.ticks_diff(now, started))
         t = min(1.0, elapsed / TRANSITION_MS)
-        if t < 0.5:
-            eased = 4.0 * t * t * t
-        else:
-            eased = 1.0 - pow(-2.0 * t + 2.0, 3) / 2.0
-        width = self.display.width
+        eased = self._transition_easing(t)
+        width = CONTENT_W
         if forward:
             new_x, old_x = width - int(width * eased), -int(width * eased)
         else:

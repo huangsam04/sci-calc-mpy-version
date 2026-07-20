@@ -27,6 +27,11 @@ def easing_smooth(t):
         return 4 * t * t * t
     return 1 - ((-2 * t + 2) ** 3) / 2
 
+
+def easing_out_quint(t):
+    """Responsive movement with a long, gentle settle near the target."""
+    return 1 - (1 - t) ** 5
+
 def easing_bounce(t):
     """Exponential decay sine: overshoot and bounce."""
     return pow(2, -10 * t) * math.sin((t * 10 - 0.75) * (2 * 3.14159265 / 3)) + 1
@@ -36,6 +41,7 @@ EASING_MAP = {
     "INDENT": easing_indent,
     "INDENTINV": easing_indent_inv,
     "SMOOTH": easing_smooth,
+    "OUT_QUINT": easing_out_quint,
     "BOUNCE": easing_bounce,
 }
 

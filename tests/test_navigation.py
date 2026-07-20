@@ -1,6 +1,7 @@
 import main
 from anim import engine
 from ui.element import UIElement
+from ui.theme import CONTENT_W
 
 
 class DisplayStub:
@@ -10,7 +11,11 @@ class DisplayStub:
 
     def __init__(self):
         self.gs4_buf = bytearray(self.buffer_length)
-        self.gs4_fb = type("FB", (), {"blit": lambda *args: None})()
+        self.blits = []
+        self.gs4_fb = type(
+            "FB", (),
+            {"blit": lambda _, source, x, y: self.blits.append(
+                (source, x, y))})()
         self.present_count = 0
 
     def clear_buffers(self, color=0):
@@ -73,6 +78,26 @@ def test_navigation_transition_is_non_blocking_and_locks_trigger_key(monkeypatch
     assert nav.filter_event(KeyboardStub(), (1, 1, False)) == (1, 1, False)
 
 
+def test_transition_moves_only_content_and_eases_out_early(monkeypatch):
+    """The sidebar stays fixed while content quickly enters then settles."""
+    monkeypatch.setattr(main.time, "ticks_ms", lambda: 100)
+    registry = type("Registry", (), {"angle_mode": 0})()
+    display = DisplayStub()
+    nav = main.Nav(display, None, registry)
+    nav.boot(ScreenStub())
+    nav.go_to(ScreenStub())
+
+    display.blits[:] = []
+    nav.draw_transition(100 + main.TRANSITION_MS // 4)
+
+    assert len(display.blits) == 2
+    assert all(source.width == CONTENT_W
+               for source, _, _ in display.blits)
+    incoming = next(x for source, x, _ in display.blits
+                    if source is nav._fb_b)
+    assert incoming < CONTENT_W // 2
+
+
 def test_page_animation_cancel_does_not_cancel_another_page():
     first = UIElement()
     child = UIElement()
@@ -96,6 +121,15 @@ def test_animation_easing_has_exact_smooth_endpoints():
     assert engine.easing_smooth(1.0) == 1.0
     samples = [engine.easing_smooth(i / 10) for i in range(11)]
     assert samples == sorted(samples)
+
+
+def test_quint_ease_out_moves_early_then_settles_smoothly():
+    samples = [engine.easing_out_quint(i / 4) for i in range(5)]
+    assert samples[0] == 0.0
+    assert samples[-1] == 1.0
+    assert samples[1] > 0.7
+    deltas = [samples[i + 1] - samples[i] for i in range(4)]
+    assert deltas == sorted(deltas, reverse=True)
 
 
 def test_delayed_animation_stays_registered_until_start(monkeypatch):

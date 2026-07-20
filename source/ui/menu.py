@@ -71,7 +71,7 @@ class Menu(UIElement):
         self.cursor.change_target(
             self.x + 2,
             self.y + 2 + (self.cursor_pos - self.view_offset) * self.row_height,
-            200
+            140
         )
 
     def draw(self, display):

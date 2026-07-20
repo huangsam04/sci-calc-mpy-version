@@ -13,12 +13,12 @@ class Cursor(UIElement):
     def set_visible(self, v):
         self.is_visible = v
 
-    def change_target(self, new_x, new_y, duration=250, delay=0):
+    def change_target(self, new_x, new_y, duration=140, delay=0):
         """Animate cursor to a new position."""
         self.target_x = new_x
         self.target_y = new_y
-        insert_animation(self, 'x', self.x, new_x, duration, "INDENT", delay)
-        insert_animation(self, 'y', self.y, new_y, duration, "INDENT", delay)
+        insert_animation(self, 'x', self.x, new_x, duration, "OUT_QUINT", delay)
+        insert_animation(self, 'y', self.y, new_y, duration, "OUT_QUINT", delay)
 
     def draw(self, display):
         if not self.is_visible:
