@@ -23,6 +23,20 @@ function Invoke-MpRemote {
     }
 }
 
+function Wait-SdMount {
+    $LastProbeOutput = ""
+    for ($Attempt = 1; $Attempt -le 5; $Attempt++) {
+        $LastProbeOutput = (& $Python -m mpremote connect $Port exec `
+            "import os`nos.listdir('/sd')`nprint('SD_READY')" 2>&1 | Out-String)
+        if ($LASTEXITCODE -eq 0 -and $LastProbeOutput -match "SD_READY") {
+            Write-Host "SD card mounted."
+            return
+        }
+        Start-Sleep -Milliseconds 500
+    }
+    throw "SD card was not mounted by /boot.py after reset. Check that the FAT32 card is inserted and review the serial boot log. Last probe: $LastProbeOutput"
+}
+
 Write-Host "Installing internal launch and recovery files on $Port..."
 Invoke-MpRemote exec "import os`ntry: os.mkdir('/display')`nexcept OSError: pass"
 Invoke-MpRemote fs cp (Join-Path $Source "boot.py") :/boot.py
@@ -31,15 +45,12 @@ Invoke-MpRemote fs cp (Join-Path $Source "recovery.py") :/recovery.py
 Invoke-MpRemote fs cp (Join-Path $Source "display\ssd1322.py") :/display/ssd1322.py
 Invoke-MpRemote fs cp (Join-Path $Source "display\mono_palette.py") :/display/mono_palette.py
 
-$MountSd = @"
-import os, vfs
-from machine import SDCard
-try:
-    os.stat('/sd')
-except OSError:
-    vfs.mount(SDCard(slot=2, width=1, sck=18, mosi=23, miso=19, cs=4, freq=10000000), '/sd')
-"@
-Invoke-MpRemote exec $MountSd
+# The old application may still own SPI1.  A hardware reset releases it and
+# lets the newly-installed /boot.py become the sole owner of SD initialisation.
+Write-Host "Restarting into the new internal launcher..."
+Invoke-MpRemote reset
+Start-Sleep -Milliseconds 800
+Wait-SdMount
 
 $Directories = @("anim", "calc", "display", "fonts", "functions", "input", "screens", "ui", "utils")
 $CreateDirectories = "import os`n" + (($Directories | ForEach-Object {
