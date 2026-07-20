@@ -17,6 +17,7 @@ SPI_CS = 5
 SPI_DC = 16
 SPI_RESET = 17
 BAT_PIN = 36
+TRANSITION_MS = 220
 
 
 def _init_display():
@@ -47,11 +48,11 @@ def _boot_progress(display, step, total, label=""):
     if _boot_title_gs < 15:
         _boot_title_gs = min(15, _boot_title_gs + 3)
 
-    # Animate bar fill with ease-out (6 frames, ~96ms per step)
-    frames = 6 if target_w != _boot_fill_w else 1
+    # Animate each progress segment with an exact cubic ease-out.
+    frames = 8 if target_w != _boot_fill_w else 1
     for i in range(frames):
         t = (i + 1) / frames
-        eased = 1 - (1 - t) ** 2
+        eased = 1 - (1 - t) ** 3
         current_w = _boot_fill_w + int((target_w - _boot_fill_w) * eased)
 
         display.clear_buffers(0)
@@ -83,7 +84,7 @@ def _boot_progress(display, step, total, label=""):
 
         display.present()
         if frames > 1:
-            time.sleep_ms(16)
+            time.sleep_ms(12)
 
     _boot_fill_w = target_w
 
@@ -275,8 +276,11 @@ class Nav:
             return False
         started, forward = self._transition
         elapsed = max(0, time.ticks_diff(now, started))
-        t = min(1.0, elapsed / 180.0)
-        eased = 1.0 if t >= 1.0 else 1.0 - pow(2.0, -10.0 * t)
+        t = min(1.0, elapsed / TRANSITION_MS)
+        if t < 0.5:
+            eased = 4.0 * t * t * t
+        else:
+            eased = 1.0 - pow(-2.0 * t + 2.0, 3) / 2.0
         width = self.display.width
         if forward:
             new_x, old_x = width - int(width * eased), -int(width * eased)
@@ -297,7 +301,7 @@ def main():
     # Phase 1: Display FIRST — show splash immediately
     # ============================================================
     display = _init_display()
-    _boot_progress(display, 1, 8, "Display OK")
+    _boot_progress(display, 1, 8, "Loading keyboard...")
 
     # ============================================================
     # Phase 2: Lazy-load everything else while showing progress.
@@ -309,7 +313,7 @@ def main():
     try:
         from input.keyboard import Keyboard
         kb = Keyboard()
-        _boot_progress(display, 2, 8, "Keyboard OK")
+        _boot_progress(display, 2, 8, "Loading fonts...")
     except Exception as e:
         _boot_fail(display, 2, 8, "Keyboard", e)
         raise  # can't run without keyboard
@@ -324,14 +328,13 @@ def main():
         font_small = XglcdFont("/sd/fonts/Neato5x7.c", 5, 7)
     except Exception:
         font_small = None
-    if font_main is not None:
-        _boot_progress(display, 3, 8, "Fonts OK")
+    _boot_progress(display, 3, 8, "Loading settings...")
 
     # Settings (fallback: defaults)
     try:
         from utils.storage import load_settings
         settings = load_settings()
-        _boot_progress(display, 4, 8, "Settings OK")
+        _boot_progress(display, 4, 8, "Loading variables...")
     except Exception as e:
         _boot_fail(display, 4, 8, "Settings", e)
         settings = {"angle_mode": 0, "enabled_functions": ["basic", "trig", "math", "list"], "version": "1.1.0", "diagnostics": False}
@@ -339,7 +342,7 @@ def main():
     try:
         from utils.storage import load_vars
         vars_dict = load_vars()
-        _boot_progress(display, 5, 8, "Vars OK")
+        _boot_progress(display, 5, 8, "Loading functions...")
     except Exception as e:
         _boot_fail(display, 5, 8, "Vars", e)
         vars_dict = {}
@@ -348,7 +351,7 @@ def main():
     try:
         registry = _reload_functions(settings)
         registry.angle_mode = settings.get("angle_mode", 0)
-        _boot_progress(display, 6, 8, "Functions OK")
+        _boot_progress(display, 6, 8, "Loading screens...")
     except Exception as e:
         _boot_fail(display, 6, 8, "Functions", e)
         from calc.functions import build_registry
@@ -366,7 +369,7 @@ def main():
         from screens.function_picker import FunctionPicker
         from screens.variable_panel import VariablePanel
         from screens.plot import PlotScreen
-        _boot_progress(display, 7, 8, "Screens OK")
+        _boot_progress(display, 7, 8, "Building interface...")
     except Exception as e:
         _boot_fail(display, 7, 8, "Screens", e)
         # If imports failed, we can't continue — the error screen already showed
@@ -392,8 +395,8 @@ def main():
         _boot_fail(display, 7, 8, "Init", e)
         raise
 
-    _boot_progress(display, 8, 8, "Ready.")
-    time.sleep_ms(400)
+    _boot_progress(display, 8, 8, "Starting SCI-CALC...")
+    time.sleep_ms(180)
 
     # ============================================================
     # Phase 3: Main loop
@@ -407,7 +410,7 @@ def main():
     _frame = 0
     _last_render = time.ticks_add(time.ticks_ms(), -500)
     IDLE_FRAME_MS = 66
-    ACTIVE_FRAME_MS = 33
+    ACTIVE_FRAME_MS = 20
     diagnostics = bool(settings.get("diagnostics", False))
     _diag_last = time.ticks_ms()
     _diag_render_us = 0

@@ -15,12 +15,19 @@ def easing_linear(t):
     return t
 
 def easing_indent(t):
-    """Exponential ease-out: fast start, decelerate to target."""
-    return 1 - pow(2, -10 * t)
+    """Cubic ease-out with exact endpoints."""
+    return 1 - (1 - t) ** 3
 
 def easing_indent_inv(t):
-    """Exponential ease-in: slow start, accelerate."""
-    return pow(2, 10 * t - 10)
+    """Cubic ease-in with exact endpoints."""
+    return t ** 3
+
+
+def easing_smooth(t):
+    """Cubic ease-in-out for full-screen movement."""
+    if t < 0.5:
+        return 4 * t * t * t
+    return 1 - ((-2 * t + 2) ** 3) / 2
 
 def easing_bounce(t):
     """Exponential decay sine: overshoot and bounce."""
@@ -30,6 +37,7 @@ EASING_MAP = {
     "LINEAR": easing_linear,
     "INDENT": easing_indent,
     "INDENTINV": easing_indent_inv,
+    "SMOOTH": easing_smooth,
     "BOUNCE": easing_bounce,
 }
 

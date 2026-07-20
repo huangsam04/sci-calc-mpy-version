@@ -54,7 +54,7 @@ class KeyboardStub:
 
 
 def test_navigation_transition_is_non_blocking_and_locks_trigger_key(monkeypatch):
-    times = iter((100, 300))
+    times = iter((100, 400))
     monkeypatch.setattr(main.time, "ticks_ms", lambda: next(times))
     registry = type("Registry", (), {"angle_mode": 0})()
     nav = main.Nav(DisplayStub(), None, registry)
@@ -67,7 +67,7 @@ def test_navigation_transition_is_non_blocking_and_locks_trigger_key(monkeypatch
     assert nav.current is second
     assert nav.is_transitioning() is True
     assert nav.filter_event(KeyboardStub(), (1, 1, False)) is None
-    nav.draw_transition(300)
+    nav.draw_transition(400)
     assert nav.is_transitioning() is False
     assert nav.filter_event(KeyboardStub(pressed=True), (1, 1, False)) is None
     assert nav.filter_event(KeyboardStub(), (1, 1, False)) == (1, 1, False)
@@ -86,3 +86,13 @@ def test_page_animation_cancel_does_not_cancel_another_page():
     assert engine.is_animating(child) is False
     assert engine.is_animating(second) is True
     engine.cancel_all_animations()
+
+
+def test_animation_easing_has_exact_smooth_endpoints():
+    assert engine.easing_indent(0.0) == 0.0
+    assert engine.easing_indent(1.0) == 1.0
+    assert engine.easing_smooth(0.0) == 0.0
+    assert engine.easing_smooth(0.5) == 0.5
+    assert engine.easing_smooth(1.0) == 1.0
+    samples = [engine.easing_smooth(i / 10) for i in range(11)]
+    assert samples == sorted(samples)
