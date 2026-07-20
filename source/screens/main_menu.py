@@ -33,5 +33,5 @@ class MainMenu(UIElement):
             target = self.menu.get_selected()
             if target:
                 return target
-        # ponytail: ESC no-op on main menu per spec
+        # ESC is intentionally a no-op at the navigation root.
         return None

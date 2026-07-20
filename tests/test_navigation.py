@@ -96,3 +96,21 @@ def test_animation_easing_has_exact_smooth_endpoints():
     assert engine.easing_smooth(1.0) == 1.0
     samples = [engine.easing_smooth(i / 10) for i in range(11)]
     assert samples == sorted(samples)
+
+
+def test_delayed_animation_stays_registered_until_start(monkeypatch):
+    now = [100]
+    monkeypatch.setattr(engine.time, "ticks_ms", lambda: now[0])
+    monkeypatch.setattr(engine.time, "ticks_diff", lambda a, b: a - b)
+    target = UIElement()
+    animation = engine.insert_animation(target, "x", 0, 10, 100, delay=50)
+
+    now[0] = 120
+    engine.animate_all()
+    assert engine.is_animating(target) is True
+    assert animation.started is False
+
+    now[0] = 150
+    engine.animate_all()
+    assert animation.started is True
+    engine.cancel_all_animations()

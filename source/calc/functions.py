@@ -52,6 +52,10 @@ class EvalContext:
         self.dirty = False
         return value
 
+    def mark_dirty(self):
+        """Request another persistence attempt without changing variables."""
+        self.dirty = True
+
 
 _MISSING = object()
 

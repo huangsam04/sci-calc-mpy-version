@@ -11,7 +11,7 @@ class FunctionPanel(UIElement):
         self.font = font
         self.menu = Menu(0, 13, 210, 4, 10, font)
         self._items = []       # list of (name, is_on, is_group)
-        self._toggled = {}     # ponytail: session overrides so _refresh doesn't undo toggles
+        self._toggled = {}     # Unsaved choices retained while rebuilding labels.
         self._dirty = False
         self._save_error = ""
 
@@ -81,7 +81,7 @@ class FunctionPanel(UIElement):
             self._dirty = False
             self._save_error = ""
             return True
-        self._save_error = "Save failed"
+        self._save_error = "Not saved - check SD"
         return False
 
     def draw(self, display):

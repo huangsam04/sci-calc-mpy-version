@@ -1,4 +1,3 @@
-# ponytail: simple base class, subclasses add the specifics
 """UIElement base class for all UI components."""
 
 

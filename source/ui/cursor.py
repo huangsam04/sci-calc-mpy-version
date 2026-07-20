@@ -1,4 +1,3 @@
-# ponytail: blinking cursor, two modes (box/line), with animation
 """Cursor widget for input boxes and menu selection."""
 from ui.element import UIElement
 from anim.engine import insert_animation

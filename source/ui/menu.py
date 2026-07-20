@@ -1,4 +1,3 @@
-# ponytail: scrollable list with box cursor, matching original firmware design
 """Menu widget: scrollable list with animation transitions."""
 from ui.element import UIElement
 from ui.cursor import Cursor
@@ -20,7 +19,7 @@ class Menu(UIElement):
         self.gs = 15
 
     def add_item(self, label, target):
-        # ponytail: pre-truncate once, not every draw frame
+        # Labels are static, so truncate once instead of every frame.
         if self.font:
             max_w = self.width - 10
             if self.font.measure_text(label) > max_w:

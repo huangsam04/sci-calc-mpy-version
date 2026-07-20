@@ -1,4 +1,3 @@
-# ponytail: direct GPIO scan, matches original firmware's keyboard behavior
 """Keyboard matrix scanner for 5x6 key matrix.
 
 Row pins (INPUT):  33, 32, 35, 34, 39

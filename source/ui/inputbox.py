@@ -1,4 +1,3 @@
-# ponytail: single-line text input with cursor and scrolling
 """InputBox widget for expression entry."""
 import time
 from ui.element import UIElement
@@ -19,7 +18,7 @@ class InputBox(UIElement):
         self._last_delete = 0
         self._delete_repeat = False
         self.gs = 15
-        # ponytail: built-in 8x8 font is monospace 8px, no spacing
+        # Built-in 8x8 font is monospace with no extra spacing.
         if font:
             self.char_pitch = font.width + 1  # max width + spacing for monospace fallback
             self.visible_chars = max(1, width // self.char_pitch)
@@ -96,14 +95,14 @@ class InputBox(UIElement):
             self.view_offset = self.cursor_pos
         if self.cursor_pos > self.view_offset + self.visible_chars - 2:
             self.view_offset = self.cursor_pos - self.visible_chars + 2
-        # ponytail: don't scroll past end of text
+        # Do not scroll past the end of the text.
         max_offset = max(0, len(self.str) - self.visible_chars + 1)
         if self.view_offset > max_offset:
             self.view_offset = max_offset
         self.view_offset = max(0, self.view_offset)
 
     def _update_cursor_target(self):
-        # ponytail: measure actual pixel offset of text before cursor
+        # Proportional fonts require the measured prefix width.
         visible_before = self.str[self.view_offset:self.cursor_pos]
         if self.font and visible_before:
             char_x = self.font.measure_text(visible_before, spacing=1)

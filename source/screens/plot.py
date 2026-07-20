@@ -1,5 +1,4 @@
 """Plot screen — full-screen graph with slide-in expression editor."""
-import time
 from framebuf import FrameBuffer, MONO_HMSB  # type: ignore
 from ui.element import UIElement
 from ui.inputbox import InputBox
@@ -8,6 +7,7 @@ from calc.functions import EvalContext
 from anim.engine import insert_animation
 from input.keyboard import get_key_label
 from ui.theme import draw_footer
+from ui.error_popup import ErrorPopup
 
 
 # Layout constants
@@ -28,10 +28,8 @@ class PlotScreen(UIElement):
         self.x_max = 10.0
         self._y_min = -5.0
         self._y_max = 5.0
-        self._err_expr = ""
-        self._err_msg = ""
-        self._err_pos = 0
-        self._err_time = 0
+        self.error_popup = ErrorPopup(font, self.small_font)
+        self._edit_original = ""
 
         # Pre-allocated curve buffer — rendered once, blitted each frame
         self._curve_fb = None   # (FrameBuffer, w, h) or None if not plotted
@@ -62,7 +60,7 @@ class PlotScreen(UIElement):
         self._y_min = mid - half
         self._y_max = mid + half
         if self.expr:
-            self._render_curve()
+            self._render_curve(auto_scale=False)
 
     def _zoom_x(self, factor):
         mid = (self.x_min + self.x_max) / 2.0
@@ -82,6 +80,7 @@ class PlotScreen(UIElement):
     # ── mode switching ──────────────────────────────────────────
 
     def _enter_edit(self, prefill=""):
+        self._edit_original = self.expr
         if prefill:
             self.input_box.insert_str(prefill)
         self.mode = 1
@@ -90,11 +89,16 @@ class PlotScreen(UIElement):
 
     def _leave_edit(self, plot=True):
         self.mode = 0
-        self.expr = self.input_box.get_str().strip()
         insert_animation(self, '_overlay_y', self._overlay_y, -OVERLAY_H, 180, "INDENT")
         self.input_box.cursor.is_visible = False
-        if plot and self.expr:
-            self._render_curve()
+        if plot:
+            self.expr = self.input_box.get_str().strip()
+            if self.expr:
+                self._render_curve()
+            else:
+                self._curve_fb = None
+        else:
+            self.input_box.set_str(self._edit_original)
 
     # ── curve rendering (2-pass: find range → draw to buffer) ────
 
@@ -106,9 +110,8 @@ class PlotScreen(UIElement):
         except Exception as e:
             return 0.0, False, str(e)
 
-    def _render_curve(self):
-        """2-pass: find y range, then render curve to pre-allocated mono buffer."""
-        self._err_msg = ""
+    def _render_curve(self, auto_scale=True):
+        """Compile and render; optionally derive a fresh visible Y range."""
         if not self.expr.strip():
             self._curve_fb = None
             return
@@ -117,10 +120,7 @@ class PlotScreen(UIElement):
             self._program = compile_expression(self.expr, self.registry)
         except ParseError as error:
             self._curve_fb = None
-            self._err_expr = self.expr
-            self._err_msg = str(error)
-            self._err_pos = error.pos
-            self._err_time = time.ticks_ms()
+            self.error_popup.show(self.expr, error, error.pos)
             self.mode = 2
             return
 
@@ -152,26 +152,25 @@ class PlotScreen(UIElement):
             self._y_min = -1.0
             self._y_max = 1.0
             self._curve_fb = None
-            self._err_expr = self.expr
-            self._err_msg = first_err or "Cannot evaluate expression"
-            self._err_time = time.ticks_ms()
+            self.error_popup.show(self.expr, first_err or "Cannot evaluate expression")
             self.mode = 2
             return
 
-        # Clamp extreme range (asymptotes skew auto-scale)
-        y_range = y_max - y_min
-        MAX_RANGE = 200.0  # beyond this the 54px graph is unreadable
-        if y_range > MAX_RANGE:
-            mid = (y_min + y_max) / 2.0
-            y_min = mid - MAX_RANGE / 2.0
-            y_max = mid + MAX_RANGE / 2.0
-            y_range = MAX_RANGE
+        if auto_scale:
+            # Clamp extreme range so asymptotes do not flatten useful detail.
+            y_range = y_max - y_min
+            MAX_RANGE = 200.0
+            if y_range > MAX_RANGE:
+                mid = (y_min + y_max) / 2.0
+                y_min = mid - MAX_RANGE / 2.0
+                y_max = mid + MAX_RANGE / 2.0
+                y_range = MAX_RANGE
 
-        pad = max(y_range * 0.1, 0.5)
-        if y_range < 1e-10:
-            pad = 1.0
-        self._y_min = y_min - pad
-        self._y_max = y_max + pad
+            pad = max(y_range * 0.1, 0.5)
+            if y_range < 1e-10:
+                pad = 1.0
+            self._y_min = y_min - pad
+            self._y_max = y_max + pad
 
         # ── Allocate / reuse curve buffer ──
         buf_size = ((n + 7) // 8) * graph_h  # MONO_HMSB: 1 bit per pixel
@@ -270,51 +269,14 @@ class PlotScreen(UIElement):
             hint2 = "RPN x"
         draw_footer(display, hint, self.small_font, hint2)
 
-    # ── error popup ──────────────────────────────────────────────
-
-    def _draw_error(self, display):
-        display.fill_rectangle(0, 0, self.width, 64, 3)
-        display.fill_rectangle(5, 4, self.width - 10, 56, 0)
-        display.draw_rectangle(5, 4, self.width - 10, 56, 15)
-
-        expr = self._err_expr
-        if self.font and self.font.measure_text(expr) > 190:
-            while len(expr) > 0 and self.font.measure_text(expr + "~") > 190:
-                expr = expr[:-1]
-            expr += "~"
-        if self.font:
-            display.draw_text(10, 8, expr, self.font, gs=15)
-        else:
-            display.draw_text8x8(10, 8, expr, gs=15)
-
-        msg = self._err_msg
-        if len(msg) > 32:
-            mid = msg.rfind(' ', 0, 32)
-            if mid < 0:
-                mid = 30
-            line1, line2 = msg[:mid], msg[mid:].strip()
-            if self.small_font:
-                display.draw_text(10, 28, line1, self.small_font, gs=15)
-                display.draw_text(10, 37, line2, self.small_font, gs=15)
-            else:
-                display.draw_text8x8(10, 28, line1, gs=15)
-                display.draw_text8x8(10, 37, line2, gs=15)
-        else:
-            if self.small_font:
-                display.draw_text(10, 28, msg, self.small_font, gs=15)
-            else:
-                display.draw_text8x8(10, 28, msg, gs=15)
-
-        hint = "[Any key to dismiss]"
-        if self.small_font:
-            display.draw_text(10, 50, hint, self.small_font, gs=10)
-        else:
-            display.draw_text8x8(10, 50, hint, gs=10)
-
     def draw(self, display):
         if self.mode == 2:
-            self._draw_error(display)
-            return
+            if self.error_popup.expired():
+                self.mode = 0
+                self.error_popup.dismiss()
+            else:
+                self.error_popup.draw(display)
+                return
         self._draw_graph(display)
         self._draw_overlay(display)
         self._draw_hint(display)
@@ -323,10 +285,12 @@ class PlotScreen(UIElement):
 
     def update(self, kb, event=None):
         if self.mode == 2:
-            if time.ticks_diff(time.ticks_ms(), self._err_time) > 10000:
+            if self.error_popup.expired():
                 self.mode = 0
             elif event is not None:
                 self.mode = 0
+            if self.mode == 0:
+                self.error_popup.dismiss()
             return None
 
         if kb.consume_long_press(0, 0, 1000):

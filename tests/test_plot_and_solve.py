@@ -37,6 +37,46 @@ def test_expression_editor_animates_as_overlay_without_moving_graph(monkeypatch)
     assert not hasattr(plot, "_graph_top")
 
 
+def test_escape_cancels_plot_edit_without_changing_active_expression():
+    plot = PlotScreen(None, registry=build_registry())
+    plot.expr = "x"
+    plot.input_box.set_str("x")
+    plot._enter_edit()
+    plot.input_box.set_str("x^2")
+
+    plot._leave_edit(plot=False)
+
+    assert plot.expr == "x"
+    assert plot.input_box.get_str() == "x"
+
+
+def test_y_zoom_preserves_requested_manual_range():
+    plot = PlotScreen(None, registry=build_registry())
+    plot.expr = "x^2"
+    plot._render_curve()
+    old_range = plot._y_max - plot._y_min
+
+    plot._zoom_y(0.5)
+
+    assert plot._y_max - plot._y_min == pytest.approx(old_range * 0.5)
+
+
+def test_plot_error_timeout_is_processed_during_draw(monkeypatch):
+    plot = PlotScreen(None, registry=build_registry())
+    plot.mode = 2
+    plot.error_popup.active = True
+    monkeypatch.setattr(plot.error_popup, "expired", lambda: True)
+    calls = []
+    monkeypatch.setattr(plot, "_draw_graph", lambda display: calls.append("graph"))
+    monkeypatch.setattr(plot, "_draw_overlay", lambda display: None)
+    monkeypatch.setattr(plot, "_draw_hint", lambda display: None)
+
+    plot.draw(None)
+
+    assert plot.mode == 0
+    assert calls == ["graph"]
+
+
 def test_solver_plugin_uses_active_registry():
     registry = build_registry()
     plugin_dir = pathlib.Path(__file__).parents[1] / "source" / "functions"

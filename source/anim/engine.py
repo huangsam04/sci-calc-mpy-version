@@ -1,9 +1,7 @@
-# ponytail: global dict for animation registry, per-element queues if contention matters
 """Animation engine for smooth UI transitions.
 
-Dual-buffer position system: each UI element has current (x,y,w,h) and
-target (target_x, target_y, target_w, target_h). The engine interpolates
-current toward target using easing functions.
+Animations target one object attribute and are keyed by (object, attribute),
+so a newer animation replaces an older one without retaining stale targets.
 """
 import time
 import math
@@ -61,14 +59,14 @@ class Animation:
         elapsed = time.ticks_diff(now, self.created)
 
         if elapsed < self.delay:
-            return False  # not yet
+            return True  # still registered, waiting to start
 
         if not self.started:
             self.started = True
             self.start_time = now
 
         anim_elapsed = time.ticks_diff(now, self.start_time)
-        t = min(1.0, anim_elapsed / self.duration)
+        t = 1.0 if self.duration <= 0 else min(1.0, anim_elapsed / self.duration)
 
         eased = EASING_MAP[self.easing](t)
         val = self.start_val + (self.end_val - self.start_val) * eased
@@ -92,7 +90,7 @@ class Animation:
 
 # --- Global registry ---
 
-_animations = {}  # id(UIElement) -> list of Animation objects
+_animations = {}  # (id(target), attribute) -> Animation
 _tmp_targets = []  # elements kept alive for exit animations
 
 
@@ -102,7 +100,6 @@ def insert_animation(target, attr, start_val, end_val, duration, easing="INDENT"
     anim.attr = attr
     key = (id(target), attr)
 
-    # ponytail: direct delete instead of list comprehension
     if key in _animations:
         del _animations[key]
 
@@ -118,7 +115,6 @@ def insert_tmp_target(target):
 
 def animate_all():
     """Drive all active animations. Call once per frame."""
-    # ponytail: delete directly via keys() to avoid double iteration
     dead = [k for k, a in _animations.items() if not a.step()]
     for k in dead:
         del _animations[k]
@@ -129,7 +125,6 @@ def update_tmp():
     global _tmp_targets
     if not _tmp_targets:
         return
-    # ponytail: only scan when we have tmp targets
     surviving = []
     for t in _tmp_targets:
         tid = id(t)

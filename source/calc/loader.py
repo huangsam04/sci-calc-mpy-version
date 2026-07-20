@@ -4,6 +4,11 @@ import os
 from calc.functions import FunctionRegistry
 
 
+def _plugin_files(directory):
+    return [name for name in os.listdir(directory)
+            if name.endswith(".py") and not name.startswith("_")]
+
+
 class LoadReport:
     def __init__(self):
         self.loaded = []
@@ -29,7 +34,7 @@ def load_function_files(registry, enabled_files=None, func_dir="/sd/functions"):
     """Register enabled plugins, isolating each file until it succeeds."""
     report = LoadReport()
     try:
-        files = [name for name in os.listdir(func_dir) if name.endswith(".py")]
+        files = _plugin_files(func_dir)
     except OSError:
         return report
 
@@ -56,7 +61,7 @@ def load_function_files(registry, enabled_files=None, func_dir="/sd/functions"):
 
 def list_function_files(func_dir="/sd/functions"):
     try:
-        files = [name for name in os.listdir(func_dir) if name.endswith(".py")]
+        files = _plugin_files(func_dir)
         return [(name[:-3], name) for name in sorted(files)]
     except OSError:
         return []

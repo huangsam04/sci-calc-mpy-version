@@ -837,7 +837,7 @@ class Display(object):
         Returns:
             boolean: False = Coordinates OK, True = Error.
         """
-        # ponytail: dropped debug prints - UART I/O kills frame rate
+        # Avoid UART logging here; this path runs for every presented frame.
         if xmin < 0 or ymin < 0 or xmax >= self.width or ymax >= self.height:
             return True
         return False

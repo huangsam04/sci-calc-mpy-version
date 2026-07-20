@@ -6,8 +6,9 @@ from calc.functions import EvalContext
 from calc.parser import evaluate, ParseError
 from input.keyboard import get_key_label
 from ui.theme import draw_footer
+from ui.error_popup import ErrorPopup
 
-HIST_ROW_H = 10    # ponytail: compact rows, 4 visible (0-3)
+HIST_ROW_H = 10    # Four history rows fit above the footer.
 HIST_VISIBLE = 4
 
 
@@ -27,11 +28,7 @@ class CalculatorScreen(UIElement):
         self.context = EvalContext(variables if variables is not None else {}, registry)
         self.storage_error = ""
         self._storage_error_time = 0
-        # Error popup
-        self._err_expr = ""
-        self._err_pos = 0
-        self._err_msg = ""
-        self._err_time = 0
+        self.error_popup = ErrorPopup(font, self.small_font)
 
     def activate(self):
         self.input_box.activate()
@@ -51,16 +48,10 @@ class CalculatorScreen(UIElement):
                 self.history.pop()
             self.input_box.clear_str()
         except ParseError as e:
-            self._err_expr = e.expr if e.expr else expr
-            self._err_pos = e.pos
-            self._err_msg = str(e)
-            self._err_time = time.ticks_ms()
+            self.error_popup.show(e.expr if e.expr else expr, e, e.pos)
             self.mode = 2
         except Exception as e:
-            self._err_expr = expr
-            self._err_pos = 0
-            self._err_msg = str(e)
-            self._err_time = time.ticks_ms()
+            self.error_popup.show(expr, e)
             self.mode = 2
 
     def _fmt(self, val):
@@ -84,60 +75,14 @@ class CalculatorScreen(UIElement):
         if self._view_offset < 0:
             self._view_offset = 0
 
-    def _draw_error_popup(self, display):
-        display.fill_rectangle(0, 0, 210, 64, 3)
-        display.fill_rectangle(5, 4, 200, 56, 0)
-        display.draw_rectangle(5, 4, 200, 56, 15)
-        expr = self._err_expr
-        max_w = 190
-        if self.font and self.font.measure_text(expr) > max_w:
-            while len(expr) > 0 and self.font.measure_text(expr + "~") > max_w:
-                expr = expr[:-1]
-            expr += "~"
-        if self.font:
-            display.draw_text(10, 8, expr, self.font, gs=15)
-        else:
-            display.draw_text8x8(10, 8, expr, gs=15)
-        if self._err_pos > 0 and self.font:
-            prefix = self._err_expr[:self._err_pos]
-            px = 10 + self.font.measure_text(prefix)
-            if px < 190:
-                display.draw_text(px, 18, "^", self.font, gs=15)
-        elif self._err_pos > 0:
-            px = 10 + self._err_pos * 8
-            if px < 190:
-                display.draw_text8x8(px, 18, "^", gs=15)
-        msg = self._err_msg
-        if len(msg) > 32:
-            mid = msg.rfind(' ', 0, 32)
-            if mid < 0:
-                mid = 30
-            line1 = msg[:mid]
-            line2 = msg[mid:].strip()
-            if self.small_font:
-                display.draw_text(10, 30, line1, self.small_font, gs=15)
-                display.draw_text(10, 39, line2, self.small_font, gs=15)
-            else:
-                display.draw_text8x8(10, 30, line1, gs=15)
-                display.draw_text8x8(10, 39, line2, gs=15)
-        else:
-            if self.small_font:
-                display.draw_text(10, 30, msg, self.small_font, gs=15)
-            else:
-                display.draw_text8x8(10, 30, msg, gs=15)
-        hint = "[Any key to dismiss]"
-        if self.small_font:
-            display.draw_text(10, 50, hint, self.small_font, gs=10)
-        else:
-            display.draw_text8x8(10, 50, hint, gs=10)
-
     def draw(self, display):
         if self.mode == 2:
-            if time.ticks_diff(time.ticks_ms(), self._err_time) > 10000:
+            if self.error_popup.expired():
                 self.mode = 0
-                self._err_msg = ""
-            self._draw_error_popup(display)
-            return
+                self.error_popup.dismiss()
+            else:
+                self.error_popup.draw(display)
+                return
 
         # --- Input box (y=0..11) ---
         self.input_box.y = 0
@@ -191,7 +136,7 @@ class CalculatorScreen(UIElement):
         if self.mode == 2:
             if event is not None:
                 self.mode = 0
-                self._err_msg = ""
+                self.error_popup.dismiss()
             return None
 
         # Long-hold ESC: go back

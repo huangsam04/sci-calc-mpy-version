@@ -53,7 +53,7 @@ Invoke-MpRemote fs cp (Join-Path $Source "recovery.py") :/recovery.py
 Invoke-MpRemote fs cp (Join-Path $Source "display\ssd1322.py") :/display/ssd1322.py
 Invoke-MpRemote fs cp (Join-Path $Source "display\mono_palette.py") :/display/mono_palette.py
 
-# The old application may still own SPI1.  A hardware reset releases it and
+# The old application may still own the shared SPI2 host.  A reset releases it and
 # lets the newly-installed /boot.py become the sole owner of SD initialisation.
 Write-Host "Restarting into the new internal launcher..."
 Invoke-MpRemote reset

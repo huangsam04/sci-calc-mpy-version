@@ -417,6 +417,7 @@ def main():
     _diag_present_us = 0
     _diag_frames = 0
     _dirty = True
+    _next_var_save = 0
 
     while True:
         try:
@@ -445,7 +446,7 @@ def main():
                     registry.angle_mode = 1 - registry.angle_mode
                     settings["angle_mode"] = registry.angle_mode
                     if not save_settings(settings):
-                        calc_screen.set_storage_error("Settings save failed")
+                        calc_screen.set_storage_error("Not saved - check SD")
                     event = None
             if (not nav.is_transitioning()
                     and (event is not None or kb.is_pressed(0, 0) or kb.is_pressed(4, 3))):
@@ -508,10 +509,17 @@ def main():
                 nav.go_to(result)
 
             # Persist vars
-            if calc_screen.context.consume_dirty():
+            if (calc_screen.context.dirty
+                    and time.ticks_diff(now, _next_var_save) >= 0
+                    and calc_screen.context.consume_dirty()):
                 if not save_vars(calc_screen.vars):
-                    calc_screen.set_storage_error("Variable save failed")
+                    calc_screen.context.mark_dirty()
+                    calc_screen.set_storage_error("Not saved - check SD")
+                    # Avoid hammering a missing or unhealthy SD card.
+                    _next_var_save = time.ticks_add(now, 2000)
                     _dirty = True
+                else:
+                    _next_var_save = now
 
             time.sleep_ms(10)
 

@@ -34,6 +34,8 @@ def test_assignment_is_right_associative_and_marks_context_dirty(registry):
     assert context.variables == {"x": 2.0, "y": 2.0}
     assert context.consume_dirty() is True
     assert context.consume_dirty() is False
+    context.mark_dirty()
+    assert context.consume_dirty() is True
 
 
 def test_plugin_registry_supports_symbolic_operators_and_validation(registry):

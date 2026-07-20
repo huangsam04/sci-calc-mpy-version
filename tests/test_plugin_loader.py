@@ -58,3 +58,12 @@ def test_registry_hot_reload_replaces_in_place():
 
     assert "old" not in live
     assert evaluate("new(2)", EvalContext({}, live)) == 3
+
+
+def test_package_initializers_are_not_listed_as_plugins(tmp_path):
+    from calc.loader import list_function_files
+
+    (tmp_path / "__init__.py").write_text("", encoding="utf-8")
+    (tmp_path / "visible.py").write_text("def register(registry): pass\n", encoding="utf-8")
+
+    assert list_function_files(str(tmp_path)) == [("visible", "visible.py")]

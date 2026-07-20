@@ -10,7 +10,7 @@ class AboutScreen(UIElement):
         self.version = version
 
     def draw(self, display):
-        # ponytail: 8px line spacing fits 7 lines on 64px display
+        # Eight-pixel spacing fits seven lines on the 64px display.
         # (2 + 6*8 + 9 = 59px)
         lines = [
             "SCI-CALC",
