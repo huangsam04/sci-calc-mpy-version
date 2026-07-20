@@ -38,7 +38,6 @@ class PlotScreen(UIElement):
         self._curve_buf = None  # bytearray backing the FrameBuffer
 
         self._overlay_y = -OVERLAY_H
-        self._graph_top = 0
         self.mode = 0
         self.registry = registry
         self._program = None
@@ -48,7 +47,6 @@ class PlotScreen(UIElement):
     def activate(self):
         self.mode = 0
         self._overlay_y = -OVERLAY_H
-        self._graph_top = 0
         self.input_box.activate()
         if not self.input_box.get_str() and self.expr:
             self.input_box.set_str(self.expr)
@@ -88,14 +86,12 @@ class PlotScreen(UIElement):
             self.input_box.insert_str(prefill)
         self.mode = 1
         insert_animation(self, '_overlay_y', self._overlay_y, 0, 180, "INDENT")
-        insert_animation(self, '_graph_top', self._graph_top, OVERLAY_H, 180, "INDENT")
         self.input_box.cursor.is_visible = True
 
     def _leave_edit(self, plot=True):
         self.mode = 0
         self.expr = self.input_box.get_str().strip()
         insert_animation(self, '_overlay_y', self._overlay_y, -OVERLAY_H, 180, "INDENT")
-        insert_animation(self, '_graph_top', self._graph_top, 0, 180, "INDENT")
         self.input_box.cursor.is_visible = False
         if plot and self.expr:
             self._render_curve()
@@ -216,11 +212,12 @@ class PlotScreen(UIElement):
         graph_w = self.width - GRAPH_PAD_X * 2
         graph_left = GRAPH_PAD_X
         graph_right = self.width - GRAPH_PAD_X
-        graph_h = self.height - HINT_H - self._graph_top
+        graph_top = 0
+        graph_h = self.height - HINT_H
         graph_bot = self.height - HINT_H
 
         # Border
-        display.draw_rectangle(graph_left - 1, self._graph_top,
+        display.draw_rectangle(graph_left - 1, graph_top,
                                graph_right - graph_left + 2, graph_h, 8)
 
         # Axes
@@ -231,14 +228,14 @@ class PlotScreen(UIElement):
         if y_range > 0 and self._y_min <= 0 <= self._y_max:
             ratio = (0 - self._y_min) / y_range
             y_zero = graph_bot - int(ratio * graph_h)
-            if self._graph_top <= y_zero <= graph_bot:
+            if graph_top <= y_zero <= graph_bot:
                 display.draw_hline(graph_left, y_zero, graph_w + 1, 6)
 
         if x_range > 0 and self.x_min <= 0 <= self.x_max:
             ratio = (0 - self.x_min) / x_range
             x_zero = graph_left + int(ratio * graph_w)
             if graph_left <= x_zero <= graph_right:
-                display.draw_vline(x_zero, self._graph_top, graph_h + 1, 6)
+                display.draw_vline(x_zero, graph_top, graph_h + 1, 6)
 
         # Origin crosshair
         if x_zero is not None and y_zero is not None:
@@ -251,7 +248,7 @@ class PlotScreen(UIElement):
         if self._curve_fb is not None and y_range > 0:
             display.palette.bg(0)
             display.palette.fg(15)
-            display.gs4_fb.blit(self._curve_fb, graph_left, self._graph_top,
+            display.gs4_fb.blit(self._curve_fb, graph_left, graph_top,
                                 0, display.palette)  # key=0: black pixels transparent
 
     def _draw_overlay(self, display):
