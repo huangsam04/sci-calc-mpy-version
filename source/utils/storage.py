@@ -10,6 +10,7 @@ DEFAULTS = {
     "version": "1.1.0",
     "diagnostics": False,
     "sleep_timeout_s": 180,
+    "brightness": 100,
 }
 MAX_SLEEP_TIMEOUT_S = 86_400
 
@@ -145,6 +146,10 @@ def load_settings():
             merged["sleep_timeout_s"] = DEFAULTS["sleep_timeout_s"]
         elif timeout > MAX_SLEEP_TIMEOUT_S:
             merged["sleep_timeout_s"] = MAX_SLEEP_TIMEOUT_S
+        brightness = merged.get("brightness")
+        if (not isinstance(brightness, int)
+                or brightness < 10 or brightness > 100):
+            merged["brightness"] = DEFAULTS["brightness"]
         _settings_cache = merged
     return _settings_cache
 

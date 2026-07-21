@@ -307,7 +307,8 @@ def main():
         _boot_progress(display, 4, 8, "Loading variables...")
     except Exception as e:
         _boot_fail(display, 4, 8, "Settings", e)
-        settings = {"angle_mode": 0, "enabled_functions": ["basic", "trig", "math", "list"], "version": "1.1.0", "diagnostics": False}
+        settings = {"angle_mode": 0, "enabled_functions": ["basic", "trig", "math", "list"], "version": "1.1.0", "diagnostics": False, "brightness": 100}
+    display.set_brightness(settings.get("brightness", 100))
     # Variables (fallback: empty dict)
     try:
         from utils.storage import load_vars
@@ -335,6 +336,7 @@ def main():
         from screens.function_panel import FunctionPanel
         from screens.stopwatch import StopwatchScreen
         from screens.about import AboutScreen
+        from screens.settings import SettingsScreen
         from screens.letter_panel import LetterPanel
         from screens.function_picker import FunctionPicker
         from screens.variable_panel import VariablePanel
@@ -347,6 +349,8 @@ def main():
 
     try:
         about = AboutScreen(font_main, settings.get("version", "1.1.0"))
+        settings_screen = SettingsScreen(
+            font_main, display, settings, about)
         func_panel = FunctionPanel(font_main)
         func_panel.set_load_errors(registry.plugin_errors)
         stopwatch = StopwatchScreen(font_main)
@@ -361,7 +365,7 @@ def main():
         main_menu.add_screen("Plot", plot_screen)
         main_menu.add_screen("Function Panel", func_panel)
         main_menu.add_screen("Stopwatch", stopwatch)
-        main_menu.add_screen("About", about)
+        main_menu.add_screen("Settings", settings_screen)
     except Exception as e:
         _boot_fail(display, 7, 8, "Init", e)
         raise

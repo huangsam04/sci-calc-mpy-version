@@ -15,6 +15,7 @@ def test_settings_are_merged_with_defaults_and_recovered_from_backup(tmp_path):
     assert settings["angle_mode"] == 1
     assert settings["enabled_functions"] == ["basic", "trig", "math", "list"]
     assert settings["sleep_timeout_s"] == 180
+    assert settings["brightness"] == 100
 
 
 def test_variable_write_failure_keeps_in_memory_cache(tmp_path, monkeypatch):
@@ -32,6 +33,14 @@ def test_sleep_timeout_is_clamped_to_ticks_safe_range(tmp_path):
     storage.configure_storage(str(tmp_path))
 
     assert storage.load_settings()["sleep_timeout_s"] == 86_400
+
+
+def test_invalid_brightness_is_replaced_with_safe_default(tmp_path):
+    (tmp_path / "settings.json").write_text(
+        '{"brightness": 0}', encoding="utf-8")
+    storage.configure_storage(str(tmp_path))
+
+    assert storage.load_settings()["brightness"] == 100
 
 
 def test_unserializable_plugin_value_is_reported_without_losing_memory_state(tmp_path):

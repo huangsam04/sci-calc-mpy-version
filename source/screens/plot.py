@@ -133,25 +133,22 @@ class PlotScreen(UIElement):
         graph_h = self.height - HINT_H
         n = graph_right - graph_left + 1
 
-        # ── Pass 1: find y_min / y_max ──
-        y_min = float('inf')
-        y_max = float('-inf')
+        # ── Pass 1: sample once and derive a robust visible range ──
+        samples = [None] * n
+        valid_values = []
         first_err = ""
-        ok_count = 0
 
         for px in range(graph_left, graph_right + 1):
             x_val = self.x_min + (px - graph_left) / graph_w * (self.x_max - self.x_min)
             y_val, ok, err = self._eval(x_val)
             if ok and abs(y_val) < 1e6:
-                if y_val < y_min:
-                    y_min = y_val
-                if y_val > y_max:
-                    y_max = y_val
-                ok_count += 1
+                sample_index = px - graph_left
+                samples[sample_index] = y_val
+                valid_values.append(y_val)
             elif err and not first_err:
                 first_err = err
 
-        if ok_count == 0:
+        if not valid_values:
             self._y_min = -1.0
             self._y_max = 1.0
             self._curve_fb = None
@@ -160,14 +157,23 @@ class PlotScreen(UIElement):
             return
 
         if auto_scale:
-            # Clamp extreme range so asymptotes do not flatten useful detail.
+            valid_values.sort()
+            y_min = valid_values[0]
+            y_max = valid_values[-1]
             y_range = y_max - y_min
-            MAX_RANGE = 200.0
-            if y_range > MAX_RANGE:
-                mid = (y_min + y_max) / 2.0
-                y_min = mid - MAX_RANGE / 2.0
-                y_max = mid + MAX_RANGE / 2.0
-                y_range = MAX_RANGE
+
+            # Compare the full extent with the central 90%.  Smooth curves
+            # retain their true extrema, while a few samples next to a pole
+            # cannot flatten everything else on screen.
+            trim = max(1, len(valid_values) // 20)
+            robust_min = valid_values[trim]
+            robust_max = valid_values[-trim - 1]
+            robust_range = robust_max - robust_min
+            if (robust_range > 1e-10
+                    and y_range > robust_range * 4.0):
+                y_min = robust_min
+                y_max = robust_max
+                y_range = robust_range
 
             pad = max(y_range * 0.1, 0.5)
             if y_range < 1e-10:
@@ -185,16 +191,17 @@ class PlotScreen(UIElement):
                 self._curve_buf[i] = 0
         self._curve_fb = FrameBuffer(self._curve_buf, n, graph_h, MONO_HMSB)
 
-        # ── Pass 2: draw curve to mono buffer ──
+        # ── Pass 2: draw the cached samples to the mono buffer ──
         y_range = self._y_max - self._y_min
         prev_px = prev_py = None
         step = 2  # every 2nd pixel, line segments fill the gap
 
         for i in range(0, n, step):
-            px = graph_left + i
-            x_val = self.x_min + i / graph_w * (self.x_max - self.x_min)
-            y_val, ok, _ = self._eval(x_val)
-            if ok and abs(y_val) < 1e6 and y_range > 0:
+            y_val = samples[i]
+            # Values beyond the robust viewport belong to an off-screen
+            # branch.  Breaking here also prevents false vertical asymptotes.
+            if (y_val is not None and y_range > 0
+                    and self._y_min <= y_val <= self._y_max):
                 ratio = (y_val - self._y_min) / y_range
                 py = graph_h - 1 - int(ratio * (graph_h - 1))
                 py = max(0, min(graph_h - 1, py))

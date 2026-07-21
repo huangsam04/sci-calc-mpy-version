@@ -61,6 +61,17 @@ def test_y_zoom_preserves_requested_manual_range():
     assert plot._y_max - plot._y_min == pytest.approx(old_range * 0.5)
 
 
+def test_auto_scale_ignores_samples_clustered_around_asymptotes():
+    """A few near-pole samples must not flatten the useful tan(x) curve."""
+    plot = PlotScreen(None, registry=build_registry())
+    plot.expr = "tan(x)"
+
+    plot._render_curve()
+
+    assert plot._y_min > -30
+    assert plot._y_max < 30
+
+
 def test_plot_error_timeout_is_processed_during_draw(monkeypatch):
     plot = PlotScreen(None, registry=build_registry())
     plot.mode = 2

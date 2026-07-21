@@ -124,7 +124,7 @@ class Display(object):
         # Set segment output current
         self.write_cmd(self.SET_CONTRAST_CURRENT, 0x9F)
         # Set scale factor of segment output current control
-        self.write_cmd(self.MASTER_CURRENT_CONTROL, 0x0F)
+        self.set_brightness(100)
         # Set default linear gray scale table
         self.write_cmd(self.SELECT_DEFAULT_LINEAR_GRAY_SCALE_TABLE)
         # Set phase 1 as 5 clocks and phase 2 as 14 clocks
@@ -998,6 +998,18 @@ class Display(object):
     def wake(self):
         """Wake display from sleep."""
         self.write_cmd(self.DISPLAY_SLEEP_OFF)
+
+    def set_brightness(self, percent):
+        """Set OLED master current from a user-facing percentage.
+
+        Ten percent is kept as the lower bound so a mistaken setting cannot
+        make the display appear broken.  The SSD1322 C7 register accepts a
+        four-bit scale factor, so percentages are rounded to the nearest step.
+        """
+        percent = max(10, min(100, int(percent)))
+        current = max(1, min(15, (percent * 15 + 50) // 100))
+        self.write_cmd(self.MASTER_CURRENT_CONTROL, current)
+        self.brightness = percent
 
     def write_cmd(self, command, *args):
         """Write command to display.
