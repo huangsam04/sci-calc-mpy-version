@@ -1,4 +1,6 @@
 """Single composition and presentation path for application frames."""
+import time
+
 from framebuf import FrameBuffer, GS4_HMSB  # type: ignore
 
 from ui.theme import CONTENT_W
@@ -10,6 +12,7 @@ class Renderer:
     def __init__(self, display, sidebar):
         self.display = display
         self.sidebar = sidebar
+        self.last_present_us = 0
         buffer_length = ((CONTENT_W + 1) // 2) * display.height
         self._outgoing_buffer = bytearray(buffer_length)
         self._incoming_buffer = bytearray(buffer_length)
@@ -33,7 +36,9 @@ class Renderer:
         # Sidebar.draw first erases the entire non-content region. This also
         # clips page layers that extended into it during a slide.
         self.sidebar.draw(self.display)
+        started = time.ticks_us()
         self.display.present()
+        self.last_present_us = time.ticks_diff(time.ticks_us(), started)
 
     def present(self, screen):
         """Present one canonical live page frame."""

@@ -1,5 +1,6 @@
 import main
 from anim import engine
+from ui import renderer as renderer_module
 from ui.element import UIElement
 from ui.theme import CONTENT_W
 
@@ -132,6 +133,19 @@ def test_transition_finishes_with_a_live_canonical_page_frame(monkeypatch):
 
     assert incoming.draws == captured_draws + 1
     assert nav.is_transitioning() is False
+
+
+def test_renderer_reports_present_time_for_diagnostics(monkeypatch):
+    times = iter((1_000, 1_275))
+    monkeypatch.setattr(renderer_module.time, "ticks_us",
+                        lambda: next(times), raising=False)
+    registry = type("Registry", (), {"angle_mode": 0})()
+    nav = main.Nav(DisplayStub(), None, registry)
+    nav.boot(ScreenStub())
+
+    nav.present_current()
+
+    assert nav.last_present_us == 275
 
 
 def test_page_animation_cancel_does_not_cancel_another_page():

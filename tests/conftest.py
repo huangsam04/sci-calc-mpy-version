@@ -17,6 +17,8 @@ if not hasattr(time, "ticks_ms"):
     time.ticks_add = lambda value, delta: value + delta
     time.sleep_ms = lambda milliseconds: time.sleep(milliseconds / 1000)
     time.sleep_us = lambda microseconds: time.sleep(microseconds / 1_000_000)
+if not hasattr(time, "ticks_us"):
+    time.ticks_us = lambda: int(time.monotonic() * 1_000_000)
 
 
 class _Pin:

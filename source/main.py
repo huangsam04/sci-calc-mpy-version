@@ -183,6 +183,7 @@ class Nav:
         self.stack = []
         self._transition = None
         self._input_locked = False
+        self.last_present_us = 0
         from anim.engine import easing_out_quad
         self._transition_easing = easing_out_quad
 
@@ -239,14 +240,17 @@ class Nav:
             # This prevents a stale captured page/chrome frame from lingering
             # until the 500 ms keepalive refresh.
             self.renderer.present(self.current)
+            self.last_present_us = self.renderer.last_present_us
             self._transition = None
             return True
         eased = self._transition_easing(t)
         self.renderer.present_transition(eased, forward)
+        self.last_present_us = self.renderer.last_present_us
         return True
 
     def present_current(self):
         self.renderer.present(self.current)
+        self.last_present_us = self.renderer.last_present_us
 
 
 def main():
@@ -419,9 +423,8 @@ def main():
                 _last_render = now
                 render_started = time.ticks_us()
                 if not nav.draw_transition(now):
-                    present_started = time.ticks_us()
                     nav.present_current()
-                    _diag_present_us += time.ticks_diff(time.ticks_us(), present_started)
+                _diag_present_us += nav.last_present_us
                 _diag_render_us += time.ticks_diff(time.ticks_us(), render_started)
                 _diag_frames += 1
                 _dirty = False
