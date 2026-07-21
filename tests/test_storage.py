@@ -14,7 +14,7 @@ def test_settings_are_merged_with_defaults_and_recovered_from_backup(tmp_path):
 
     assert settings["angle_mode"] == 1
     assert settings["enabled_functions"] == ["basic", "trig", "math", "list"]
-    assert settings["sleep_timeout_s"] == 300
+    assert settings["sleep_timeout_s"] == 180
 
 
 def test_variable_write_failure_keeps_in_memory_cache(tmp_path, monkeypatch):

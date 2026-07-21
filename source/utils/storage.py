@@ -9,7 +9,7 @@ DEFAULTS = {
     "enabled_functions": ["basic", "trig", "math", "list"],
     "version": "1.1.0",
     "diagnostics": False,
-    "sleep_timeout_s": 300,
+    "sleep_timeout_s": 180,
 }
 MAX_SLEEP_TIMEOUT_S = 86_400
 

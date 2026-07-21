@@ -389,7 +389,7 @@ def main():
     _dirty = True
     _next_var_save = 0
     power = DisplayPower(
-        display, int(settings.get("sleep_timeout_s", 300)) * 1000)
+        display, int(settings.get("sleep_timeout_s", 180)) * 1000)
 
     while True:
         try:
