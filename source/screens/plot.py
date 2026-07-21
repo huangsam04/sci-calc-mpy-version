@@ -164,16 +164,18 @@ class PlotScreen(UIElement):
 
             # Compare the full extent with the central 90%.  Smooth curves
             # retain their true extrema, while a few samples next to a pole
-            # cannot flatten everything else on screen.
-            trim = max(1, len(valid_values) // 20)
-            robust_min = valid_values[trim]
-            robust_max = valid_values[-trim - 1]
-            robust_range = robust_max - robust_min
-            if (robust_range > 1e-10
-                    and y_range > robust_range * 4.0):
-                y_min = robust_min
-                y_max = robust_max
-                y_range = robust_range
+            # cannot flatten everything else on screen.  Trimming needs at
+            # least three samples, otherwise indices fall outside the list.
+            if len(valid_values) > 2:
+                trim = max(1, len(valid_values) // 20)
+                robust_min = valid_values[trim]
+                robust_max = valid_values[-trim - 1]
+                robust_range = robust_max - robust_min
+                if (robust_range > 1e-10
+                        and y_range > robust_range * 4.0):
+                    y_min = robust_min
+                    y_max = robust_max
+                    y_range = robust_range
 
             pad = max(y_range * 0.1, 0.5)
             if y_range < 1e-10:

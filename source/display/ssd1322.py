@@ -645,8 +645,9 @@ class Display(object):
             h (int): Height of line.
             gs (int): Grayscale 0=Black to 15=White (default grayscale table)
         """
-        # Confirm coordinates in boundary
-        if self.is_off_grid(x, y, x, y + h):
+        # Confirm coordinates in boundary.  A line of height h ends at row
+        # y+h-1, so the far corner is y+h-1 (matching fill_rectangle).
+        if self.is_off_grid(x, y, x, y + h - 1):
             return
         self.gs4_fb.vline(x, y, h, gs)
 

@@ -129,9 +129,17 @@ def insert_tmp_target(target):
 
 def animate_all():
     """Drive all active animations. Call once per frame."""
-    dead = [k for k, a in _animations.items() if not a.step()]
-    for k in dead:
-        del _animations[k]
+    if not _animations:
+        return
+    dead = None
+    for key, anim in _animations.items():
+        if not anim.step():
+            if dead is None:
+                dead = []
+            dead.append(key)
+    if dead is not None:
+        for key in dead:
+            del _animations[key]
 
 
 def update_tmp():

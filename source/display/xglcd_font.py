@@ -55,7 +55,7 @@ class XglcdFont(object):
             return cached
 
         letter_ord = ord(letter) - self.start_letter
-        if letter_ord >= self.letter_count:
+        if letter_ord < 0 or letter_ord >= self.letter_count:
             return b'', 0, 0
         bytes_per_letter = self.bytes_per_letter
         offset = letter_ord * bytes_per_letter
@@ -123,6 +123,8 @@ class XglcdFont(object):
         length = 0
         for letter in text:
             letter_ord = ord(letter) - self.start_letter
+            if letter_ord < 0 or letter_ord >= self.letter_count:
+                continue  # skip glyphs outside the font's range
             offset = letter_ord * self.bytes_per_letter
             length += self.letters[offset] + spacing
         return length

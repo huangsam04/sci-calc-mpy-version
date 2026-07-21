@@ -6,6 +6,7 @@ from ui.theme import draw_footer
 
 LAP_H = 9        # row height for lap entries
 LAP_COUNT = 4    # visible lap rows
+LAP_MAX = 99     # cap stored laps so a long session cannot exhaust RAM
 
 
 class StopwatchScreen(UIElement):
@@ -57,6 +58,8 @@ class StopwatchScreen(UIElement):
             elapsed = time.ticks_diff(time.ticks_ms(), self._start_time)
             self._laps.insert(0, (self._next_lap_num, elapsed))  # newest first
             self._next_lap_num += 1
+            if len(self._laps) > LAP_MAX:
+                del self._laps[LAP_MAX:]  # drop oldest beyond the cap
 
     def _get_elapsed(self):
         if self._running:
