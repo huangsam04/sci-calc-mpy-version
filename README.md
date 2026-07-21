@@ -28,30 +28,11 @@ SD 卡 /sd
 MicroPython 按 `_boot.py → /boot.py → /main.py` 启动。无 SD 卡、挂载失败或
 `/sd/main.py` 无法执行时，内部恢复界面会显示错误；串口同时保留完整错误信息。
 
-## 构建和刷入解释器
+## 刷入解释器
 
-ESP32 port 需要 ESP-IDF 5。准确依赖和命令以
-[`micropython/ports/esp32/README.md`](../micropython/ports/esp32/README.md)
-为准。构建默认 ESP32_GENERIC 固件：
+参考 [官方文档[(https://micropython.org/download/ESP32_GENERIC/) 。
 
-```bash
-cd micropython
-make -C mpy-cross
-cd ports/esp32
-make submodules
-make BOARD=ESP32_GENERIC
-```
-
-生成文件位于 `micropython/ports/esp32/build-ESP32_GENERIC/firmware.bin`。
-首次刷写前擦除 Flash，然后按实际串口写入：
-
-```powershell
-..\.venv\python.exe -m esptool --chip esp32 --port COM4 erase_flash
-..\.venv\python.exe -m esptool --chip esp32 --port COM4 write_flash 0x1000 `
-  ..\micropython\ports\esp32\build-ESP32_GENERIC\firmware.bin
-```
-
-不要照搬 `COM4`；先运行以下命令确认设备：
+欲确认 `PORTNAME（COM几）`；运行以下命令确认设备：
 
 ```powershell
 ..\.venv\python.exe -m mpremote devs
