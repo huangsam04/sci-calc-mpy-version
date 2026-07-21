@@ -12,6 +12,7 @@ class DisplayStub:
     def __init__(self):
         self.gs4_buf = bytearray(self.buffer_length)
         self.blits = []
+        self.fills = []
         self.gs4_fb = type(
             "FB", (),
             {"blit": lambda _, source, x, y: self.blits.append(
@@ -34,11 +35,15 @@ class DisplayStub:
     def draw_hline(self, *args):
         pass
 
+    def fill_rectangle(self, *args):
+        self.fills.append(args)
+
 
 class ScreenStub:
     def __init__(self):
         self.activations = 0
         self.deactivations = 0
+        self.draws = 0
 
     def activate(self):
         self.activations += 1
@@ -47,7 +52,7 @@ class ScreenStub:
         self.deactivations += 1
 
     def draw(self, display):
-        pass
+        self.draws += 1
 
 
 class KeyboardStub:
@@ -78,8 +83,8 @@ def test_navigation_transition_is_non_blocking_and_locks_trigger_key(monkeypatch
     assert nav.filter_event(KeyboardStub(), (1, 1, False)) == (1, 1, False)
 
 
-def test_transition_moves_only_content_and_eases_out_early(monkeypatch):
-    """The sidebar stays fixed while content quickly enters then settles."""
+def test_transition_moves_only_content_with_balanced_deceleration(monkeypatch):
+    """The sidebar stays fixed and the page enters without a violent jump."""
     monkeypatch.setattr(main.time, "ticks_ms", lambda: 100)
     registry = type("Registry", (), {"angle_mode": 0})()
     display = DisplayStub()
@@ -93,9 +98,40 @@ def test_transition_moves_only_content_and_eases_out_early(monkeypatch):
     assert len(display.blits) == 2
     assert all(source.width == CONTENT_W
                for source, _, _ in display.blits)
-    incoming = next(x for source, x, _ in display.blits
-                    if source is nav._fb_b)
-    assert incoming < CONTENT_W // 2
+    incoming = max(x for _, x, _ in display.blits)
+    assert CONTENT_W // 2 < incoming < CONTENT_W * 2 // 3
+
+
+def test_transition_erases_every_pixel_outside_content_before_sidebar(monkeypatch):
+    """Sliding page pixels cannot remain behind the fixed status panel."""
+    monkeypatch.setattr(main.time, "ticks_ms", lambda: 100)
+    registry = type("Registry", (), {"angle_mode": 0})()
+    display = DisplayStub()
+    nav = main.Nav(display, None, registry)
+    nav.boot(ScreenStub())
+    nav.go_to(ScreenStub())
+
+    display.fills[:] = []
+    nav.draw_transition(100 + main.TRANSITION_MS // 2)
+
+    assert (CONTENT_W, 0, display.width - CONTENT_W, display.height, 0) in display.fills
+
+
+def test_transition_finishes_with_a_live_canonical_page_frame(monkeypatch):
+    """The last transition frame cannot linger until the idle refresh."""
+    monkeypatch.setattr(main.time, "ticks_ms", lambda: 100)
+    registry = type("Registry", (), {"angle_mode": 0})()
+    display = DisplayStub()
+    incoming = ScreenStub()
+    nav = main.Nav(display, None, registry)
+    nav.boot(ScreenStub())
+    nav.go_to(incoming)
+    captured_draws = incoming.draws
+
+    nav.draw_transition(100 + main.TRANSITION_MS)
+
+    assert incoming.draws == captured_draws + 1
+    assert nav.is_transitioning() is False
 
 
 def test_page_animation_cancel_does_not_cancel_another_page():
@@ -123,13 +159,20 @@ def test_animation_easing_has_exact_smooth_endpoints():
     assert samples == sorted(samples)
 
 
-def test_quint_ease_out_moves_early_then_settles_smoothly():
-    samples = [engine.easing_out_quint(i / 4) for i in range(5)]
+def test_quadratic_ease_out_is_responsive_without_a_stalled_tail():
+    samples = [engine.easing_out_quad(i / 4) for i in range(5)]
     assert samples[0] == 0.0
     assert samples[-1] == 1.0
-    assert samples[1] > 0.7
+    assert 0.4 < samples[1] < 0.5
     deltas = [samples[i + 1] - samples[i] for i in range(4)]
     assert deltas == sorted(deltas, reverse=True)
+
+    # At the configured frame cadence every transition frame moves at least
+    # one pixel, instead of spending the final frames apparently frozen.
+    frame_count = main.TRANSITION_MS // 20
+    positions = [int(CONTENT_W * engine.easing_out_quad(i / frame_count))
+                 for i in range(frame_count + 1)]
+    assert len(set(positions)) == len(positions)
 
 
 def test_delayed_animation_stays_registered_until_start(monkeypatch):

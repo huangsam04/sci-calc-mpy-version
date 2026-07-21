@@ -3,13 +3,11 @@
 """SCI-CALC: Multifunctional Scientific Calculator (MicroPython Edition)."""
 import time
 import gc
-from machine import Pin, SPI, ADC
-from framebuf import FrameBuffer, GS4_HMSB  # type: ignore
+from machine import Pin, SPI
 
 # --- Minimal imports for splash screen ---
 from display.ssd1322 import Display as SSD1322
 from display.xglcd_font import XglcdFont
-from ui.theme import CONTENT_W
 
 # SPI pins for display
 SPI_CLK = 18
@@ -17,7 +15,6 @@ SPI_DATA = 23
 SPI_CS = 5
 SPI_DC = 16
 SPI_RESET = 17
-BAT_PIN = 36
 TRANSITION_MS = 260
 
 
@@ -115,41 +112,6 @@ def _boot_fail(display, step, total, label, error):
     time.sleep(2)
 
 
-# --- Cached globals for sidebar ---
-_adc = None
-_bat_voltage = "?.?V"
-_bat_next_read = 0
-
-
-def _draw_sidebar(display, font=None, registry=None):
-    global _adc, _bat_voltage, _bat_next_read
-    now = time.ticks_ms()
-    if _bat_next_read == 0 or time.ticks_diff(now, _bat_next_read) >= 0:
-        try:
-            if _adc is None:
-                _adc = ADC(Pin(BAT_PIN))
-                _adc.atten(ADC.ATTN_11DB)
-            raw = _adc.read()
-            voltage = raw / 4095.0 * 3.3 * 2.0
-            _bat_voltage = f"{voltage:.1f}V"
-        except Exception:
-            _bat_voltage = "?.?V"
-        _bat_next_read = time.ticks_add(now, 500)
-
-    ang = "DEG" if registry is not None and registry.angle_mode else "RAD"
-
-    display.draw_rectangle(213, 0, 42, 63, 15)
-    if font:
-        display.draw_text(215, 2, "BAT", font, gs=15)
-        display.draw_text(215, 14, _bat_voltage, font, gs=15)
-        display.draw_hline(215, 26, 28, 6)
-        display.draw_text(215, 30, ang, font, gs=12)
-    else:
-        display.draw_text8x8(215, 2, "BAT", gs=15)
-        display.draw_text8x8(215, 14, _bat_voltage, gs=15)
-        display.draw_text8x8(215, 30, ang, gs=12)
-
-
 def _reload_functions(settings, registry=None):
     from calc.functions import build_registry, DEFAULT_ENABLED_GROUPS, FUNCTION_GROUPS
     from calc.loader import load_function_files
@@ -209,24 +171,20 @@ def _draw_crash(display, error):
 # ── Screen navigation ───────────────────────────────────────────
 
 class Nav:
-    """Screen stack with slide transitions. Captures display + font once.
-    Pre-allocates transition buffers to avoid 16KB heap alloc on every switch."""
+    """Screen stack and non-blocking transition state.
+
+    Frame capture, composition, fixed chrome and presentation are delegated to
+    one Renderer instance with reusable buffers.
+    """
     def __init__(self, display, font_small, registry):
-        self.display = display
-        self.font_small = font_small
-        self.registry = registry
+        from ui.renderer import Renderer
+        from ui.sidebar import Sidebar
+        self.renderer = Renderer(display, Sidebar(font_small, registry))
         self.stack = []
         self._transition = None
         self._input_locked = False
-        # Store only the 210px application area. The sidebar is redrawn once
-        # after compositing and therefore never travels with either page.
-        blen = ((CONTENT_W + 1) // 2) * display.height
-        self._buf_a = bytearray(blen)
-        self._buf_b = bytearray(blen)
-        self._fb_a = FrameBuffer(self._buf_a, CONTENT_W, display.height, GS4_HMSB)
-        self._fb_b = FrameBuffer(self._buf_b, CONTENT_W, display.height, GS4_HMSB)
-        from anim.engine import easing_out_quint
-        self._transition_easing = easing_out_quint
+        from anim.engine import easing_out_quad
+        self._transition_easing = easing_out_quad
 
     def boot(self, screen):
         """Set root screen (no transition)."""
@@ -253,15 +211,8 @@ class Nav:
     def _start_transition(self, old, new, forward):
         from anim.engine import cancel_animations
         cancel_animations(old)
-        self.display.clear_buffers(0)
-        old.draw(self.display)
-        self._fb_a.fill(0)
-        self._fb_a.blit(self.display.gs4_fb, 0, 0)
         new.activate()
-        self.display.clear_buffers(0)
-        new.draw(self.display)
-        self._fb_b.fill(0)
-        self._fb_b.blit(self.display.gs4_fb, 0, 0)
+        self.renderer.capture_transition(old, new)
         self._transition = (time.ticks_ms(), forward)
         self._input_locked = True
 
@@ -283,20 +234,19 @@ class Nav:
         started, forward = self._transition
         elapsed = max(0, time.ticks_diff(now, started))
         t = min(1.0, elapsed / TRANSITION_MS)
-        eased = self._transition_easing(t)
-        width = CONTENT_W
-        if forward:
-            new_x, old_x = width - int(width * eased), -int(width * eased)
-        else:
-            new_x, old_x = -width + int(width * eased), int(width * eased)
-        self.display.clear_buffers(0)
-        self.display.gs4_fb.blit(self._fb_a, old_x, 0)
-        self.display.gs4_fb.blit(self._fb_b, new_x, 0)
-        _draw_sidebar(self.display, self.font_small, self.registry)
-        self.display.present()
         if t >= 1.0:
+            # Finish on the same canonical composition used by an idle frame.
+            # This prevents a stale captured page/chrome frame from lingering
+            # until the 500 ms keepalive refresh.
+            self.renderer.present(self.current)
             self._transition = None
+            return True
+        eased = self._transition_easing(t)
+        self.renderer.present_transition(eased, forward)
         return True
+
+    def present_current(self):
+        self.renderer.present(self.current)
 
 
 def main():
@@ -469,11 +419,8 @@ def main():
                 _last_render = now
                 render_started = time.ticks_us()
                 if not nav.draw_transition(now):
-                    display.clear_buffers(0)
-                    cur.draw(display)
-                    _draw_sidebar(display, font_small, registry)
                     present_started = time.ticks_us()
-                    display.present()
+                    nav.present_current()
                     _diag_present_us += time.ticks_diff(time.ticks_us(), present_started)
                 _diag_render_us += time.ticks_diff(time.ticks_us(), render_started)
                 _diag_frames += 1
@@ -524,7 +471,10 @@ def main():
                 else:
                     _next_var_save = now
 
-            time.sleep_ms(10)
+            # Keep the scheduler close to the 20 ms animation deadline. A
+            # fixed 10 ms sleep plus rendering/present time otherwise drops
+            # the effective transition rate well below the requested 50 FPS.
+            time.sleep_ms(2 if active else 10)
 
         except Exception as e:
             # Crash landing: draw error screen, wait for key, then recover

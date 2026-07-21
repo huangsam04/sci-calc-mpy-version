@@ -84,12 +84,12 @@ class PlotScreen(UIElement):
         if prefill:
             self.input_box.insert_str(prefill)
         self.mode = 1
-        insert_animation(self, '_overlay_y', self._overlay_y, 0, 180, "OUT_QUINT")
+        insert_animation(self, '_overlay_y', self._overlay_y, 0, 180, "OUT_QUAD")
         self.input_box.cursor.is_visible = True
 
     def _leave_edit(self, plot=True):
         self.mode = 0
-        insert_animation(self, '_overlay_y', self._overlay_y, -OVERLAY_H, 180, "OUT_QUINT")
+        insert_animation(self, '_overlay_y', self._overlay_y, -OVERLAY_H, 180, "OUT_QUAD")
         self.input_box.cursor.is_visible = False
         if plot:
             self.expr = self.input_box.get_str().strip()

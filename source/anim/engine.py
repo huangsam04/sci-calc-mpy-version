@@ -32,6 +32,12 @@ def easing_out_quint(t):
     """Responsive movement with a long, gentle settle near the target."""
     return 1 - (1 - t) ** 5
 
+
+def easing_out_quad(t):
+    """Balanced deceleration that remains visibly in motion near the end."""
+    return 1 - (1 - t) ** 2
+
+
 def easing_bounce(t):
     """Exponential decay sine: overshoot and bounce."""
     return pow(2, -10 * t) * math.sin((t * 10 - 0.75) * (2 * 3.14159265 / 3)) + 1
@@ -42,13 +48,15 @@ EASING_MAP = {
     "INDENTINV": easing_indent_inv,
     "SMOOTH": easing_smooth,
     "OUT_QUINT": easing_out_quint,
+    "OUT_QUAD": easing_out_quad,
     "BOUNCE": easing_bounce,
 }
+
 
 # --- Animation class ---
 
 class Animation:
-    def __init__(self, target, start_val, end_val, duration, easing="INDENT", delay=0):
+    def __init__(self, target, start_val, end_val, duration, easing="OUT_QUAD", delay=0):
         self.target = target          # UIElement or dict with key
         self.attr = None              # attribute name string (e.g. 'x', 'y')
         self.start_val = start_val
@@ -100,7 +108,7 @@ _animations = {}  # (id(target), attribute) -> Animation
 _tmp_targets = []  # elements kept alive for exit animations
 
 
-def insert_animation(target, attr, start_val, end_val, duration, easing="INDENT", delay=0):
+def insert_animation(target, attr, start_val, end_val, duration, easing="OUT_QUAD", delay=0):
     """Register an animation. Replaces any existing animation on (target, attr)."""
     anim = Animation(target, start_val, end_val, duration, easing, delay)
     anim.attr = attr
