@@ -4,6 +4,7 @@ from ui.element import UIElement
 from ui.menu import Menu
 from ui.theme import draw_footer, draw_header
 from utils.storage import save_settings
+from version import VERSION
 
 
 BRIGHTNESS_MIN = 10
@@ -27,9 +28,8 @@ class SettingsScreen(UIElement):
 
     def _build_rows(self):
         self.menu.clear_items()
-        version = str(self.settings.get("version", "1.1.0"))
         brightness = self._brightness()
-        self.menu.add_item("Version  " + version, None)
+        self.menu.add_item("Version  " + VERSION, None)
         self.menu.add_item("About", self.about_screen)
         self.menu.add_item("Brightness  " + str(brightness) + "%", None)
 

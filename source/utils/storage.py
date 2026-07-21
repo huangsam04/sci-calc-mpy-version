@@ -7,7 +7,6 @@ DEFAULTS = {
     "angle_mode": 0,
     "cursor_mode": 1,
     "enabled_functions": ["basic", "trig", "math", "list"],
-    "version": "1.1.0",
     "diagnostics": False,
     "sleep_timeout_s": 180,
     "brightness": 100,
@@ -137,6 +136,9 @@ def load_settings():
         loaded = _read_with_backup(_join(_storage_dir(), "settings.json"), DEFAULTS)
         merged = _copy_defaults()
         merged.update(loaded)
+        # Version is firmware metadata, not a user preference.  Drop the
+        # legacy field when reading settings written by releases <= 1.1.0.
+        merged.pop("version", None)
         if not isinstance(merged.get("enabled_functions"), list):
             merged["enabled_functions"] = list(DEFAULTS["enabled_functions"])
         if merged.get("angle_mode") not in (0, 1):
@@ -158,6 +160,7 @@ def save_settings(settings):
     global _settings_cache
     merged = _copy_defaults()
     merged.update(settings)
+    merged.pop("version", None)
     _settings_cache = merged
     return _atomic_write_json(_join(_storage_dir(), "settings.json"), merged)
 

@@ -11,6 +11,7 @@ from display.xglcd_font import XglcdFont
 from ui.motion import (PAGE_TRANSITION_MS, ACTIVE_FRAME_MS, IDLE_FRAME_MS,
                        ACTIVE_LOOP_SLEEP_MS, IDLE_LOOP_SLEEP_MS,
                        SLEEP_SCAN_MS)
+from version import VERSION
 
 # SPI pins for display
 SPI_CLK = 18
@@ -307,7 +308,7 @@ def main():
         _boot_progress(display, 4, 8, "Loading variables...")
     except Exception as e:
         _boot_fail(display, 4, 8, "Settings", e)
-        settings = {"angle_mode": 0, "enabled_functions": ["basic", "trig", "math", "list"], "version": "1.1.0", "diagnostics": False, "brightness": 100}
+        settings = {"angle_mode": 0, "enabled_functions": ["basic", "trig", "math", "list"], "diagnostics": False, "brightness": 100}
     display.set_brightness(settings.get("brightness", 100))
     # Variables (fallback: empty dict)
     try:
@@ -348,7 +349,7 @@ def main():
         raise
 
     try:
-        about = AboutScreen(font_main, settings.get("version", "1.1.0"))
+        about = AboutScreen(font_main, VERSION)
         settings_screen = SettingsScreen(
             font_main, display, settings, about)
         func_panel = FunctionPanel(font_main)

@@ -1,10 +1,11 @@
 """About screen: version and hardware info."""
 from ui.element import UIElement
 from input.keyboard import get_key_label
+from version import VERSION
 
 
 class AboutScreen(UIElement):
-    def __init__(self, font, version="1.1.0"):
+    def __init__(self, font, version=VERSION):
         super().__init__(0, 0, 210, 64)
         self.font = font
         self.version = version

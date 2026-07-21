@@ -1,6 +1,7 @@
 from display.ssd1322 import Display
 from screens.about import AboutScreen
 from screens.settings import SettingsScreen
+from version import VERSION
 
 
 class DisplayStub:
@@ -35,7 +36,7 @@ def test_settings_rows_are_version_about_then_brightness():
         None, DisplayStub(), {"version": "1.2.3", "brightness": 80}, about)
 
     assert [label for label, _ in screen.menu.items] == [
-        "Version  1.2.3",
+        "Version  " + VERSION,
         "About",
         "Brightness  80%",
     ]

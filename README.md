@@ -1,11 +1,8 @@
 # SCI-CALC MicroPython Edition
 
-SCI-CALC 的 MicroPython 固件，目标硬件为 ESP32-WROOM-32E、SSD1322
-256×64 灰阶 OLED、5×6 矩阵键盘和 FAT32 SD 卡。
+SCI-CALC 的 MicroPython 固件，目标硬件为 ESP32-WROOM-32E、SSD1322 256×64 灰阶 OLED、5×6 矩阵键盘和 FAT32 SD 卡。
 
-当前应用版本为 **1.1.0**。源码编译基线是本仓库 `micropython/` 中的
-**MicroPython 1.29.0-preview**，并已在设备的 **MicroPython 1.28.0
-(2026-04-06)** 上完成冷启动验证。项目不修改 MicroPython 核心。
+当前应用版本为 **1.1.1**。源码编译基线是本仓库 `micropython/` 中的 **MicroPython 1.29.0-preview**，并已在设备的 **MicroPython 1.28.0 (2026-04-06)** 上完成冷启动验证。项目不修改 MicroPython 核心。
 
 ## 目录与启动方式
 
