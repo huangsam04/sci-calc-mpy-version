@@ -1,4 +1,5 @@
 from screens.function_panel import FunctionPanel
+from calc import loader
 
 
 class DisplayStub:
@@ -28,3 +29,21 @@ def test_plugin_load_error_is_visible_in_function_panel():
     assert any("broken" in text for text in display.text)
     assert any("boom" in text for text in display.text)
     assert any("ENT off" in text for text in display.text)
+
+
+def test_builtin_groups_and_addons_have_unambiguous_user_labels(monkeypatch):
+    monkeypatch.setattr(
+        "screens.function_panel.load_settings",
+        lambda: {"enabled_functions": ["basic", "trig", "math", "list"]})
+    monkeypatch.setattr(
+        loader, "list_function_files",
+        lambda: [("basic", "basic.py"), ("trig", "trig.py")])
+    panel = FunctionPanel(None)
+
+    panel.activate()
+
+    labels = [label for label, _ in panel.menu.items]
+    assert any("Arithmetic" in label for label in labels)
+    assert any("Trigonometry" in label for label in labels)
+    assert any("Add-on: basic" in label for label in labels)
+    assert any("Add-on: trig" in label for label in labels)

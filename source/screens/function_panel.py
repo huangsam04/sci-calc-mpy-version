@@ -54,7 +54,8 @@ class FunctionPanel(UIElement):
 
     def _refresh(self):
         """Rebuild menu items. Uses _toggled for session state, settings for defaults."""
-        from calc.functions import FUNCTION_GROUPS, DEFAULT_ENABLED_GROUPS
+        from calc.functions import (FUNCTION_GROUPS, FUNCTION_GROUP_LABELS,
+                                    DEFAULT_ENABLED_GROUPS)
         from calc.loader import list_function_files
 
         settings = load_settings()
@@ -74,7 +75,8 @@ class FunctionPanel(UIElement):
                 is_on = group_name in saved_enabled
             func_names = FUNCTION_GROUPS[group_name]
             prefix = "[x]" if is_on else "[ ]"
-            label = f"{prefix} {group_name} ({', '.join(func_names[:3])}...)"
+            display_name = FUNCTION_GROUP_LABELS.get(group_name, group_name)
+            label = f"{prefix} {display_name} ({', '.join(func_names[:3])}...)"
             self.menu.add_item(label, None)
             self._items.append((group_name, is_on, True))
 
@@ -87,7 +89,7 @@ class FunctionPanel(UIElement):
             else:
                 is_on = setting_name in saved_enabled
             prefix = "[x]" if is_on else "[ ]"
-            label = f"{prefix} {name}"
+            label = f"{prefix} Add-on: {name}"
             self.menu.add_item(label, None)
             self._items.append((setting_name, is_on, False))
 

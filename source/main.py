@@ -281,7 +281,7 @@ def main():
 
     # Keyboard (critical — halt on failure)
     try:
-        from input.keyboard import Keyboard
+        from input.keyboard import Keyboard, get_key_label
         kb = Keyboard()
         _boot_progress(display, 2, 8, "Loading fonts...")
     except Exception as e:
@@ -419,6 +419,12 @@ def main():
 
             cur = nav.current
             result = None
+            if diagnostics and event is not None:
+                print("INPUT page=" + cur.__class__.__name__
+                      + " row=" + str(event[0])
+                      + " col=" + str(event[1])
+                      + " shift=" + str(int(event[2]))
+                      + " key=" + get_key_label(event[0], event[1], event[2]))
             if not nav.is_transitioning() and event is not None:
                 erow, ecol, eshift = event
                 if (erow, ecol) == (3, 5) and eshift and cur in (calc_screen, plot_screen):
@@ -435,6 +441,9 @@ def main():
             if (not nav.is_transitioning()
                     and (event is not None or kb.is_pressed(0, 0) or kb.is_pressed(4, 3))):
                 result = cur.update(kb, event)
+                if diagnostics and result is not None:
+                    print("ACTION page=" + cur.__class__.__name__
+                          + " result=" + str(result))
 
             now = time.ticks_ms()
             if had_event or result is not None:

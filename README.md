@@ -240,6 +240,24 @@ ease-out 曲线，并在结束时立即重绘实时页面，不等待 500ms 保�
 `check.ps1` 会核对编译器版本，拒绝使用不匹配的 mpy-cross。首次运行前，按前文
 命令从仓库中的 `micropython/mpy-cross` 构建；Windows 可使用 GCC/Make 便携工具链。
 
+## 串口诊断与操作回放
+
+`diagnostics.py` 可以在设备的真实 MicroPython、设置和插件目录上回放按键与表达式，
+输出机器可读的 `TRACE` 和最终 `SELFTEST PASS/FAIL`：
+
+```powershell
+..\.venv\python.exe -m mpremote connect COM5 exec `
+  "import sys; sys.path.insert(0,'/sd'); import diagnostics; diagnostics.run()"
+..\.venv\python.exe -m mpremote connect COM5 reset
+```
+
+自定义命令支持 `STATUS`、`PANEL`、`KEY 行 列 Shift`、`BACK` 和 `EVAL 表达式`。
+例如 `diagnostics.run(['KEY 3 1 0', 'KEY 3 3 0', 'BACK', 'EVAL 2+3*4'])` 会回放
+“主页向下、确认进入、返回、计算表达式”。诊断是只读的，不保存变量或设置。
+
+将 `settings.json` 的 `diagnostics` 设为 `true` 后，正常实机操作还会逐键输出
+`INPUT page/row/col/shift/key` 和 `ACTION page/result`，并保留每五秒性能统计。
+
 ## 实机回归清单
 
 1. 有卡、无卡、损坏 `/sd/main.py` 各启动一次，确认恢复界面和串口错误。

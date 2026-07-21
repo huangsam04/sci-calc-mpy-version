@@ -267,6 +267,12 @@ FUNCTION_GROUPS = {
     "math": ("sqrt", "ln", "exp", "log", "abs"),
     "list": ("max", "min"),
 }
+FUNCTION_GROUP_LABELS = {
+    "basic": "Arithmetic",
+    "trig": "Trigonometry",
+    "math": "Scientific",
+    "list": "List tools",
+}
 DEFAULT_ENABLED_GROUPS = ("basic", "trig", "math", "list")
 
 
