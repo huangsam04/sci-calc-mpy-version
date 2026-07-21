@@ -631,8 +631,9 @@ class Display(object):
             text (string): Text to draw.
             gs (int): Grayscale 0=Black to 15=White (default grayscale table)
         """
-        # Confirm coordinates in boundary
-        if self.is_off_grid(x, y, x + 8, y + 8):
+        # Confirm coordinates in boundary.  An 8x8 glyph ends at x+7, y+7, so
+        # the far corner is inclusive (matching fill_rectangle / draw_vline).
+        if self.is_off_grid(x, y, x + 8 - 1, y + 8 - 1):
             return
         self.gs4_fb.text(text, x, y, gs)
 

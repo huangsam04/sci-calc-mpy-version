@@ -124,7 +124,11 @@ class XglcdFont(object):
         for letter in text:
             letter_ord = ord(letter) - self.start_letter
             if letter_ord < 0 or letter_ord >= self.letter_count:
-                continue  # skip glyphs outside the font's range
+                # Glyph outside the font's range: get_letter returns w == 0 for
+                # it, and get_text_fb still advances the pen by spacing.  Count
+                # that same spacing here so measured width matches the render.
+                length += spacing
+                continue
             offset = letter_ord * self.bytes_per_letter
             length += self.letters[offset] + spacing
         return length
