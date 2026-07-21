@@ -2,6 +2,7 @@
 import time
 from ui.element import UIElement
 from ui.cursor import Cursor
+from ui.motion import TEXT_CURSOR_MS
 from input.keyboard import get_key_label
 
 
@@ -66,6 +67,8 @@ class InputBox(UIElement):
             self.cursor_pos -= 1
             self._clamp_view()
             self._update_cursor_target()
+            return True
+        return False
 
     def move_cursor_left(self):
         if self.cursor_pos > 0:
@@ -112,7 +115,7 @@ class InputBox(UIElement):
             # Built-in 8x8 font: exactly 8px per char, no spacing
             char_x = (self.cursor_pos - self.view_offset) * 8
         self.cursor.change_target(
-            self.x + 1 + char_x, self.y + 1, 200)
+            self.x + 1 + char_x, self.y + 1, TEXT_CURSOR_MS)
 
     def draw(self, display):
         display.draw_rectangle(self.x, self.y, self.width, self.height, self.gs)
@@ -135,8 +138,10 @@ class InputBox(UIElement):
                     self._delete_repeat = True
                 now = time.ticks_ms()
                 if time.ticks_diff(now, self._last_delete) > 100:
-                    self.delete_str()
+                    changed = self.delete_str()
                     self._last_delete = now
+                    if changed:
+                        return "DELETE"
         else:
             self._delete_repeat = False
 
@@ -154,8 +159,7 @@ class InputBox(UIElement):
             self.move_cursor_right()
             return None
         if label == "DEL":
-            self.delete_str()  # backspace
-            return "DELETE"
+            return "DELETE" if self.delete_str() else None
 
         # Special keys: pass through to screen
         if label in ("ENT", "ESC", "tab", "stab", "ang", "rpn"):

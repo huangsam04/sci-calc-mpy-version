@@ -44,6 +44,19 @@ function Wait-SdMount {
     throw "SD card was not mounted by /boot.py after reset. Check that the FAT32 card is inserted and review the serial boot log. Last probe: $LastProbeOutput"
 }
 
+function Test-RemotePath {
+    param([Parameter(Mandatory = $true)][string]$Path)
+    $Probe = "import os`ntry:`n os.stat('$Path')`n print('FILE_EXISTS')`nexcept OSError:`n print('FILE_MISSING')"
+    for ($Attempt = 1; $Attempt -le 3; $Attempt++) {
+        $Output = (& $Python -m mpremote connect $Port exec $Probe 2>&1 | Out-String)
+        if ($LASTEXITCODE -eq 0) {
+            return $Output -match "FILE_EXISTS"
+        }
+        Start-Sleep -Milliseconds 500
+    }
+    throw "Unable to inspect remote path: $Path"
+}
+
 Write-Host "Installing internal launch and recovery files on $Port..."
 Invoke-MpRemote exec "import os`ntry: os.mkdir('/display')`nexcept OSError: pass"
 Invoke-MpRemote fs cp (Join-Path $Source "boot.py") :/boot.py
@@ -68,12 +81,24 @@ Invoke-MpRemote exec $CreateDirectories
 
 Write-Host "Uploading SD application..."
 $Excluded = @("boot.py", "internal_main.py", "recovery.py", "sdcard.py")
+$Preserved = @("settings.json", "vars.json")
 Get-ChildItem -LiteralPath $Source -Recurse -File | ForEach-Object {
     $Relative = $_.FullName.Substring($Source.Length + 1).Replace("\", "/")
     $AllowedExtension = $_.Extension -in @(".py", ".json", ".c")
     $IsCache = $Relative.Split("/") -contains "__pycache__"
-    if ($Excluded -notcontains $Relative -and $AllowedExtension -and -not $IsCache) {
+    if ($Excluded -notcontains $Relative -and $Preserved -notcontains $Relative `
+            -and $AllowedExtension -and -not $IsCache) {
         Invoke-MpRemote fs cp $_.FullName (":/sd/" + $Relative)
+    }
+}
+
+foreach ($Name in $Preserved) {
+    $RemotePath = "/sd/$Name"
+    if (Test-RemotePath -Path $RemotePath) {
+        Write-Host "Preserving existing $RemotePath"
+    } else {
+        Write-Host "Initializing $RemotePath"
+        Invoke-MpRemote fs cp (Join-Path $Source $Name) (":" + $RemotePath)
     }
 }
 

@@ -8,6 +8,7 @@ from anim.engine import insert_animation
 from input.keyboard import get_key_label
 from ui.theme import draw_footer
 from ui.error_popup import ErrorPopup
+from ui.motion import PANEL_SLIDE_MS, MOTION_EASING
 
 
 # Layout constants
@@ -84,12 +85,14 @@ class PlotScreen(UIElement):
         if prefill:
             self.input_box.insert_str(prefill)
         self.mode = 1
-        insert_animation(self, '_overlay_y', self._overlay_y, 0, 180, "OUT_QUAD")
+        insert_animation(self, '_overlay_y', self._overlay_y, 0,
+                         PANEL_SLIDE_MS, MOTION_EASING)
         self.input_box.cursor.is_visible = True
 
     def _leave_edit(self, plot=True):
         self.mode = 0
-        insert_animation(self, '_overlay_y', self._overlay_y, -OVERLAY_H, 180, "OUT_QUAD")
+        insert_animation(self, '_overlay_y', self._overlay_y, -OVERLAY_H,
+                         PANEL_SLIDE_MS, MOTION_EASING)
         self.input_box.cursor.is_visible = False
         if plot:
             self.expr = self.input_box.get_str().strip()
@@ -334,5 +337,7 @@ class PlotScreen(UIElement):
             elif action == "stab":
                 self.x_min = -10.0
                 self.x_max = 10.0
+            elif action == "DELETE":
+                return "REDRAW"
 
         return None

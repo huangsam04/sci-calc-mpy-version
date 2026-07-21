@@ -1,6 +1,7 @@
 """Cursor widget for input boxes and menu selection."""
 from ui.element import UIElement
 from anim.engine import insert_animation
+from ui.motion import CONTROL_MOTION_MS, MOTION_EASING
 
 
 class Cursor(UIElement):
@@ -13,12 +14,12 @@ class Cursor(UIElement):
     def set_visible(self, v):
         self.is_visible = v
 
-    def change_target(self, new_x, new_y, duration=140, delay=0):
+    def change_target(self, new_x, new_y, duration=CONTROL_MOTION_MS, delay=0):
         """Animate cursor to a new position."""
         self.target_x = new_x
         self.target_y = new_y
-        insert_animation(self, 'x', self.x, new_x, duration, "OUT_QUAD", delay)
-        insert_animation(self, 'y', self.y, new_y, duration, "OUT_QUAD", delay)
+        insert_animation(self, 'x', self.x, new_x, duration, MOTION_EASING, delay)
+        insert_animation(self, 'y', self.y, new_y, duration, MOTION_EASING, delay)
 
     def draw(self, display):
         if not self.is_visible:

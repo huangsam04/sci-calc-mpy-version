@@ -8,6 +8,7 @@ from machine import Pin, SPI
 # --- Minimal imports for splash screen ---
 from display.ssd1322 import Display as SSD1322
 from display.xglcd_font import XglcdFont
+from ui.motion import PAGE_TRANSITION_MS
 
 # SPI pins for display
 SPI_CLK = 18
@@ -15,7 +16,7 @@ SPI_DATA = 23
 SPI_CS = 5
 SPI_DC = 16
 SPI_RESET = 17
-TRANSITION_MS = 260
+TRANSITION_MS = PAGE_TRANSITION_MS
 
 
 def _init_display():

@@ -3,6 +3,8 @@ from anim import engine
 from ui import renderer as renderer_module
 from ui.element import UIElement
 from ui.theme import CONTENT_W
+from ui.motion import (PAGE_TRANSITION_MS, PANEL_SLIDE_MS,
+                       MENU_CURSOR_MS, TEXT_CURSOR_MS)
 
 
 class DisplayStub:
@@ -82,6 +84,12 @@ def test_navigation_transition_is_non_blocking_and_locks_trigger_key(monkeypatch
     assert nav.is_transitioning() is False
     assert nav.filter_event(KeyboardStub(pressed=True), (1, 1, False)) is None
     assert nav.filter_event(KeyboardStub(), (1, 1, False)) == (1, 1, False)
+
+
+def test_page_transition_stays_within_responsive_motion_budget():
+    assert 160 <= main.TRANSITION_MS <= 200
+    assert main.TRANSITION_MS == PAGE_TRANSITION_MS
+    assert TEXT_CURSOR_MS < MENU_CURSOR_MS < PANEL_SLIDE_MS < PAGE_TRANSITION_MS
 
 
 def test_transition_moves_only_content_with_balanced_deceleration(monkeypatch):

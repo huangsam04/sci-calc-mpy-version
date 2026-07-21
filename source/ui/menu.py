@@ -2,6 +2,7 @@
 from ui.element import UIElement
 from ui.cursor import Cursor
 from input.keyboard import get_key_label
+from ui.motion import MENU_CURSOR_MS
 
 
 class Menu(UIElement):
@@ -71,7 +72,7 @@ class Menu(UIElement):
         self.cursor.change_target(
             self.x + 2,
             self.y + 2 + (self.cursor_pos - self.view_offset) * self.row_height,
-            140
+            MENU_CURSOR_MS
         )
 
     def draw(self, display):

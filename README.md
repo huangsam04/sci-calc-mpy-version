@@ -78,7 +78,8 @@ make BOARD=ESP32_GENERIC
 6. 仅在传入 `-Reset` 时执行部署完成后的再次复位。
 
 脚本可重复执行。中途硬复位用于切换启动器，不能省略；它可避免旧固件的 SPI
-对象导致 `ESP_ERR_INVALID_STATE`。部署不会自动擦除 SD 上不属于当前源码的文件。
+对象导致 `ESP_ERR_INVALID_STATE`。部署不会自动擦除 SD 上不属于当前源码的文件；
+`settings.json` 和 `vars.json` 仅在设备上不存在时初始化，重复部署会保留用户设置与变量。
 
 SD 卡和 OLED 共用 GPIO18/23 上的 SPI2，通过 CS4/CS5 分隔事务。内部
 `sdcard.py` 使用官方 Python block-device 驱动；不要替换成独占 SPI host 的

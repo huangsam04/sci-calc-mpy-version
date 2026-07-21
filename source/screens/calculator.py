@@ -169,6 +169,9 @@ class CalculatorScreen(UIElement):
             elif action == "rpn":
                 if not kb.is_pressed(4, 0):
                     return "FUNC_PICKER"
+            elif action == "DELETE":
+                # Repeated DEL has no new edge event; explicitly request a frame.
+                return "REDRAW"
         else:
             # History nav mode
             if event is None:
