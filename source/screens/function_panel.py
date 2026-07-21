@@ -14,14 +14,17 @@ class FunctionPanel(UIElement):
         self._toggled = {}     # Unsaved choices retained while rebuilding labels.
         self._dirty = False
         self._save_error = ""
+        self._load_error = ""
+        self._load_error_detail = ""
 
     def activate(self):
         self._dirty = False
         self._save_error = ""
         self._toggled = {}
         self._refresh()
-        self.menu.cursor_pos = 0
-        self.menu.view_offset = 0
+        if not self._focus_load_error():
+            self.menu.cursor_pos = 0
+            self.menu.view_offset = 0
         self.menu.activate()
 
     def animation_children(self):
@@ -30,6 +33,24 @@ class FunctionPanel(UIElement):
     def deactivate(self):
         if self._dirty:
             self._save()
+
+    def set_load_errors(self, errors):
+        """Keep the first failed plugin visible until the user acknowledges it."""
+        if errors:
+            self._load_error, self._load_error_detail = errors[0]
+            self._focus_load_error()
+        else:
+            self._load_error = ""
+            self._load_error_detail = ""
+
+    def _focus_load_error(self):
+        target = "plugin:" + self._load_error
+        for index, item in enumerate(self._items):
+            if item[0] == target:
+                self.menu.cursor_pos = index
+                self.menu._clamp_view()
+                return True
+        return False
 
     def _refresh(self):
         """Rebuild menu items. Uses _toggled for session state, settings for defaults."""
@@ -85,9 +106,12 @@ class FunctionPanel(UIElement):
         return False
 
     def draw(self, display):
-        draw_header(display, "Functions", self.font)
+        title = "Plugin: " + self._load_error if self._load_error else "Functions"
+        draw_header(display, title, self.font)
         self.menu.draw(display)
-        if self._save_error:
+        if self._load_error:
+            draw_footer(display, self._load_error_detail, self.font, "ENT off")
+        elif self._save_error:
             draw_footer(display, self._save_error, self.font, "ESC retry")
         else:
             draw_footer(display, "ENT toggle", self.font, "ESC back")
@@ -106,7 +130,14 @@ class FunctionPanel(UIElement):
                 self.menu.cursor_pos = min(idx, len(self._items) - 1)
                 self.menu._clamp_view()
                 self.menu._update_cursor_target()
+                if name == "plugin:" + self._load_error and is_on:
+                    self._load_error = ""
+                    self._load_error_detail = ""
         elif action == "BACK":
+            if self._load_error:
+                self._load_error = ""
+                self._load_error_detail = ""
+                return "FUNC_PANEL_CANCEL"
             if self._dirty and not self._save():
                 return None
             return "FUNC_PANEL_DONE"

@@ -8,7 +8,9 @@ from machine import Pin, SPI
 # --- Minimal imports for splash screen ---
 from display.ssd1322 import Display as SSD1322
 from display.xglcd_font import XglcdFont
-from ui.motion import PAGE_TRANSITION_MS
+from ui.motion import (PAGE_TRANSITION_MS, ACTIVE_FRAME_MS, IDLE_FRAME_MS,
+                       ACTIVE_LOOP_SLEEP_MS, IDLE_LOOP_SLEEP_MS,
+                       SLEEP_SCAN_MS)
 
 # SPI pins for display
 SPI_CLK = 18
@@ -121,7 +123,8 @@ def _reload_functions(settings, registry=None):
     sd_names = [g[7:] for g in enabled if g.startswith("plugin:")]
     staged = build_registry(groups)
     if sd_names:
-        load_function_files(staged, sd_names)
+        report = load_function_files(staged, sd_names)
+        staged.plugin_errors = report.errors
     if registry is not None:
         staged.angle_mode = registry.angle_mode
         registry.replace(staged)
@@ -253,6 +256,15 @@ class Nav:
         self.renderer.present(self.current)
         self.last_present_us = self.renderer.last_present_us
 
+    def reset(self, root):
+        """Recover to one root page without retaining failed UI state."""
+        from anim.engine import cancel_all_animations
+        cancel_all_animations()
+        self._transition = None
+        self._input_locked = True
+        self.stack[:] = [root]
+        root.activate()
+
 
 def main():
     # ============================================================
@@ -336,6 +348,7 @@ def main():
     try:
         about = AboutScreen(font_main, settings.get("version", "1.1.0"))
         func_panel = FunctionPanel(font_main)
+        func_panel.set_load_errors(registry.plugin_errors)
         stopwatch = StopwatchScreen(font_main)
         calc_screen = CalculatorScreen(font_main, font_small, registry, vars_dict)
         letter_panel = LetterPanel(font_main, calc_screen.input_box)
@@ -362,13 +375,12 @@ def main():
     from ui.element import UIElement
     from anim.engine import animate_all, update_tmp, has_active_animations, active_animation_count
     from utils.storage import save_settings, save_vars
+    from utils.power import AWAKE, WOKE, DisplayPower
 
     nav = Nav(display, font_small, registry)
     nav.boot(main_menu)
     _frame = 0
     _last_render = time.ticks_add(time.ticks_ms(), -500)
-    IDLE_FRAME_MS = 66
-    ACTIVE_FRAME_MS = 20
     diagnostics = bool(settings.get("diagnostics", False))
     _diag_last = time.ticks_ms()
     _diag_render_us = 0
@@ -376,18 +388,32 @@ def main():
     _diag_frames = 0
     _dirty = True
     _next_var_save = 0
+    power = DisplayPower(
+        display, int(settings.get("sleep_timeout_s", 300)) * 1000)
 
     while True:
         try:
+            kb.scan()
+            event = kb.pop_key_event()
+            now = time.ticks_ms()
+            power_state = power.update(now, kb.any_pressed())
+            if power_state != AWAKE:
+                kb.discard_pending_events()
+                if power_state == WOKE:
+                    _dirty = True
+                    _last_render = time.ticks_add(now, -500)
+                # Matrix keys cannot wake ESP32 deep sleep reliably, so keep a
+                # low-cost scan loop while the OLED controller is asleep.
+                time.sleep_ms(SLEEP_SCAN_MS)
+                continue
+
             if _frame % 100 == 0:
                 gc.collect()
             _frame += 1
 
-            kb.scan()
             animate_all()
             update_tmp()
 
-            event = kb.pop_key_event()
             event = nav.filter_event(kb, event)
             had_event = event is not None
 
@@ -452,8 +478,14 @@ def main():
             elif result == "FUNC_PANEL_DONE":
                 settings = load_settings()
                 _reload_functions(settings, registry)
-                nav.go_back()
+                if registry.plugin_errors:
+                    func_panel.set_load_errors(registry.plugin_errors)
+                    _dirty = True
+                else:
+                    nav.go_back()
             elif result in ("FUNC_PICKER_DONE", "LETTER_DONE", "VAR_PANEL_DONE"):
+                nav.go_back()
+            elif result == "FUNC_PANEL_CANCEL":
                 nav.go_back()
             elif result == "FUNC_PICKER":
                 nav.go_to(func_picker)
@@ -475,13 +507,16 @@ def main():
                 else:
                     _next_var_save = now
 
-            # Keep the scheduler close to the 20 ms animation deadline. A
-            # fixed 10 ms sleep plus rendering/present time otherwise drops
-            # the effective transition rate well below the requested 50 FPS.
-            time.sleep_ms(2 if active else 10)
+            # Leave enough scheduler headroom to sustain the 34 ms (~30 FPS)
+            # active deadline after a full-frame SPI transfer.
+            time.sleep_ms(ACTIVE_LOOP_SLEEP_MS if active else IDLE_LOOP_SLEEP_MS)
 
         except Exception as e:
             # Crash landing: draw error screen, wait for key, then recover
+            try:
+                power.reset(time.ticks_ms())
+            except Exception:
+                pass
             _draw_crash(display, e)
 
             for f in (font_main, font_small):
@@ -496,8 +531,14 @@ def main():
                     break
                 time.sleep_ms(20)
 
-            nav.stack[:] = [main_menu]
-            main_menu.activate()
+            # The acknowledgement key and any simultaneous keys must be fully
+            # released before the root page can receive input again.
+            while kb.any_pressed():
+                kb.scan()
+                kb.discard_pending_events()
+                time.sleep_ms(20)
+
+            nav.reset(main_menu)
             _last_render = 0
 
 

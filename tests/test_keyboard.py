@@ -22,3 +22,16 @@ def test_long_press_is_latched_until_release():
     key.update(False, 1400)
     key.update(True, 1500)
     assert key.consume_long_press(2600, 1000) is True
+
+
+def test_first_press_is_accepted_at_any_ticks_wrap_position(monkeypatch):
+    def wrapped_diff(left, right):
+        return ((left - right + 512) % 1024) - 512
+
+    monkeypatch.setattr("input.keyboard.time.ticks_diff", wrapped_diff)
+    key = Key(0, 0)
+
+    key.update(True, 700)
+
+    assert key.is_pressed is True
+    assert key.state == RISING_EDGE

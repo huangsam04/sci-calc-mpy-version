@@ -19,8 +19,8 @@ class MainMenu(UIElement):
         return (self.menu,)
 
     def activate(self):
-        self.menu.cursor_pos = 0
-        self.menu.view_offset = 0
+        # Selection is persistent navigation state. Returning from a page must
+        # restore the item the user entered instead of jumping to the top.
         self.menu.activate()
 
     def draw(self, display):

@@ -69,11 +69,13 @@ class FunctionRegistry:
     def __init__(self):
         self._defs = {}
         self.angle_mode = 0
+        self.plugin_errors = []
 
     def _add(self, name, callback, kind, precedence, associativity, min_args):
         if not isinstance(name, str) or not name:
             raise ValueError("Function name must be a non-empty string")
-        if name in ("(", ")", ",", ";", "'", '"') or any(c.isspace() for c in name):
+        if (any(c in "(),;'\"" for c in name)
+                or any(c.isspace() for c in name)):
             raise ValueError("Reserved or whitespace function name: " + name)
         identifier = _is_alpha(name[0]) or name[0] == "_"
         if identifier:
@@ -135,6 +137,7 @@ class FunctionRegistry:
         self._defs.clear()
         self._defs.update(other._defs)
         self.angle_mode = other.angle_mode
+        self.plugin_errors = list(other.plugin_errors)
 
     def merge(self, other):
         for name in other._defs:

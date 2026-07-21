@@ -29,19 +29,20 @@ class Key:
         self.is_pressed = False
         self.status_time = 0
         self.start_press = 0
-        self.end_press = 0
+        self.end_press = None
         self.click_cnt = 0
-        self._pending = 0  # timestamp of first high read for two-sample
+        self._pending = None  # timestamp of first high read for two-sample
         self._consumed = False  # edge consumed by pop_key_event()
         self._hold_consumed = False
 
     def update(self, cur_state, cur_time):
         if cur_state:
             if not self.is_pressed:
-                since_release = time.ticks_diff(cur_time, self.end_press)
+                since_release = (None if self.end_press is None else
+                                 time.ticks_diff(cur_time, self.end_press))
                 # If released long ago (>50ms), accept single sample (fast response)
-                if since_release > 50:
-                    self._pending = 0
+                if since_release is None or since_release > 50:
+                    self._pending = None
                     self.click_cnt += 1
                     self.is_pressed = True
                     self.state = RISING_EDGE
@@ -51,10 +52,10 @@ class Key:
                     self._hold_consumed = False
                 elif since_release >= DEBOUNCE_MS:
                     # Recent release: require two consecutive high reads (bounce filter)
-                    if self._pending == 0:
+                    if self._pending is None:
                         self._pending = cur_time
                     else:
-                        self._pending = 0
+                        self._pending = None
                         self.click_cnt += 1
                         self.is_pressed = True
                         self.state = RISING_EDGE
@@ -64,11 +65,11 @@ class Key:
                         self._hold_consumed = False
                 # else: within DEBOUNCE_MS of release, ignore
             else:
-                self._pending = 0
+                self._pending = None
                 self.state = PRESSED
                 self.status_time = time.ticks_diff(cur_time, self.start_press)
         else:
-            self._pending = 0
+            self._pending = None
             if self.is_pressed:
                 self.is_pressed = False
                 self.state = FALLING_EDGE
@@ -78,9 +79,10 @@ class Key:
                 self._hold_consumed = False
             else:
                 self.state = NOT_PRESSED
-                self.status_time = time.ticks_diff(cur_time, self.end_press)
-                if self.status_time > CLICK_WINDOW:
-                    self.click_cnt = 0
+                if self.end_press is not None:
+                    self.status_time = time.ticks_diff(cur_time, self.end_press)
+                    if self.status_time > CLICK_WINDOW:
+                        self.click_cnt = 0
 
     def get_hold_time(self):
         """Return how long this key has been held in ms, or 0."""
@@ -101,13 +103,14 @@ class Keyboard:
         self.keys = [[Key(r, c) for c in range(COLS)] for r in range(ROWS)]
         self._row_pins = [Pin(p, Pin.IN) for p in ROW_PINS]
         self._col_pins = [Pin(p, Pin.OUT) for p in COL_PINS]
-        self._last_scan = 0
+        self._last_scan = None
         for cp in self._col_pins:
             cp.value(0)
 
     def scan(self):
         now = time.ticks_ms()
-        if time.ticks_diff(now, self._last_scan) < SCAN_INTERVAL:
+        if (self._last_scan is not None
+                and time.ticks_diff(now, self._last_scan) < SCAN_INTERVAL):
             return
         self._last_scan = now
         for ci, cp in enumerate(self._col_pins):

@@ -7,6 +7,7 @@ import time
 
 
 _CMD_TIMEOUT = const(100)
+_WRITE_TIMEOUT_MS = const(500)
 _R1_IDLE_STATE = const(1 << 0)
 _R1_ILLEGAL_COMMAND = const(1 << 2)
 _TOKEN_CMD25 = const(0xFC)
@@ -148,27 +149,34 @@ class SDCard:
 
     def write(self, token, buf):
         self.cs(0)
-        self.spi.read(1, token)
-        self.spi.write(buf)
-        self.spi.write(b"\xff")
-        self.spi.write(b"\xff")
-        if self.spi.read(1, 0xFF)[0] & 0x1F != 0x05:
+        try:
+            self.spi.read(1, token)
+            self.spi.write(buf)
+            self.spi.write(b"\xff")
+            self.spi.write(b"\xff")
+            if self.spi.read(1, 0xFF)[0] & 0x1F != 0x05:
+                raise OSError("SD write rejected")
+            self._wait_not_busy()
+        finally:
             self.cs(1)
             self.spi.write(b"\xff")
-            return
-        while self.spi.read(1, 0xFF)[0] == 0:
-            pass
-        self.cs(1)
-        self.spi.write(b"\xff")
 
     def write_token(self, token):
         self.cs(0)
-        self.spi.read(1, token)
-        self.spi.write(b"\xff")
+        try:
+            self.spi.read(1, token)
+            self.spi.write(b"\xff")
+            self._wait_not_busy()
+        finally:
+            self.cs(1)
+            self.spi.write(b"\xff")
+
+    def _wait_not_busy(self):
+        deadline = time.ticks_add(time.ticks_ms(), _WRITE_TIMEOUT_MS)
         while self.spi.read(1, 0xFF)[0] == 0:
-            pass
-        self.cs(1)
-        self.spi.write(b"\xff")
+            if time.ticks_diff(time.ticks_ms(), deadline) >= 0:
+                raise OSError("SD write busy timeout")
+            time.sleep_ms(1)
 
     def readblocks(self, block_num, buf):
         self.spi.write(b"\xff")

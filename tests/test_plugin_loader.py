@@ -60,6 +60,16 @@ def test_registry_hot_reload_replaces_in_place():
     assert evaluate("new(2)", EvalContext({}, live)) == 3
 
 
+def test_registry_hot_reload_keeps_plugin_errors_for_ui():
+    live = FunctionRegistry()
+    replacement = FunctionRegistry()
+    replacement.plugin_errors = [("broken", "boom")]
+
+    live.replace(replacement)
+
+    assert live.plugin_errors == [("broken", "boom")]
+
+
 def test_package_initializers_are_not_listed_as_plugins(tmp_path):
     from calc.loader import list_function_files
 

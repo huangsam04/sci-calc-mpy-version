@@ -9,7 +9,9 @@ DEFAULTS = {
     "enabled_functions": ["basic", "trig", "math", "list"],
     "version": "1.1.0",
     "diagnostics": False,
+    "sleep_timeout_s": 300,
 }
+MAX_SLEEP_TIMEOUT_S = 86_400
 
 _storage_override = None
 _settings_cache = None
@@ -138,6 +140,11 @@ def load_settings():
             merged["enabled_functions"] = list(DEFAULTS["enabled_functions"])
         if merged.get("angle_mode") not in (0, 1):
             merged["angle_mode"] = 0
+        timeout = merged.get("sleep_timeout_s")
+        if not isinstance(timeout, int) or timeout < 0:
+            merged["sleep_timeout_s"] = DEFAULTS["sleep_timeout_s"]
+        elif timeout > MAX_SLEEP_TIMEOUT_S:
+            merged["sleep_timeout_s"] = MAX_SLEEP_TIMEOUT_S
         _settings_cache = merged
     return _settings_cache
 

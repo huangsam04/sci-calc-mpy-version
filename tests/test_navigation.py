@@ -4,7 +4,9 @@ from ui import renderer as renderer_module
 from ui.element import UIElement
 from ui.theme import CONTENT_W
 from ui.motion import (PAGE_TRANSITION_MS, PANEL_SLIDE_MS,
-                       MENU_CURSOR_MS, TEXT_CURSOR_MS)
+                       MENU_CURSOR_MS, TEXT_CURSOR_MS, ACTIVE_FRAME_MS,
+                       ACTIVE_LOOP_SLEEP_MS)
+from screens.main_menu import MainMenu
 
 
 class DisplayStub:
@@ -90,6 +92,47 @@ def test_page_transition_stays_within_responsive_motion_budget():
     assert 160 <= main.TRANSITION_MS <= 200
     assert main.TRANSITION_MS == PAGE_TRANSITION_MS
     assert TEXT_CURSOR_MS < MENU_CURSOR_MS < PANEL_SLIDE_MS < PAGE_TRANSITION_MS
+    assert ACTIVE_FRAME_MS >= 33
+    assert ACTIVE_LOOP_SLEEP_MS >= 5
+
+
+def test_returning_to_main_menu_preserves_selected_item(monkeypatch):
+    monkeypatch.setattr(main.time, "ticks_ms", lambda: 100)
+    registry = type("Registry", (), {"angle_mode": 0})()
+    nav = main.Nav(DisplayStub(), None, registry)
+    root = MainMenu(None)
+    pages = [ScreenStub(), ScreenStub(), ScreenStub()]
+    for index, page in enumerate(pages):
+        root.add_screen("Page " + str(index), page)
+    nav.boot(root)
+    root.menu.cursor_pos = 2
+
+    nav.go_to(pages[2])
+    nav.go_back()
+
+    assert root.menu.cursor_pos == 2
+
+
+def test_navigation_reset_clears_transition_lock_and_owned_animations(monkeypatch):
+    monkeypatch.setattr(main.time, "ticks_ms", lambda: 100)
+    registry = type("Registry", (), {"angle_mode": 0})()
+    nav = main.Nav(DisplayStub(), None, registry)
+    root = ScreenStub()
+    child = UIElement()
+    child.activate = lambda: None
+    child.deactivate = lambda: None
+    child.draw = lambda display: None
+    nav.boot(root)
+    nav.go_to(child)
+    engine.insert_animation(child, "x", 0, 10, 100)
+
+    nav.reset(root)
+
+    assert nav.current is root
+    assert nav.is_transitioning() is False
+    assert nav.filter_event(KeyboardStub(pressed=True), (1, 1, False)) is None
+    assert nav.filter_event(KeyboardStub(), (1, 1, False)) == (1, 1, False)
+    assert engine.is_animating(child) is False
 
 
 def test_transition_moves_only_content_with_balanced_deceleration(monkeypatch):
@@ -191,7 +234,7 @@ def test_quadratic_ease_out_is_responsive_without_a_stalled_tail():
 
     # At the configured frame cadence every transition frame moves at least
     # one pixel, instead of spending the final frames apparently frozen.
-    frame_count = main.TRANSITION_MS // 20
+    frame_count = main.TRANSITION_MS // ACTIVE_FRAME_MS
     positions = [int(CONTENT_W * engine.easing_out_quad(i / frame_count))
                  for i in range(frame_count + 1)]
     assert len(set(positions)) == len(positions)

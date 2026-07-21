@@ -48,6 +48,15 @@ def test_plugin_registry_supports_symbolic_operators_and_validation(registry):
         registry.prefix("(", lambda value, context: value)
 
 
+def test_symbol_operator_cannot_contain_parser_syntax():
+    registry = FunctionRegistry()
+    callback = lambda left, right, context: left
+
+    for name in ("+(", "!!;", "?'", '!"'):
+        with pytest.raises(ValueError, match="Reserved"):
+            registry.infix(name, callback, 20)
+
+
 def test_list_functions_require_well_formed_arguments(registry):
     context = EvalContext({}, registry)
 
