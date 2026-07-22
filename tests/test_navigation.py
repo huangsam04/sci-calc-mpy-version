@@ -92,8 +92,8 @@ def test_page_transition_stays_within_responsive_motion_budget():
     assert 160 <= main.TRANSITION_MS <= 200
     assert main.TRANSITION_MS == PAGE_TRANSITION_MS
     assert TEXT_CURSOR_MS < MENU_CURSOR_MS < PANEL_SLIDE_MS < PAGE_TRANSITION_MS
-    assert ACTIVE_FRAME_MS >= 33
-    assert ACTIVE_LOOP_SLEEP_MS >= 5
+    assert ACTIVE_FRAME_MS == 16
+    assert ACTIVE_LOOP_SLEEP_MS == 1
 
 
 def test_returning_to_main_menu_preserves_selected_item(monkeypatch):
@@ -238,6 +238,21 @@ def test_quadratic_ease_out_is_responsive_without_a_stalled_tail():
     positions = [int(CONTENT_W * engine.easing_out_quad(i / frame_count))
                  for i in range(frame_count + 1)]
     assert len(set(positions)) == len(positions)
+
+
+def test_page_transition_has_enough_visible_motion_samples():
+    """A full-width slide must not turn into a handful of large jumps."""
+    positions = list(range(0, main.TRANSITION_MS, ACTIVE_FRAME_MS))
+    if positions[-1] != main.TRANSITION_MS:
+        positions.append(main.TRANSITION_MS)
+
+    offsets = [int(CONTENT_W * engine.easing_out_quad(
+        elapsed / main.TRANSITION_MS)) for elapsed in positions]
+    steps = [offsets[index + 1] - offsets[index]
+             for index in range(len(offsets) - 1)]
+
+    assert len(steps) >= 12
+    assert max(steps) <= CONTENT_W // 6
 
 
 def test_delayed_animation_stays_registered_until_start(monkeypatch):

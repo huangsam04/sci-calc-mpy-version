@@ -2,7 +2,7 @@
 
 SCI-CALC 的 MicroPython 固件，目标硬件为 ESP32-WROOM-32E、SSD1322 256×64 灰阶 OLED、5×6 矩阵键盘和 FAT32 SD 卡。
 
-当前应用版本为 **1.1.2**。源码编译基线是本仓库 `micropython/` 中的 **MicroPython 1.29.0-preview**，并已在设备的 **MicroPython 1.28.0 (2026-04-06)** 上完成冷启动验证。项目不修改 MicroPython 核心。
+当前应用版本为 **1.1.3**。源码编译基线是本仓库 `micropython/` 中的 **MicroPython 1.29.0-preview**，并已在设备的 **MicroPython 1.28.0 (2026-04-06)** 上完成冷启动验证。项目不修改 MicroPython 核心。
 
 ## 目录与启动方式
 
@@ -216,7 +216,7 @@ compile_expression
   -> FunctionRegistry callback
 ```
 
-页面转场由主循环以最高约 30 FPS 驱动，不再阻塞键盘扫描。页面、转场和固定状态栏
+页面转场由主循环以最高约 60 FPS 驱动，不再阻塞键盘扫描。页面、转场和固定状态栏
 统一经过 `ui.renderer.Renderer` 合成并且每帧只提交一次；状态栏在合成末尾先完整清除
 专属区域再重绘，因此滑动页面不会污染电压边框。转场和控件运动使用统一的非线性
 ease-out 曲线，并在结束时立即重绘实时页面，不等待 500ms 保活刷新。静止页面只在

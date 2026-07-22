@@ -464,6 +464,31 @@ def main():
                     print("ACTION page=" + cur.__class__.__name__
                           + " result=" + str(result))
 
+            # Apply navigation before deciding whether to render. This makes
+            # the input frame the first transition frame instead of leaving
+            # the captured pages dormant for one active-frame interval.
+            if result == "BACK":
+                nav.go_back()
+            elif result == "FUNC_PANEL_DONE":
+                settings = load_settings()
+                _reload_functions(settings, registry)
+                if registry.plugin_errors:
+                    func_panel.set_load_errors(registry.plugin_errors)
+                    _dirty = True
+                else:
+                    nav.go_back()
+            elif result in ("FUNC_PICKER_DONE", "LETTER_DONE", "VAR_PANEL_DONE"):
+                nav.go_back()
+            elif result == "FUNC_PANEL_CANCEL":
+                nav.go_back()
+            elif result == "FUNC_PICKER":
+                nav.go_to(func_picker)
+            elif result == "VARIABLE_PANEL":
+                nav.go_to(var_panel)
+            elif isinstance(result, UIElement) and result is not cur:
+                nav.go_to(result)
+
+            cur = nav.current
             now = time.ticks_ms()
             if had_event or result is not None:
                 _dirty = True
@@ -499,28 +524,6 @@ def main():
                 _diag_present_us = 0
                 _diag_frames = 0
 
-            # ── Screen switching ──
-            if result == "BACK":
-                nav.go_back()
-            elif result == "FUNC_PANEL_DONE":
-                settings = load_settings()
-                _reload_functions(settings, registry)
-                if registry.plugin_errors:
-                    func_panel.set_load_errors(registry.plugin_errors)
-                    _dirty = True
-                else:
-                    nav.go_back()
-            elif result in ("FUNC_PICKER_DONE", "LETTER_DONE", "VAR_PANEL_DONE"):
-                nav.go_back()
-            elif result == "FUNC_PANEL_CANCEL":
-                nav.go_back()
-            elif result == "FUNC_PICKER":
-                nav.go_to(func_picker)
-            elif result == "VARIABLE_PANEL":
-                nav.go_to(var_panel)
-            elif isinstance(result, UIElement) and result is not cur:
-                nav.go_to(result)
-
             # Persist vars
             if (calc_screen.context.dirty
                     and time.ticks_diff(now, _next_var_save) >= 0
@@ -534,7 +537,7 @@ def main():
                 else:
                     _next_var_save = now
 
-            # Leave enough scheduler headroom to sustain the 34 ms (~30 FPS)
+            # Leave enough scheduler headroom to sustain the 16 ms (~60 FPS)
             # active deadline after a full-frame SPI transfer.
             time.sleep_ms(ACTIVE_LOOP_SLEEP_MS if active else IDLE_LOOP_SLEEP_MS)
 

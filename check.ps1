@@ -26,7 +26,9 @@ Get-ChildItem -LiteralPath (Join-Path $ProjectRoot "source") -Recurse -Filter "*
     $Relative = $_.FullName.Substring((Join-Path $ProjectRoot "source").Length + 1)
     $Output = Join-Path $BuildRoot ($Relative + ".mpy")
     New-Item -ItemType Directory -Force -Path (Split-Path -Parent $Output) | Out-Null
-    & $MpyCross -o $Output $_.FullName
+    # The ESP32 port enables the Xtensa windowed native emitter, which is
+    # required to compile the renderer's Viper transition compositor.
+    & $MpyCross -march=xtensawin -o $Output $_.FullName
     if ($LASTEXITCODE -ne 0) { throw "mpy-cross failed: $Relative" }
 }
 

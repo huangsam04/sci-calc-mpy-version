@@ -89,6 +89,11 @@ class Display(object):
         self.gs4_buf = bytearray(self.buffer_length)
         # Frame Buffer
         self.gs4_fb = FrameBuffer(self.gs4_buf, width, height, GS4_HMSB)
+        # Reused by write_cmd() so the animation hot path does not allocate
+        # five tiny command buffers before every full-frame transfer.
+        self._command_byte = bytearray(1)
+        self._command_arg1 = bytearray(1)
+        self._command_arg2 = bytearray(2)
         # Init palette for mono to GS4 blit
         self.palette = MonoPalette()
         self.clear_buffers()
@@ -1022,10 +1027,18 @@ class Display(object):
         """
         self.dc(0)
         self.cs(0)
-        self.spi.write(bytearray([command]))
+        self._command_byte[0] = command
+        self.spi.write(self._command_byte)
         self.cs(1)
         # Handle any passed data
-        if len(args) > 0:
+        if len(args) == 1:
+            self._command_arg1[0] = args[0]
+            self.write_data(self._command_arg1)
+        elif len(args) == 2:
+            self._command_arg2[0] = args[0]
+            self._command_arg2[1] = args[1]
+            self.write_data(self._command_arg2)
+        elif len(args) > 2:
             self.write_data(bytearray(args))
 
     def write_data(self, data):

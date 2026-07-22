@@ -9,10 +9,10 @@ TEXT_CURSOR_MS = 70
 CONTROL_MOTION_MS = 100
 MOTION_EASING = "OUT_QUAD"
 
-# 34ms caps active rendering at about 29.4 FPS. This leaves headroom for the
-# full-frame SPI transfer and avoids chasing an unsustainable 50 FPS deadline.
-ACTIVE_FRAME_MS = 34
+# The native transition compositor leaves enough time for a 16ms cadence,
+# giving full-page slides at least twelve visible positions.
+ACTIVE_FRAME_MS = 16
 IDLE_FRAME_MS = 66
-ACTIVE_LOOP_SLEEP_MS = 8
+ACTIVE_LOOP_SLEEP_MS = 1
 IDLE_LOOP_SLEEP_MS = 10
 SLEEP_SCAN_MS = 25
