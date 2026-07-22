@@ -49,6 +49,29 @@ def test_performance_metrics_reports_phase_latency_frame_and_gc_summaries():
     assert snapshot["gc_us"] == {"count": 1, "p95_us": 75, "max_us": 75}
 
 
+def test_frame_summary_keeps_every_frame_beyond_raw_sample_limit():
+    metrics = PerformanceMetrics(sample_limit=2, frame_bucket_us=100,
+                                 frame_bucket_count=8)
+
+    for _ in range(300):
+        metrics.record_frame(75)
+
+    summary = metrics.snapshot()["frame_us"]
+    assert summary == {"count": 300, "p95_us": 75, "max_us": 75}
+
+
+def test_frame_summary_does_not_understate_an_overflow_p95():
+    metrics = PerformanceMetrics(frame_bucket_us=100, frame_bucket_count=2)
+
+    for _ in range(94):
+        metrics.record_frame(10)
+    for _ in range(6):
+        metrics.record_frame(250)
+
+    assert metrics.snapshot()["frame_us"] == {
+        "count": 100, "p95_us": 250, "max_us": 250}
+
+
 def test_device_benchmark_runner_exercises_repeated_navigation_without_writes():
     metrics = PerformanceMetrics(sample_limit=16)
     root = "root"

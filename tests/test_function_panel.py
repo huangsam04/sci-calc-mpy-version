@@ -74,6 +74,37 @@ def test_function_panel_uses_preloaded_plugin_catalog_during_activation(
     assert panel._items[-1] == ("plugin:basic", False, False)
 
 
+def test_function_panel_only_rescans_plugins_after_explicit_shift_enter(
+        monkeypatch):
+    catalog = [("basic", "basic.py")]
+    descriptions = {"basic": ["%"]}
+    calls = []
+    monkeypatch.setattr(
+        loader, "list_function_files",
+        lambda: calls.append("list") or list(catalog))
+    monkeypatch.setattr(
+        loader, "describe_function_files",
+        lambda: calls.append("describe") or dict(descriptions))
+    panel = FunctionPanel(None, settings={"enabled_functions": ["basic"]})
+    panel.activate()
+    catalog[:] = [("solve", "solve.py")]
+    descriptions.clear()
+    descriptions["solve"] = ["solve"]
+    monkeypatch.setattr(panel.menu, "update", lambda kb, event: "ENTER")
+
+    panel.update(None, (3, 3, True))
+
+    assert calls == ["list", "describe", "list", "describe"]
+    assert panel._items[-1] == ("plugin:solve", False, False)
+
+    panel.menu.cursor_pos = len(panel._items) - 1
+    catalog[:] = []
+    descriptions.clear()
+    panel.update(None, (3, 3, True))
+
+    assert panel.menu.cursor_pos == len(panel._items) - 1
+
+
 def test_function_panel_queues_shared_settings_when_leaving(monkeypatch):
     settings = {"enabled_functions": ["basic", "trig", "math", "list"]}
     queued = []

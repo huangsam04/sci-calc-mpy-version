@@ -26,9 +26,29 @@ class FunctionPanel(UIElement):
         self._load_plugin_catalog()
 
     def _load_plugin_catalog(self):
+        """Inspect add-ons outside the normal page-transition path."""
         from calc.loader import describe_function_files, list_function_files
         self._plugin_files = list_function_files()
         self._plugin_functions = describe_function_files()
+
+    def _reload_plugin_catalog(self):
+        """Explicitly rescan SD add-ons while preserving the selected item."""
+        selected = None
+        if 0 <= self.menu.cursor_pos < len(self._items):
+            selected = self._items[self.menu.cursor_pos][0]
+        self._load_plugin_catalog()
+        self._refresh()
+        if selected is not None:
+            for index, item in enumerate(self._items):
+                if item[0] == selected:
+                    self.menu.cursor_pos = index
+                    break
+        # A removed add-on can leave the old cursor past the rebuilt menu.
+        # Clamp before Menu recalculates its view and animation target.
+        self.menu.cursor_pos = max(
+            0, min(self.menu.cursor_pos, len(self._items) - 1))
+        self.menu._clamp_view()
+        self.menu._update_cursor_target()
 
     def activate(self):
         self._dirty = False
@@ -141,11 +161,17 @@ class FunctionPanel(UIElement):
         elif self._save_error:
             draw_footer(display, self._save_error, self.font, "ESC retry")
         else:
-            draw_footer(display, "ENT toggle", self.font, "ESC back")
+            draw_footer(display, "ENT toggle Sh+ENT reload", self.font,
+                        "ESC back")
 
     def update(self, kb, event=None):
         action = self.menu.update(kb, event)
         if action == "ENTER":
+            if event is not None and event[2]:
+                # Plugin inspection executes SD source. Keep that work behind
+                # an explicit command so entering this screen stays responsive.
+                self._reload_plugin_catalog()
+                return None
             idx = self.menu.cursor_pos
             if 0 <= idx < len(self._items):
                 name, is_on, is_group = self._items[idx]

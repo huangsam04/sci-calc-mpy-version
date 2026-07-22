@@ -6,4 +6,4 @@
 - [x] Cache compiled plot expressions across pan and zoom operations, invalidating the cache when the live function registry changes.
 - [x] Move settings and variable SD writes out of the key-handling critical path while preserving the current atomic commit and recovery behavior.
 - [x] Compare host and device SHA-256 values for every deployed font and runtime asset, not only entry-point files.
-- [x] Evaluate SSD1322 dirty-region updates after device frame measurements. On COM5 after warm-up, 50 navigation cycles measured a 28.8 ms frame p95 and 38.4 ms maximum; full-page slides change nearly all content and four-pixel alignment expands regions, so retain full-frame SPI writes rather than add a slower comparison/cache path.
+- [x] Evaluate SSD1322 dirty-region updates after device frame measurements. On COM5 after warm-up, 50 navigation cycles measured a 28.5 ms frame p95 and 86.3 ms full-run maximum; full-page slides change nearly all content and four-pixel alignment expands regions, so retain full-frame SPI writes rather than add a slower comparison/cache path.
