@@ -56,6 +56,24 @@ def test_builtin_groups_and_addons_have_unambiguous_user_labels(monkeypatch):
     assert "[x] Add-on: trig (sinh, cosh...)" in labels
 
 
+def test_function_panel_uses_preloaded_plugin_catalog_during_activation(
+        monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        loader, "list_function_files",
+        lambda: calls.append("list") or [("basic", "basic.py")])
+    monkeypatch.setattr(
+        loader, "describe_function_files",
+        lambda: calls.append("describe") or {"basic": ["%"]})
+
+    panel = FunctionPanel(None, settings={"enabled_functions": ["basic"]})
+
+    assert calls == ["list", "describe"]
+    panel.activate()
+    assert calls == ["list", "describe"]
+    assert panel._items[-1] == ("plugin:basic", False, False)
+
+
 def test_function_panel_queues_shared_settings_when_leaving(monkeypatch):
     settings = {"enabled_functions": ["basic", "trig", "math", "list"]}
     queued = []

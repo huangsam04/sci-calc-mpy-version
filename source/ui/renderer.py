@@ -72,6 +72,7 @@ class Renderer:
                                      display.height, GS4_HMSB)
         self._incoming = FrameBuffer(self._incoming_buffer, CONTENT_W,
                                      display.height, GS4_HMSB)
+        self._outgoing_screen = None
 
     def _capture(self, screen, target):
         self.display.clear_buffers(0)
@@ -81,7 +82,12 @@ class Renderer:
 
     def capture_transition(self, outgoing, incoming):
         """Capture both content-only page layers into reusable buffers."""
-        self._capture(outgoing, self._outgoing)
+        # A normal present has already rendered the current page into the
+        # outgoing layer. Reuse it at navigation time so an input event does
+        # not synchronously redraw both pages before the first slide frame.
+        if self._outgoing_screen is not outgoing:
+            self._capture(outgoing, self._outgoing)
+            self._outgoing_screen = outgoing
         self._capture(incoming, self._incoming)
 
     def _present_composed(self):
@@ -96,6 +102,9 @@ class Renderer:
         """Present one canonical live page frame."""
         self.display.clear_buffers(0)
         screen.draw(self.display)
+        self._outgoing.fill(0)
+        self._outgoing.blit(self.display.gs4_fb, 0, 0)
+        self._outgoing_screen = screen
         self._present_composed()
 
     def present_transition(self, eased_progress, forward):

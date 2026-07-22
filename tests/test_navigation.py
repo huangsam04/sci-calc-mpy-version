@@ -186,6 +186,22 @@ def test_transition_finishes_with_a_live_canonical_page_frame(monkeypatch):
     assert nav.is_transitioning() is False
 
 
+def test_transition_reuses_the_last_presented_outgoing_page(monkeypatch):
+    monkeypatch.setattr(main.time, "ticks_ms", lambda: 100)
+    registry = type("Registry", (), {"angle_mode": 0})()
+    nav = main.Nav(DisplayStub(), None, registry)
+    outgoing = ScreenStub()
+    incoming = ScreenStub()
+    nav.boot(outgoing)
+    nav.present_current()
+    outgoing_draws = outgoing.draws
+
+    nav.go_to(incoming)
+
+    assert outgoing.draws == outgoing_draws
+    assert incoming.draws == 1
+
+
 def test_renderer_reports_present_time_for_diagnostics(monkeypatch):
     times = iter((1_000, 1_275))
     monkeypatch.setattr(renderer_module.time, "ticks_us",

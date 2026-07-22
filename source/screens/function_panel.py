@@ -19,13 +19,20 @@ class FunctionPanel(UIElement):
         self._load_error = ""
         self._load_error_detail = ""
         self._plugin_functions = {}
+        self._plugin_files = ()
+        # Plugin inspection executes arbitrary add-on source in an isolated
+        # registry. Do it while the boot progress screen is visible, never in
+        # the navigation path that starts a page slide.
+        self._load_plugin_catalog()
+
+    def _load_plugin_catalog(self):
+        from calc.loader import describe_function_files, list_function_files
+        self._plugin_files = list_function_files()
+        self._plugin_functions = describe_function_files()
 
     def activate(self):
-        from calc.loader import describe_function_files
-
         self._dirty = False
         self._toggled = {}
-        self._plugin_functions = describe_function_files()
         self._refresh()
         if not self._focus_load_error():
             self.menu.cursor_pos = 0
@@ -61,8 +68,6 @@ class FunctionPanel(UIElement):
         """Rebuild menu items. Uses _toggled for session state, settings for defaults."""
         from calc.functions import (FUNCTION_GROUPS, FUNCTION_GROUP_LABELS,
                                     DEFAULT_ENABLED_GROUPS)
-        from calc.loader import list_function_files
-
         settings = self._settings
         if settings is None:
             settings = load_settings()
@@ -88,8 +93,7 @@ class FunctionPanel(UIElement):
             self._items.append((group_name, is_on, True))
 
         # --- SD card files ---
-        sd_files = list_function_files()
-        for name, filename in sd_files:
+        for name, filename in self._plugin_files:
             setting_name = "plugin:" + name
             if setting_name in self._toggled:
                 is_on = self._toggled[setting_name]
