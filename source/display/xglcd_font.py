@@ -33,18 +33,23 @@ class XglcdFont(object):
         self.letters = bytearray(bytes_per_letter * self.letter_count)
         mv = memoryview(self.letters)
         offset = 0
-        with open(path, 'r') as f:
+        # X-GLCD sources can contain legacy single-byte glyph names in C
+        # comments. Parse the ASCII data tokens as bytes so those comments
+        # never make a valid font fail UTF-8 decoding on MicroPython.
+        with open(path, 'rb') as f:
             for line in f:
+                if offset >= len(self.letters):
+                    break
                 line = line.strip()
-                if len(line) == 0 or line[0:2] != '0x':
+                if len(line) == 0 or line[0:2] != b'0x':
                     continue
-                comment = line.find('//')
+                comment = line.find(b'//')
                 if comment != -1:
                     line = line[0:comment].strip()
-                if line.endswith(','):
+                if line.endswith(b','):
                     line = line[0:len(line) - 1]
                 mv[offset: offset + bytes_per_letter] = bytearray(
-                    int(b, 16) for b in line.split(','))
+                    int(b, 16) for b in line.split(b','))
                 offset += bytes_per_letter
 
     def get_letter(self, letter, rotate=0):

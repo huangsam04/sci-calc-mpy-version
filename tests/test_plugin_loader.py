@@ -1,8 +1,13 @@
 import pytest
+from pathlib import Path
 
+from calc import loader
 from calc.functions import EvalContext, FunctionRegistry, build_registry
 from calc.loader import load_function_files
 from calc.parser import evaluate
+
+
+SOURCE = Path(__file__).parents[1] / "source"
 
 
 def test_plugin_registers_functions_and_broken_file_is_isolated(tmp_path):
@@ -77,3 +82,30 @@ def test_package_initializers_are_not_listed_as_plugins(tmp_path):
     (tmp_path / "visible.py").write_text("def register(registry): pass\n", encoding="utf-8")
 
     assert list_function_files(str(tmp_path)) == [("visible", "visible.py")]
+
+
+def test_plugin_summaries_follow_registered_function_names(tmp_path):
+    (tmp_path / "multiple.py").write_text(
+        "def unary(value, context): return value\n"
+        "def binary(left, right, context): return left + right\n"
+        "def listed(args, context): return args[0]\n"
+        "def register(registry):\n"
+        "    registry.prefix('unary', unary)\n"
+        "    registry.infix('%%', binary)\n"
+        "    registry.list_function('listed', listed, min_args=1)\n",
+        encoding="utf-8",
+    )
+
+    assert loader.describe_function_files(str(tmp_path)) == {
+        "multiple": ["unary", "%%", "listed"],
+    }
+
+
+def test_shipped_addons_have_dynamic_function_summaries():
+    summaries = loader.describe_function_files(str(SOURCE / "functions"))
+
+    assert summaries["basic"] == ["%"]
+    assert summaries["solve"] == ["solve"]
+    assert summaries["trig"] == [
+        "sinh", "cosh", "tanh", "sind", "cosd", "tand", "PI",
+    ]

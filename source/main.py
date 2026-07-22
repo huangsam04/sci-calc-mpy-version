@@ -20,6 +20,8 @@ SPI_CS = 5
 SPI_DC = 16
 SPI_RESET = 17
 TRANSITION_MS = PAGE_TRANSITION_MS
+BOOT_PROGRESS_FRAMES = 1
+BOOT_FINAL_HOLD_MS = 40
 
 
 def _init_display():
@@ -40,7 +42,7 @@ _boot_title_gs = 0     # title grayscale for fade-in
 
 
 def _boot_progress(display, step, total, label=""):
-    """Draw boot screen with smooth animated progress bar."""
+    """Draw the completed state of one blocking boot phase."""
     global _boot_fill_w, _boot_title_gs
 
     bar_x, bar_y, bar_w, bar_h = 20, 34, 216, 5
@@ -50,8 +52,10 @@ def _boot_progress(display, step, total, label=""):
     if _boot_title_gs < 15:
         _boot_title_gs = min(15, _boot_title_gs + 3)
 
-    # Animate each progress segment with an exact cubic ease-out.
-    frames = 8 if target_w != _boot_fill_w else 1
+    # Imports are synchronous, so intermediate splash frames cannot report
+    # real progress. One frame per completed phase gets to the usable UI much
+    # sooner while preserving meaningful stage feedback.
+    frames = BOOT_PROGRESS_FRAMES
     for i in range(frames):
         t = (i + 1) / frames
         eased = 1 - (1 - t) ** 3
@@ -85,8 +89,6 @@ def _boot_progress(display, step, total, label=""):
         display.draw_text8x8(px, 44, progress, gs=8)
 
         display.present()
-        if frames > 1:
-            time.sleep_ms(12)
 
     _boot_fill_w = target_w
 
@@ -114,6 +116,17 @@ def _boot_fail(display, step, total, label, error):
     display.draw_text8x8(16, 52, err_str, gs=10)
     display.present()
     time.sleep(2)
+
+
+def _needs_render(now, last_render, active, dirty, stopwatch_running,
+                  input_changed):
+    """Decide whether the current loop should submit a full display frame."""
+    if input_changed:
+        return True
+    elapsed = time.ticks_diff(now, last_render)
+    frame_ms = ACTIVE_FRAME_MS if active else IDLE_FRAME_MS
+    return (elapsed >= frame_ms
+            and (active or dirty or stopwatch_running or elapsed >= 500))
 
 
 def _reload_functions(settings, registry=None):
@@ -372,7 +385,8 @@ def main():
         raise
 
     _boot_progress(display, 8, 8, "Starting SCI-CALC...")
-    time.sleep_ms(180)
+    if BOOT_FINAL_HOLD_MS:
+        time.sleep_ms(BOOT_FINAL_HOLD_MS)
 
     # ============================================================
     # Phase 3: Main loop
@@ -454,11 +468,10 @@ def main():
             if had_event or result is not None:
                 _dirty = True
             active = nav.is_transitioning() or has_active_animations()
-            frame_ms = ACTIVE_FRAME_MS if active else IDLE_FRAME_MS
-            needs_render = (time.ticks_diff(now, _last_render) >= frame_ms
-                            and (active or _dirty
-                                 or cur is stopwatch and stopwatch._running
-                                 or time.ticks_diff(now, _last_render) >= 500))
+            needs_render = _needs_render(
+                now, _last_render, active, _dirty,
+                cur is stopwatch and stopwatch._running,
+                had_event or result is not None)
 
             if needs_render:
                 _last_render = now

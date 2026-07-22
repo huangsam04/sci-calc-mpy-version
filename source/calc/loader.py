@@ -30,6 +30,18 @@ def _execute_plugin(path, module_name):
     return namespace
 
 
+def _build_staging_registry(path, module_name, angle_mode=0):
+    """Run one plugin against an isolated registry and return its namespace."""
+    namespace = _execute_plugin(path, module_name)
+    register = namespace.get("register")
+    if not callable(register):
+        raise ValueError(path + " must define register(registry)")
+    staging = FunctionRegistry()
+    staging.angle_mode = angle_mode
+    register(staging)
+    return staging, namespace
+
+
 def load_function_files(registry, enabled_files=None, func_dir="/sd/functions"):
     """Register enabled plugins, isolating each file until it succeeds."""
     report = LoadReport()
@@ -43,13 +55,9 @@ def load_function_files(registry, enabled_files=None, func_dir="/sd/functions"):
         if enabled_files is not None and name not in enabled_files:
             continue
         try:
-            namespace = _execute_plugin(_join(func_dir, filename), "scicalc_plugin_" + name)
-            register = namespace.get("register")
-            if not callable(register):
-                raise ValueError(filename + " must define register(registry)")
-            staging = FunctionRegistry()
-            staging.angle_mode = registry.angle_mode
-            register(staging)
+            staging, namespace = _build_staging_registry(
+                _join(func_dir, filename), "scicalc_plugin_" + name,
+                registry.angle_mode)
             registry.merge(staging)
             message = namespace.get("WELCOME", "")
             report.loaded.append((name, len(staging), message))
@@ -57,6 +65,33 @@ def load_function_files(registry, enabled_files=None, func_dir="/sd/functions"):
             report.errors.append((name, str(error)))
             print("Plugin error " + filename + ": " + str(error))
     return report
+
+
+def describe_function_files(func_dir="/sd/functions"):
+    """Return registered display names for each discoverable plugin file.
+
+    Plugins run in isolated registries, so inspection cannot add callbacks to
+    the live calculator registry. A broken plugin simply has no description;
+    normal loading will still surface its detailed error to the user.
+    """
+    descriptions = {}
+    try:
+        files = _plugin_files(func_dir)
+    except OSError:
+        return descriptions
+
+    for filename in sorted(files):
+        name = filename[:-3]
+        try:
+            staging, _ = _build_staging_registry(
+                _join(func_dir, filename), "scicalc_plugin_preview_" + name)
+            function_names = []
+            for function_name in staging.keys():
+                function_names.append(function_name)
+            descriptions[name] = function_names
+        except Exception:
+            descriptions[name] = []
+    return descriptions
 
 
 def list_function_files(func_dir="/sd/functions"):

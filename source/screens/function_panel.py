@@ -16,11 +16,15 @@ class FunctionPanel(UIElement):
         self._save_error = ""
         self._load_error = ""
         self._load_error_detail = ""
+        self._plugin_functions = {}
 
     def activate(self):
+        from calc.loader import describe_function_files
+
         self._dirty = False
         self._save_error = ""
         self._toggled = {}
+        self._plugin_functions = describe_function_files()
         self._refresh()
         if not self._focus_load_error():
             self.menu.cursor_pos = 0
@@ -90,6 +94,14 @@ class FunctionPanel(UIElement):
                 is_on = setting_name in saved_enabled
             prefix = "[x]" if is_on else "[ ]"
             label = f"{prefix} Add-on: {name}"
+            function_names = self._plugin_functions.get(name, ())
+            if function_names:
+                # Add-on labels include a longer fixed prefix than built-ins;
+                # two names keep the common trig add-on within the menu width.
+                summary = ", ".join(function_names[:2])
+                if len(function_names) > 2:
+                    summary += "..."
+                label += " (" + summary + ")"
             self.menu.add_item(label, None)
             self._items.append((setting_name, is_on, False))
 
