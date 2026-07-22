@@ -7,6 +7,8 @@ $WorkspaceRoot = Split-Path -Parent $ProjectRoot
 $Python = Join-Path $WorkspaceRoot ".venv\python.exe"
 $MpyCross = Join-Path $WorkspaceRoot "micropython\mpy-cross\build\mpy-cross.exe"
 $BuildRoot = Join-Path $ProjectRoot ".mpy-build"
+$FontBuild = Join-Path $BuildRoot "fonts"
+$PytestTemp = Join-Path $ProjectRoot ".pytest_tmp\check-tmp"
 
 if (-not (Test-Path -LiteralPath $MpyCross)) {
     throw "Missing MicroPython 1.29 mpy-cross: build it from ..\micropython\mpy-cross first"
@@ -16,7 +18,12 @@ if ($MpyVersion -notmatch "v1\.29\.0-preview") {
     throw "Wrong mpy-cross version; expected repository MicroPython v1.29.0-preview: $MpyVersion"
 }
 
-& $Python -m pytest
+& $Python (Join-Path $ProjectRoot "tools\build_fonts.py") `
+    --source-dir (Join-Path $ProjectRoot "source\fonts") `
+    --output-dir $FontBuild
+if ($LASTEXITCODE -ne 0) { throw "compact font asset generation failed" }
+
+& $Python -m pytest ("--basetemp=" + $PytestTemp)
 if ($LASTEXITCODE -ne 0) { throw "pytest failed" }
 
 & $Python -m compileall -q (Join-Path $ProjectRoot "source")

@@ -12,21 +12,22 @@ SCI-CALC 的 MicroPython 固件，目标硬件为 ESP32-WROOM-32E、SSD1322 256�
 内部 Flash
 ├── boot.py             # 挂载 SD，随后立即退出
 ├── sdcard.py           # 官方 Python SPI SD 驱动
-├── main.py             # execfile('/sd/main.py')
+├── main.py             # execfile('/sd/launch.py')，兼容旧版 main.py
 ├── recovery.py         # SD/应用损坏时的恢复界面
 └── display/            # 恢复界面所需的最小显示驱动
 
 SD 卡 /sd
-├── main.py
+├── launch.py           # 源码启动包装器，导入 main.mpy 或 main.py
+├── main.mpy            # 经 ABI 探针验证后的核心应用
 ├── settings.json
 ├── vars.json
 ├── anim/ calc/ display/ input/ screens/ ui/ utils/
-├── fonts/
+├── fonts/*.xglcd       # 主机从 X-GLCD C 源生成的紧凑字形资产
 └── functions/          # 可开关的 Python 插件
 ```
 
 MicroPython 按 `_boot.py → /boot.py → /main.py` 启动。无 SD 卡、挂载失败或
-`/sd/main.py` 无法执行时，内部恢复界面会显示错误；串口同时保留完整错误信息。
+`/sd/launch.py` 无法执行时，内部恢复界面会显示错误；串口同时保留完整错误信息。
 
 ## 刷入解释器
 
@@ -51,13 +52,16 @@ MicroPython 按 `_boot.py → /boot.py → /main.py` 启动。无 SD 卡、挂�
 1. 安装内部启动和恢复文件；
 2. 执行一次必要的硬复位，释放旧应用占用的 SPI 状态；
 3. 等待新 `/boot.py` 挂载 SD 卡并创建目录；
-4. 上传完整应用到 `/sd`；
-5. 对关键入口执行 SHA-256 校验；
-6. 仅在传入 `-Reset` 时执行部署完成后的再次复位。
+4. 生成紧凑 `.xglcd` 字体资产；
+5. 上传并导入带 `xtensawin` 原生代码的临时 `.mpy` 探针；只有设备接受该探针时才上传核心 `.mpy`，否则安全回退为 `.py`；
+6. 上传完整应用到 `/sd`，其中 `functions/*.py` 保持源码以支持动态插件加载；
+7. 逐个比较所有内部和 SD 运行资产（包括字体）的主机/设备 SHA-256；
+8. 仅在传入 `-Reset` 时执行部署完成后的再次复位。
 
 脚本可重复执行。中途硬复位用于切换启动器，不能省略；它可避免旧固件的 SPI
 对象导致 `ESP_ERR_INVALID_STATE`。部署不会自动擦除 SD 上不属于当前源码的文件；
-`settings.json` 和 `vars.json` 仅在设备上不存在时初始化，重复部署会保留用户设置与变量。
+`settings.json` 和 `vars.json` 仅在设备上不存在时初始化，首次写入也会参与 SHA-256
+校验；重复部署会保留已有的用户设置与变量，因此不会覆盖或重新校验这两份可变状态。
 
 SD 卡和 OLED 共用 GPIO18/23 上的 SPI2，通过 CS4/CS5 分隔事务。内部
 `sdcard.py` 使用官方 Python block-device 驱动；不要替换成独占 SPI host 的
@@ -224,7 +228,8 @@ ease-out 曲线，并在结束时立即重绘实时页面，不等待 500ms 保�
 释放才重新接收业务输入。
 
 设置与变量采用 `文件.tmp → 文件` 提交，并保留上一份 `.bak`。主文件损坏时优先
-读取备份；写入失败不会清除当前内存状态，UI 会显示保存失败。
+读取备份；按键处理只更新内存并把写入排入空闲主循环，写入失败不会清除当前内存状态，
+UI 会显示保存失败并每两秒重试。
 
 ## 主机测试与兼容检查
 
@@ -236,6 +241,7 @@ ease-out 曲线，并在结束时立即重绘实时页面，不等待 500ms 保�
 
 它会依次运行：
 
+- 从 C 字体源生成紧凑 `.xglcd` 资产；
 - pytest 行为测试；
 - CPython 语法编译；
 - 仓库 MicroPython 1.29.0-preview 的 mpy-cross 逐文件编译。
@@ -260,6 +266,23 @@ ease-out 曲线，并在结束时立即重绘实时页面，不等待 500ms 保�
 
 将 `settings.json` 的 `diagnostics` 设为 `true` 后，正常实机操作还会逐键输出
 `INPUT page/row/col/shift/key` 和 `ACTION page/result`，并保留每五秒性能统计。
+
+## 实机性能基准
+
+`benchmarks.py` 在原始 REPL 中构建一套只读 UI 环境，避免依赖被中断的应用主循环，并
+报告应用启动分段、合成导航事件到首帧呈现、帧 p95/最大值、GC 暂停以及预热后的导航堆变化。
+它不包含解释器上电、物理按键扫描或正常事件分派的时间：
+
+```powershell
+..\.venv\python.exe -m mpremote connect COM5 exec `
+  "import sys; sys.path.insert(0,'/sd'); import benchmarks; benchmarks.run(cycles=50)"
+..\.venv\python.exe -m mpremote connect COM5 reset
+```
+
+2026-07-22 在 COM5 上预热后连续两轮 50 次页面往返的帧 p95 为 18.7-21.0 ms，最大值
+为 34.6-44.0 ms，GC p95 约 20.2 ms，堆变化为 -1,168 和 -736 字节。页面滑动会改变几乎
+整个内容区；SSD1322 的四像素列对齐会进一步扩大矩形，且增量传输需要额外比较和逐行 SPI
+事务。因此当前保留全帧传输，而不引入会降低完整页面转场性能且额外占用堆的脏矩形缓存。
 
 ## 实机回归清单
 

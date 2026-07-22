@@ -40,6 +40,9 @@ class PlotScreen(UIElement):
         self.mode = 0
         self.registry = registry
         self._program = None
+        self._program_cache = {}
+        self._program_cache_order = []
+        self._program_cache_revision = None
         self._eval_vars = {"x": 0.0}
         self._eval_context = EvalContext(self._eval_vars, registry)
 
@@ -105,6 +108,29 @@ class PlotScreen(UIElement):
 
     # ── curve rendering (2-pass: find range → draw to buffer) ────
 
+    def _compile_program(self):
+        """Reuse parsed expressions until the live function registry changes."""
+        revision = getattr(self.registry, "revision", None)
+        if revision != self._program_cache_revision:
+            self._program_cache.clear()
+            self._program_cache_order = []
+            self._program_cache_revision = revision
+
+        program = self._program_cache.get(self.expr)
+        if program is None:
+            program = compile_expression(self.expr, self.registry)
+            if len(self._program_cache_order) >= 4:
+                oldest = self._program_cache_order.pop(0)
+                del self._program_cache[oldest]
+            self._program_cache[self.expr] = program
+            self._program_cache_order.append(self.expr)
+        else:
+            # Keep the active expression in the bounded LRU cache so each
+            # pan/zoom continues to reuse its compiled form.
+            self._program_cache_order.remove(self.expr)
+            self._program_cache_order.append(self.expr)
+        self._program = program
+
     def _eval(self, x_val):
         try:
             self._eval_vars["x"] = x_val
@@ -120,7 +146,7 @@ class PlotScreen(UIElement):
             return
 
         try:
-            self._program = compile_expression(self.expr, self.registry)
+            self._compile_program()
         except ParseError as error:
             self._curve_fb = None
             self.error_popup.show(self.expr, error, error.pos)

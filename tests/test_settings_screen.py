@@ -42,14 +42,14 @@ def test_settings_rows_are_version_about_then_brightness():
     ]
 
 
-def test_about_opens_from_second_row_and_brightness_updates_immediately():
+def test_about_opens_from_second_row_and_brightness_queues_persistence():
     display = DisplayStub()
-    saved = []
+    queued = []
     settings = {"version": "1.2.3", "brightness": 80}
     about = AboutScreen(None, "1.2.3")
     screen = SettingsScreen(
         None, display, settings, about,
-        save=lambda value: saved.append(dict(value)) or True)
+        request_save=lambda value, callback: queued.append((dict(value), callback)))
 
     screen.menu.cursor_pos = 1
     assert screen.update(KeyboardStub(), (3, 3, False)) is about
@@ -59,4 +59,4 @@ def test_about_opens_from_second_row_and_brightness_updates_immediately():
 
     assert settings["brightness"] == 90
     assert display.brightness_values == [90]
-    assert saved[-1]["brightness"] == 90
+    assert queued[0][0]["brightness"] == 90

@@ -21,6 +21,70 @@ def test_plot_builds_reusable_curve_for_valid_expression():
     assert plot._program is not None
 
 
+def test_plot_reuses_compiled_expression_across_pan_and_zoom(monkeypatch):
+    registry = build_registry()
+    plot = PlotScreen(None, registry=registry)
+    plot.expr = "x^2"
+    real_compile = plot_module.compile_expression
+    calls = []
+
+    def record_compile(expr, active_registry):
+        calls.append((expr, active_registry))
+        return real_compile(expr, active_registry)
+
+    monkeypatch.setattr(plot_module, "compile_expression", record_compile)
+
+    plot._render_curve()
+    compiled = plot._program
+    plot._pan_x(0.25)
+    plot._zoom_x(0.5)
+    plot._zoom_y(0.5)
+
+    assert calls == [("x^2", registry)]
+    assert plot._program is compiled
+
+
+def test_plot_recompiles_expression_after_function_registry_replacement(monkeypatch):
+    registry = build_registry()
+    plot = PlotScreen(None, registry=registry)
+    plot.expr = "x^2"
+    real_compile = plot_module.compile_expression
+    calls = []
+
+    def record_compile(expr, active_registry):
+        calls.append(expr)
+        return real_compile(expr, active_registry)
+
+    monkeypatch.setattr(plot_module, "compile_expression", record_compile)
+    plot._render_curve()
+    registry.replace(build_registry())
+    plot._render_curve()
+
+    assert calls == ["x^2", "x^2"]
+
+
+def test_plot_caches_current_expression_after_lru_eviction(monkeypatch):
+    registry = build_registry()
+    plot = PlotScreen(None, registry=registry)
+    real_compile = plot_module.compile_expression
+    calls = []
+
+    def record_compile(expr, active_registry):
+        calls.append(expr)
+        return real_compile(expr, active_registry)
+
+    monkeypatch.setattr(plot_module, "compile_expression", record_compile)
+    for expr in ("x", "x+1", "x+2", "x+3", "x+4"):
+        plot.expr = expr
+        plot._render_curve()
+
+    plot._pan_x(0.25)
+
+    assert calls == ["x", "x+1", "x+2", "x+3", "x+4"]
+    assert "x" not in plot._program_cache
+    assert "x+4" in plot._program_cache
+
+
 def test_expression_editor_animates_as_overlay_without_moving_graph(monkeypatch):
     animated_attributes = []
 

@@ -1,6 +1,7 @@
 """Crash-tolerant JSON persistence for settings and calculator variables."""
 import json
 import os
+import time
 
 
 DEFAULTS = {
@@ -176,6 +177,73 @@ def save_vars(variables):
     global _vars_cache
     _vars_cache = dict(variables)
     return _atomic_write_json(_join(_storage_dir(), "vars.json"), variables)
+
+
+def _snapshot(value):
+    """Copy mutable JSON-shaped data before it waits for an idle write slot."""
+    if isinstance(value, dict):
+        return {key: _snapshot(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_snapshot(item) for item in value]
+    return value
+
+
+class DeferredStorage:
+    """Coalesce persistence requests and commit them only from an idle loop."""
+
+    def __init__(self, settings_writer=save_settings, vars_writer=save_vars,
+                 retry_ms=2000):
+        self._settings_writer = settings_writer
+        self._vars_writer = vars_writer
+        self._retry_ms = retry_ms
+        self._settings_pending = None
+        self._vars_pending = None
+        self._settings_due = None
+        self._vars_due = None
+
+    def request_settings(self, settings, callback=None):
+        self._settings_pending = (_snapshot(settings), callback)
+        self._settings_due = None
+
+    def request_vars(self, variables, callback=None):
+        self._vars_pending = (_snapshot(variables), callback)
+        self._vars_due = None
+
+    def _flush_pending(self, kind, writer, now):
+        pending_name = "_" + kind + "_pending"
+        due_name = "_" + kind + "_due"
+        pending = getattr(self, pending_name)
+        if pending is None:
+            return None
+        due = getattr(self, due_name)
+        if due is not None and time.ticks_diff(now, due) < 0:
+            return None
+
+        value, callback = pending
+        try:
+            success = bool(writer(value))
+        except Exception:
+            success = False
+
+        if success:
+            setattr(self, pending_name, None)
+            setattr(self, due_name, None)
+        else:
+            setattr(self, due_name, time.ticks_add(now, self._retry_ms))
+
+        if callback is not None:
+            try:
+                callback(success)
+            except Exception:
+                pass
+        return kind, success
+
+    def flush(self, now):
+        """Commit at most one pending write and report its kind and result."""
+        result = self._flush_pending("settings", self._settings_writer, now)
+        if result is not None:
+            return result
+        return self._flush_pending("vars", self._vars_writer, now)
 
 
 def last_error():

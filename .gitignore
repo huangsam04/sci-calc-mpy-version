@@ -3,4 +3,4 @@
 .mpy-build/
 source/**/__pycache__/
 tests/**/__pycache__/
-
+tools/**/__pycache__/

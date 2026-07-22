@@ -12,6 +12,7 @@ from ui.motion import (PAGE_TRANSITION_MS, ACTIVE_FRAME_MS, IDLE_FRAME_MS,
                        ACTIVE_LOOP_SLEEP_MS, IDLE_LOOP_SLEEP_MS,
                        SLEEP_SCAN_MS)
 from version import VERSION
+from performance import metrics
 
 # SPI pins for display
 SPI_CLK = 18
@@ -284,7 +285,9 @@ def main():
     # ============================================================
     # Phase 1: Display FIRST — show splash immediately
     # ============================================================
+    metrics.start_boot()
     display = _init_display()
+    metrics.mark_boot("display")
     _boot_progress(display, 1, 8, "Loading keyboard...")
 
     # ============================================================
@@ -301,17 +304,19 @@ def main():
     except Exception as e:
         _boot_fail(display, 2, 8, "Keyboard", e)
         raise  # can't run without keyboard
+    metrics.mark_boot("keyboard")
 
     # Fonts (fallback: built-in 8x8 font via draw_text8x8)
     try:
-        font_main = XglcdFont("/sd/fonts/Bally7x9.c", 7, 9)
+        font_main = XglcdFont("/sd/fonts/Bally7x9.xglcd", 7, 9)
     except Exception as e:
         _boot_fail(display, 3, 8, "Fonts", e)
         font_main = None
     try:
-        font_small = XglcdFont("/sd/fonts/Neato5x7.c", 5, 7)
+        font_small = XglcdFont("/sd/fonts/Neato5x7.xglcd", 5, 7)
     except Exception:
         font_small = None
+    metrics.mark_boot("fonts")
     _boot_progress(display, 3, 8, "Loading settings...")
 
     # Settings (fallback: defaults)
@@ -323,6 +328,7 @@ def main():
         _boot_fail(display, 4, 8, "Settings", e)
         settings = {"angle_mode": 0, "enabled_functions": ["basic", "trig", "math", "list"], "diagnostics": False, "brightness": 100}
     display.set_brightness(settings.get("brightness", 100))
+    metrics.mark_boot("settings")
     # Variables (fallback: empty dict)
     try:
         from utils.storage import load_vars
@@ -331,6 +337,7 @@ def main():
     except Exception as e:
         _boot_fail(display, 5, 8, "Vars", e)
         vars_dict = {}
+    metrics.mark_boot("variables")
 
     # Functions (fallback: built-in groups only)
     try:
@@ -342,6 +349,7 @@ def main():
         from calc.functions import build_registry
         registry = build_registry(["basic", "trig", "math", "list"])
         registry.angle_mode = settings.get("angle_mode", 0)
+    metrics.mark_boot("functions")
 
     # Screens (import + build — skip broken ones)
     try:
@@ -360,12 +368,18 @@ def main():
         _boot_fail(display, 7, 8, "Screens", e)
         # If imports failed, we can't continue — the error screen already showed
         raise
+    metrics.mark_boot("screen_imports")
 
     try:
+        from utils.storage import DeferredStorage
+        persistence = DeferredStorage()
         about = AboutScreen(font_main, VERSION)
         settings_screen = SettingsScreen(
-            font_main, display, settings, about)
-        func_panel = FunctionPanel(font_main)
+            font_main, display, settings, about,
+            request_save=persistence.request_settings)
+        func_panel = FunctionPanel(
+            font_main, request_settings=persistence.request_settings,
+            settings=settings)
         func_panel.set_load_errors(registry.plugin_errors)
         stopwatch = StopwatchScreen(font_main)
         calc_screen = CalculatorScreen(font_main, font_small, registry, vars_dict)
@@ -393,11 +407,14 @@ def main():
     # ============================================================
     from ui.element import UIElement
     from anim.engine import animate_all, update_tmp, has_active_animations, active_animation_count
-    from utils.storage import save_settings, save_vars
     from utils.power import AWAKE, WOKE, DisplayPower
 
     nav = Nav(display, font_small, registry)
     nav.boot(main_menu)
+    metrics.bind_runtime(nav, main_menu,
+                         (calc_screen, plot_screen, func_panel, stopwatch,
+                          settings_screen))
+    metrics.mark_boot("ui_ready")
     _frame = 0
     _last_render = time.ticks_add(time.ticks_ms(), -500)
     diagnostics = bool(settings.get("diagnostics", False))
@@ -406,7 +423,6 @@ def main():
     _diag_present_us = 0
     _diag_frames = 0
     _dirty = True
-    _next_var_save = 0
     power = DisplayPower(
         display, int(settings.get("sleep_timeout_s", 180)) * 1000)
 
@@ -427,7 +443,12 @@ def main():
                 continue
 
             if _frame % 100 == 0:
+                if diagnostics:
+                    gc_started = time.ticks_us()
                 gc.collect()
+                if diagnostics:
+                    metrics.record_gc(
+                        time.ticks_diff(time.ticks_us(), gc_started))
             _frame += 1
 
             animate_all()
@@ -435,6 +456,8 @@ def main():
 
             event = nav.filter_event(kb, event)
             had_event = event is not None
+            if diagnostics and had_event:
+                metrics.record_input()
 
             cur = nav.current
             result = None
@@ -454,8 +477,7 @@ def main():
                 elif (erow, ecol) == (4, 4):
                     registry.angle_mode = 1 - registry.angle_mode
                     settings["angle_mode"] = registry.angle_mode
-                    if not save_settings(settings):
-                        calc_screen.set_storage_error("Not saved - check SD")
+                    persistence.request_settings(settings)
                     event = None
             if (not nav.is_transitioning()
                     and (event is not None or kb.is_pressed(0, 0) or kb.is_pressed(4, 3))):
@@ -470,7 +492,6 @@ def main():
             if result == "BACK":
                 nav.go_back()
             elif result == "FUNC_PANEL_DONE":
-                settings = load_settings()
                 _reload_functions(settings, registry)
                 if registry.plugin_errors:
                     func_panel.set_load_errors(registry.plugin_errors)
@@ -504,7 +525,10 @@ def main():
                 if not nav.draw_transition(now):
                     nav.present_current()
                 _diag_present_us += nav.last_present_us
-                _diag_render_us += time.ticks_diff(time.ticks_us(), render_started)
+                render_elapsed = time.ticks_diff(time.ticks_us(), render_started)
+                _diag_render_us += render_elapsed
+                if diagnostics:
+                    metrics.record_frame(render_elapsed)
                 _diag_frames += 1
                 _dirty = False
 
@@ -524,18 +548,16 @@ def main():
                 _diag_present_us = 0
                 _diag_frames = 0
 
-            # Persist vars
-            if (calc_screen.context.dirty
-                    and time.ticks_diff(now, _next_var_save) >= 0
-                    and calc_screen.context.consume_dirty()):
-                if not save_vars(calc_screen.vars):
-                    calc_screen.context.mark_dirty()
+            if calc_screen.context.dirty and calc_screen.context.consume_dirty():
+                persistence.request_vars(calc_screen.vars)
+
+            # SD writes are deliberately delayed until a quiet loop. The
+            # underlying storage functions retain their atomic backup scheme.
+            if not active and not had_event and result is None:
+                persisted = persistence.flush(now)
+                if persisted is not None and not persisted[1]:
                     calc_screen.set_storage_error("Not saved - check SD")
-                    # Avoid hammering a missing or unhealthy SD card.
-                    _next_var_save = time.ticks_add(now, 2000)
                     _dirty = True
-                else:
-                    _next_var_save = now
 
             # Leave enough scheduler headroom to sustain the 16 ms (~60 FPS)
             # active deadline after a full-frame SPI transfer.

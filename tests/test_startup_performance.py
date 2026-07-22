@@ -47,6 +47,13 @@ def test_shipped_fonts_load_despite_legacy_non_utf8_comments():
         assert (width, height) == (letter_width, font_height)
 
 
+def test_boot_uses_generated_binary_font_assets():
+    main_source = (SOURCE / "main.py").read_text(encoding="utf-8")
+
+    assert "/sd/fonts/Bally7x9.xglcd" in main_source
+    assert "/sd/fonts/Neato5x7.xglcd" in main_source
+
+
 def test_boot_progress_avoids_artificial_animation_delay(monkeypatch):
     display = SplashDisplay()
     delays = []

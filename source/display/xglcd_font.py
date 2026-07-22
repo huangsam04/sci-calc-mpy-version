@@ -4,6 +4,10 @@ from math import floor
 from framebuf import FrameBuffer, MONO_VLSB  # type: ignore
 
 
+_COMPACT_MAGIC = b"XGF1"
+_COMPACT_HEADER_SIZE = 8
+
+
 class XglcdFont(object):
     """Font data in X-GLCD format.
 
@@ -32,11 +36,27 @@ class XglcdFont(object):
         bytes_per_letter = self.bytes_per_letter
         self.letters = bytearray(bytes_per_letter * self.letter_count)
         mv = memoryview(self.letters)
-        offset = 0
-        # X-GLCD sources can contain legacy single-byte glyph names in C
-        # comments. Parse the ASCII data tokens as bytes so those comments
-        # never make a valid font fail UTF-8 decoding on MicroPython.
         with open(path, 'rb') as f:
+            header = f.read(_COMPACT_HEADER_SIZE)
+            if header[0:4] == _COMPACT_MAGIC:
+                if len(header) != _COMPACT_HEADER_SIZE:
+                    raise ValueError("Incomplete compact X-GLCD font header")
+                metadata = (header[4], header[5], header[6], header[7])
+                expected = (self.width, self.height, self.start_letter,
+                            self.letter_count)
+                if metadata != expected:
+                    raise ValueError("Compact X-GLCD font metadata does not match requested font")
+                data = f.read(len(self.letters))
+                if len(data) != len(self.letters):
+                    raise ValueError("Incomplete compact X-GLCD font data")
+                mv[:] = data
+                return
+
+            f.seek(0)
+            offset = 0
+            # X-GLCD sources can contain legacy single-byte glyph names in C
+            # comments. Parse the ASCII data tokens as bytes so those comments
+            # never make a valid font fail UTF-8 decoding on MicroPython.
             for line in f:
                 if offset >= len(self.letters):
                     break

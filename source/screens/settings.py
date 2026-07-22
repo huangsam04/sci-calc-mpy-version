@@ -3,7 +3,6 @@ from input.keyboard import get_key_label
 from ui.element import UIElement
 from ui.menu import Menu
 from ui.theme import draw_footer, draw_header
-from utils.storage import save_settings
 from version import VERSION
 
 
@@ -15,14 +14,16 @@ BRIGHTNESS_STEP = 10
 class SettingsScreen(UIElement):
     """Show firmware information and small hardware-facing preferences."""
 
-    def __init__(self, font, display, settings, about_screen, save=None):
+    def __init__(self, font, display, settings, about_screen,
+                 request_save=None):
         super().__init__(0, 0, 210, 64)
         self.font = font
         self.display = display
         self.settings = settings
         self.about_screen = about_screen
-        self._save = save or save_settings
+        self._request_save = request_save
         self._save_failed = False
+        self._save_pending = False
         self.menu = Menu(0, 13, 210, 3, 12, font)
         self._build_rows()
 
@@ -49,9 +50,19 @@ class SettingsScreen(UIElement):
             return
         self.settings["brightness"] = value
         self.display.set_brightness(value)
-        self._save_failed = not self._save(self.settings)
+        self._save_pending = True
+        self._save_failed = False
+        if self._request_save is None:
+            self._save_pending = False
+            self._save_failed = True
+        else:
+            self._request_save(self.settings, self._on_save_result)
         # Only the value changes; replacing the row avoids resetting selection.
         self.menu.items[2] = ("Brightness  " + str(value) + "%", None)
+
+    def _on_save_result(self, success):
+        self._save_pending = not success
+        self._save_failed = not success
 
     def activate(self):
         self.menu.activate()
@@ -64,6 +75,8 @@ class SettingsScreen(UIElement):
         self.menu.draw(display)
         if self._save_failed:
             draw_footer(display, "Save failed - check SD", self.font)
+        elif self._save_pending:
+            draw_footer(display, "Saving...", self.font)
         elif self.menu.cursor_pos == 2:
             draw_footer(display, "4/6 adjust", self.font, "ENT next")
         elif self.menu.cursor_pos == 1:

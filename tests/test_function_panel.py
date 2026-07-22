@@ -1,3 +1,5 @@
+from pathlib import Path
+
 from screens.function_panel import FunctionPanel
 from calc import loader
 
@@ -52,3 +54,48 @@ def test_builtin_groups_and_addons_have_unambiguous_user_labels(monkeypatch):
     assert any("Trigonometry" in label for label in labels)
     assert "[x] Add-on: basic (%)" in labels
     assert "[x] Add-on: trig (sinh, cosh...)" in labels
+
+
+def test_function_panel_queues_shared_settings_when_leaving(monkeypatch):
+    settings = {"enabled_functions": ["basic", "trig", "math", "list"]}
+    queued = []
+
+    def unexpected_load_settings():
+        raise AssertionError("unexpected SD read")
+
+    monkeypatch.setattr(
+        "screens.function_panel.load_settings", unexpected_load_settings)
+    panel = FunctionPanel(
+        None,
+        request_settings=lambda value, callback=None: queued.append(dict(value)),
+        settings=settings)
+    panel._items = [("basic", True, True), ("trig", False, True)]
+    panel._dirty = True
+
+    assert panel._queue_save() is True
+    assert settings == {"enabled_functions": ["basic"]}
+    assert queued == [{"enabled_functions": ["basic"]}]
+
+
+def test_function_panel_keeps_deferred_save_failure_visible_after_reopening(
+        monkeypatch):
+    settings = {"enabled_functions": ["basic", "trig", "math", "list"]}
+    monkeypatch.setattr(loader, "describe_function_files", lambda: {})
+    monkeypatch.setattr(loader, "list_function_files", lambda: [])
+    panel = FunctionPanel(None, settings=settings)
+
+    panel._on_save_result(False)
+    panel.activate()
+
+    assert panel._save_error == "Not saved - check SD"
+
+
+def test_main_reloads_functions_from_the_shared_in_memory_settings():
+    source = (Path(__file__).parents[1] / "source" / "main.py").read_text(
+        encoding="utf-8")
+    start = source.index('elif result == "FUNC_PANEL_DONE":')
+    end = source.index('elif result in ("FUNC_PICKER_DONE"', start)
+    handler = source[start:end]
+
+    assert "_reload_functions(settings, registry)" in handler
+    assert "load_settings()" not in handler

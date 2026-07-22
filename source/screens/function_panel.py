@@ -1,14 +1,16 @@
 """Function panel: toggle which function groups/files are active."""
 from ui.element import UIElement
 from ui.menu import Menu
-from utils.storage import save_settings, load_settings
+from utils.storage import load_settings
 from ui.theme import draw_footer, draw_header
 
 
 class FunctionPanel(UIElement):
-    def __init__(self, font):
+    def __init__(self, font, request_settings=None, settings=None):
         super().__init__(0, 0, 210, 64)
         self.font = font
+        self._request_settings = request_settings
+        self._settings = settings
         self.menu = Menu(0, 13, 210, 4, 10, font)
         self._items = []       # list of (name, is_on, is_group)
         self._toggled = {}     # Unsaved choices retained while rebuilding labels.
@@ -22,7 +24,6 @@ class FunctionPanel(UIElement):
         from calc.loader import describe_function_files
 
         self._dirty = False
-        self._save_error = ""
         self._toggled = {}
         self._plugin_functions = describe_function_files()
         self._refresh()
@@ -36,7 +37,7 @@ class FunctionPanel(UIElement):
 
     def deactivate(self):
         if self._dirty:
-            self._save()
+            self._queue_save()
 
     def set_load_errors(self, errors):
         """Keep the first failed plugin visible until the user acknowledges it."""
@@ -62,7 +63,9 @@ class FunctionPanel(UIElement):
                                     DEFAULT_ENABLED_GROUPS)
         from calc.loader import list_function_files
 
-        settings = load_settings()
+        settings = self._settings
+        if settings is None:
+            settings = load_settings()
         saved_enabled = settings.get("enabled_functions", DEFAULT_ENABLED_GROUPS)
 
         self.menu.clear_items()
@@ -109,15 +112,21 @@ class FunctionPanel(UIElement):
         """Return list of enabled group/file names."""
         return [item[0] for item in self._items if item[1]]
 
-    def _save(self):
-        settings = load_settings()
+    def _queue_save(self):
+        settings = self._settings
+        if settings is None:
+            settings = load_settings()
         settings["enabled_functions"] = self.get_enabled_list()
-        if save_settings(settings):
-            self._dirty = False
-            self._save_error = ""
-            return True
-        self._save_error = "Not saved - check SD"
-        return False
+        if self._request_settings is None:
+            self._save_error = "Not saved - check SD"
+            return False
+        self._request_settings(settings, self._on_save_result)
+        self._dirty = False
+        self._save_error = ""
+        return True
+
+    def _on_save_result(self, success):
+        self._save_error = "" if success else "Not saved - check SD"
 
     def draw(self, display):
         title = "Plugin: " + self._load_error if self._load_error else "Functions"
@@ -152,7 +161,7 @@ class FunctionPanel(UIElement):
                 self._load_error = ""
                 self._load_error_detail = ""
                 return "FUNC_PANEL_CANCEL"
-            if self._dirty and not self._save():
+            if self._dirty and not self._queue_save():
                 return None
             return "FUNC_PANEL_DONE"
         return None

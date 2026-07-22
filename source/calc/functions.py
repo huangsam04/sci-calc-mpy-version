@@ -68,6 +68,7 @@ class FunctionRegistry:
 
     def __init__(self):
         self._defs = {}
+        self._revision = 0
         self.angle_mode = 0
         self.plugin_errors = []
 
@@ -100,6 +101,7 @@ class FunctionRegistry:
         if name in self._defs:
             raise ValueError("Function already registered: " + name)
         self._defs[name] = (name, precedence, kind, min_args, associativity, callback)
+        self._revision += 1
         return self
 
     def infix(self, name, callback, precedence=10, associativity="left"):
@@ -123,6 +125,11 @@ class FunctionRegistry:
     def items(self):
         return self._defs.items()
 
+    @property
+    def revision(self):
+        """Increase whenever expression parsing rules can change."""
+        return self._revision
+
     def __contains__(self, name):
         return name in self._defs
 
@@ -130,7 +137,9 @@ class FunctionRegistry:
         return len(self._defs)
 
     def clear(self):
-        self._defs.clear()
+        if self._defs:
+            self._defs.clear()
+            self._revision += 1
 
     def replace(self, other):
         """Replace definitions in-place so existing users keep a live reference."""
@@ -138,12 +147,15 @@ class FunctionRegistry:
         self._defs.update(other._defs)
         self.angle_mode = other.angle_mode
         self.plugin_errors = list(other.plugin_errors)
+        self._revision += 1
 
     def merge(self, other):
         for name in other._defs:
             if name in self._defs:
                 raise ValueError("Function already registered: " + name)
         self._defs.update(other._defs)
+        if other._defs:
+            self._revision += 1
         return self
 
     def symbolic_names(self):

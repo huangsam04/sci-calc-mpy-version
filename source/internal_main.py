@@ -3,8 +3,13 @@ import os
 
 
 try:
-    os.stat("/sd/main.py")
-    execfile("/sd/main.py")  # MicroPython built-in; avoids importing main twice.
+    try:
+        os.stat("/sd/launch.py")
+        app_path = "/sd/launch.py"
+    except OSError:
+        # Releases before mpy deployment support used main.py directly.
+        app_path = "/sd/main.py"
+    execfile(app_path)  # MicroPython built-in; avoids importing main twice.
 except Exception as error:
     print("SCI-CALC recovery: " + str(error))
     try:
