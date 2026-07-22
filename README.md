@@ -2,7 +2,7 @@
 
 SCI-CALC 的 MicroPython 固件，目标硬件为 ESP32-WROOM-32E、SSD1322 256×64 灰阶 OLED、5×6 矩阵键盘和 FAT32 SD 卡。
 
-当前应用版本为 **1.1.3**。源码编译基线是本仓库 `micropython/` 中的 **MicroPython 1.29.0-preview**，并已在设备的 **MicroPython 1.28.0 (2026-04-06)** 上完成冷启动验证。项目不修改 MicroPython 核心。
+当前应用版本为 **1.2.0**。源码编译基线是本仓库 `micropython/` 中的 **MicroPython 1.29.0-preview**，并已在设备的 **MicroPython 1.28.0 (2026-04-06)** 上完成冷启动验证。项目不修改 MicroPython 核心。
 
 ## 目录与启动方式
 
@@ -276,7 +276,7 @@ UI 会显示保存失败并每两秒重试。
 它不包含解释器上电、物理按键扫描或正常事件分派的时间：
 
 完整的方案、实机数据、代码审查收口与复现步骤见
-[性能调优留痕](docs/PERFORMANCE_TUNING_2026-07-23.md)。
+[技术说明](TECHNICAL_GUIDE.md)。
 
 ```powershell
 ..\.venv\python.exe -m mpremote connect COM5 exec `
