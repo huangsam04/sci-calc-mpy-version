@@ -137,6 +137,39 @@ def test_navigation_uses_controller_fade_when_reveal_buffer_cannot_be_allocated(
     assert display.brightness == 100
 
 
+def test_default_page_draw_oom_uses_allocation_bounded_minimal_shell(
+        monkeypatch):
+    monkeypatch.setattr(main.time, "ticks_ms", lambda: 100)
+
+    class RecordingDisplay(DisplayStub):
+        def __init__(self):
+            super().__init__()
+            self.text = []
+
+        def draw_text8x8(self, x, y, value, **kwargs):
+            self.text.append(value)
+
+    class BrokenDefaultScreen(ScreenStub):
+        transition_title = "Broken"
+
+        def draw_transition_default(self, display):
+            raise MemoryError("injected default draw failure")
+
+    registry = type("Registry", (), {"angle_mode": 0})()
+    display = RecordingDisplay()
+    nav = main.Nav(display, None, registry)
+    first = ScreenStub()
+    broken = BrokenDefaultScreen()
+    nav.boot(first)
+    nav.enable_optional_resources()
+
+    nav.go_to(broken)
+
+    assert nav.is_transitioning() is True
+    assert "Broken" in display.text
+    assert "Loading..." in display.text
+
+
 def test_partial_transition_construction_releases_buffer_before_recovery_gc(
         monkeypatch):
     """Failed strip views must not pin the optional reveal workspace."""
@@ -430,6 +463,13 @@ def test_device_monitor_runs_full_residency_lifecycle_for_500_round_trips():
     assert "TOTAL_ROUND_TRIPS = 500" in source
     assert "settling = nav.settle_current()" in source
     assert "while settling or active_animation_count()" in source
+    assert "MAX_FIRST_FRAME_US = 32000" in source
+    assert "MAX_ANIMATION_FRAME_US = 16000" in source
+    assert "MIN_TRANSITION_FRAMES = 12" in source
+    assert "MAX_HEAP_DRIFT_BYTES = 512" in source
+    assert "MONITOR_SD_DURING_ANIMATION" in source
+    assert "buffers_after != buffers_before" in source
+    assert "MONITOR_ACCEPTANCE PASS" in source
 
 
 def test_returning_to_main_menu_preserves_selected_item(monkeypatch, tmp_path):
@@ -707,12 +747,13 @@ def test_thousand_navigation_cycles_keep_animation_buffers_bounded(
             self.value = int(state.get("value", 0))
 
     root = Stateful("stress_root")
-    child = Stateful("stress_child")
+    children = [Stateful("stress_child_" + str(index)) for index in range(4)]
     nav.enable_optional_resources()
     nav.boot(root)
     nav.present_current()
 
     for index in range(1000):
+        child = children[index % len(children)]
         root.value = index
         nav.go_to(child)
         assert nav.is_transitioning()

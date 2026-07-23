@@ -4,15 +4,21 @@ import pytest
 
 from ui.residency import (PageResidency, SETTLE_MORE, SETTLE_REDRAW,
                           SessionSwap, SwapError)
+from ui import residency as residency_module
 from calc.functions import build_registry
 from screens.calculator import CalculatorScreen
 from screens.plot import PlotScreen
 from screens.settings import SettingsScreen
 from screens.stopwatch import StopwatchScreen
 from screens import stopwatch as stopwatch_module
+from screens.function_panel import FunctionPanel
+from screens.function_picker import FunctionPicker
+from screens.letter_panel import LetterPanel
+from screens.main_menu import MainMenu
+from screens.variable_panel import VariablePanel
 
 
-def test_session_swap_round_trips_one_page_and_rejects_corruption(tmp_path):
+def test_session_swap_round_trips_one_page_and_rejects_wrong_checksum(tmp_path):
     swap = SessionSwap(str(tmp_path))
     swap.start_session()
 
@@ -27,6 +33,60 @@ def test_session_swap_round_trips_one_page_and_rejects_corruption(tmp_path):
     with pytest.raises(SwapError):
         swap.read("calculator")
     assert not path.exists()
+
+
+def test_session_swap_rejects_unknown_version_and_discards_only_that_record(
+        tmp_path):
+    swap = SessionSwap(str(tmp_path))
+    swap.start_session()
+    assert swap.write("unknown", {"value": 1}) is True
+    assert swap.write("other", {"value": 2}) is True
+    path = tmp_path / "unknown.swp"
+    header, payload = path.read_text(encoding="utf-8").split("\n", 1)
+    parts = header.split("|")
+    parts[1] = "999"
+    path.write_text("|".join(parts) + "\n" + payload, encoding="utf-8")
+
+    with pytest.raises(SwapError):
+        swap.read("unknown")
+
+    assert not path.exists()
+    assert swap.read("other") == {"value": 2}
+
+
+def test_session_swap_rejects_truncated_record(tmp_path):
+    swap = SessionSwap(str(tmp_path))
+    swap.start_session()
+    path = tmp_path / "truncated.swp"
+    path.write_text("SCI-CALC-PAGE|1|20", encoding="utf-8")
+
+    with pytest.raises(SwapError):
+        swap.read("truncated")
+
+    assert not path.exists()
+
+
+def test_start_session_clears_only_page_swap_records(tmp_path):
+    swap_directory = tmp_path / "swap"
+    swap_directory.mkdir()
+    for name in ("old.swp", "old.tmp", "old.bak"):
+        (swap_directory / name).write_text("old session", encoding="utf-8")
+    marker = swap_directory / "keep.txt"
+    marker.write_text("unrelated", encoding="utf-8")
+    settings = tmp_path / "settings.json"
+    variables = tmp_path / "variables.json"
+    settings.write_text('{"brightness": 80}', encoding="utf-8")
+    variables.write_text('{"x": 42}', encoding="utf-8")
+
+    swap = SessionSwap(str(swap_directory))
+    assert swap.start_session() is True
+
+    assert marker.read_text(encoding="utf-8") == "unrelated"
+    assert settings.read_text(encoding="utf-8") == '{"brightness": 80}'
+    assert variables.read_text(encoding="utf-8") == '{"x": 42}'
+    assert not list(swap_directory.glob("*.swp"))
+    assert not list(swap_directory.glob("*.tmp"))
+    assert not list(swap_directory.glob("*.bak"))
 
 
 def test_session_swap_counts_payload_without_materializing_a_second_copy(
@@ -52,6 +112,27 @@ def test_session_swap_rejects_payload_that_only_fits_without_record_header(
 
     assert swap.write("bounded", {"value": "x" * 110}) is False
     assert not (tmp_path / "bounded.swp").exists()
+
+
+def test_session_swap_failed_atomic_replace_restores_previous_record(
+        monkeypatch, tmp_path):
+    swap = SessionSwap(str(tmp_path))
+    swap.start_session()
+    assert swap.write("calculator", {"input": "old"}) is True
+    real_rename = residency_module.os.rename
+
+    def fail_temporary_commit(source, target):
+        if str(source).endswith(".tmp") and str(target).endswith(".swp"):
+            raise OSError("injected atomic replace failure")
+        return real_rename(source, target)
+
+    monkeypatch.setattr(residency_module.os, "rename", fail_temporary_commit)
+
+    assert swap.write("calculator", {"input": "new"}) is False
+    assert not (tmp_path / "calculator.tmp").exists()
+    assert (tmp_path / "calculator.swp").exists()
+    swap.available = True
+    assert swap.read("calculator") == {"input": "old"}
 
 
 class Page:
@@ -149,6 +230,55 @@ def test_corrupt_snapshot_resets_only_the_page_being_opened(tmp_path):
     assert swap.read("second") == {"value": "second state"}
 
 
+def test_missing_expected_snapshot_resets_only_the_page_being_opened(tmp_path):
+    swap = SessionSwap(str(tmp_path))
+    swap.start_session()
+    residency = PageResidency(swap=swap)
+    first = Page("first", "first state")
+    second = Page("second", "second state")
+
+    residency.leave(first)
+    residency.prepare(second)
+    _settle_all(residency, second)
+    residency.leave(second)
+    residency.prepare(first)
+    (tmp_path / "first.swp").unlink()
+
+    _settle_all(residency, first)
+
+    assert first.value == ""
+    assert first.error
+    assert swap.read("second") == {"value": "second state"}
+
+
+def test_read_exception_resets_only_the_page_being_opened(
+        monkeypatch, tmp_path):
+    swap = SessionSwap(str(tmp_path))
+    swap.start_session()
+    residency = PageResidency(swap=swap)
+    first = Page("first", "first state")
+    second = Page("second", "second state")
+
+    residency.leave(first)
+    residency.prepare(second)
+    _settle_all(residency, second)
+    residency.leave(second)
+    residency.prepare(first)
+    real_read = swap.read
+
+    def fail_first_read(key):
+        if key == "first":
+            raise OSError("injected read failure")
+        return real_read(key)
+
+    monkeypatch.setattr(swap, "read", fail_first_read)
+    _settle_all(residency, first)
+
+    assert first.value == ""
+    assert first.error == "injected read failure"
+    assert swap.read("second") == {"value": "second state"}
+
+
 def test_missing_sd_reports_error_and_resets_the_destination(tmp_path):
     blocker = tmp_path / "not-a-directory"
     blocker.write_text("blocked", encoding="utf-8")
@@ -242,6 +372,49 @@ def test_settle_step_failure_is_contained_to_the_active_page(tmp_path):
     assert page.error == "invalid restored state"
 
 
+def test_leave_lifecycle_failure_is_deferred_to_only_that_page(tmp_path):
+    class BrokenLeavePage(Page):
+        def release_memory(self):
+            self.events.append("release")
+            raise MemoryError("injected release failure")
+
+    swap = SessionSwap(str(tmp_path))
+    swap.start_session()
+    residency = PageResidency(swap=swap)
+    broken = BrokenLeavePage("broken", "saved first")
+    destination = Page("destination", "still usable")
+
+    residency.leave(broken)
+    residency.prepare(destination)
+    _settle_all(residency, destination)
+
+    assert destination.error == ""
+    assert destination.value == "still usable"
+
+    residency.prepare(broken)
+    _settle_all(residency, broken)
+    assert broken.error == "injected release failure"
+
+
+def test_prepare_failure_is_reported_after_default_transition(tmp_path):
+    class BrokenPreparePage(Page):
+        def activate_default(self):
+            self.events.append("activate_default")
+            raise MemoryError("injected activation failure")
+
+    swap = SessionSwap(str(tmp_path))
+    swap.start_session()
+    residency = PageResidency(swap=swap)
+    page = BrokenPreparePage("broken", "unsafe")
+
+    residency.prepare(page)
+    flags = residency.settle(page)
+
+    assert flags == SETTLE_REDRAW
+    assert page.value == ""
+    assert page.error == "injected activation failure"
+
+
 def test_dirty_page_snapshot_is_encoded_and_written_only_during_settle(
         tmp_path):
     swap = SessionSwap(str(tmp_path))
@@ -312,8 +485,22 @@ def test_transition_default_frames_never_include_saved_data_or_parameters():
     stopwatch._laps = [(1, 1234)]
     settings = SettingsScreen(
         None, type("Display", (), {})(), {"brightness": 70}, object())
+    function_panel = FunctionPanel(None, settings={"enabled_functions": []})
+    function_panel._toggled = {"plugin:PRIVATE_PLUGIN": True}
+    function_panel._plugin_files = (("PRIVATE_PLUGIN", "private.py"),)
+    function_picker = FunctionPicker(None, calculator)
+    function_picker._names = ["PRIVATE_FUNCTION"]
+    calculator.vars["PRIVATE_VARIABLE"] = 123
+    variable_panel = VariablePanel(None, calculator)
+    variable_panel._names = ["PRIVATE_VARIABLE"]
+    letter_panel = LetterPanel(None, calculator.input_box)
+    letter_panel.text = "PRIVATE_DRAFT"
+    main_menu = MainMenu(None)
+    main_menu.add_screen("Calculator", calculator)
+    main_menu.menu.cursor_pos = 1
 
-    for page in (calculator, plot, stopwatch, settings):
+    for page in (calculator, plot, stopwatch, settings, function_panel,
+                 function_picker, variable_panel, letter_panel, main_menu):
         page.draw_transition_default(display)
 
     rendered = " ".join(display.text)

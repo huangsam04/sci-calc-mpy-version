@@ -297,6 +297,7 @@ class PageResidency:
         state = None
         captured = False
         snapshot_error = None
+        lifecycle_error = None
         if capture_state and key and snapshotter is not None:
             try:
                 # Capture logical state before release_memory() drops any
@@ -308,7 +309,11 @@ class PageResidency:
                 snapshot_error = error
 
         releaser = getattr(screen, "release_memory", None)
-        released = bool(releaser is not None and releaser())
+        try:
+            released = bool(releaser is not None and releaser())
+        except Exception as error:
+            released = False
+            lifecycle_error = error
         if released and self.memory is not None:
             self.memory.collect()
 
@@ -331,10 +336,21 @@ class PageResidency:
 
         deactivator = getattr(screen, "deactivate", None)
         if deactivator is not None:
-            deactivator()
+            try:
+                deactivator()
+            except Exception as error:
+                if lifecycle_error is None:
+                    lifecycle_error = error
         resetter = getattr(screen, "reset_state", None)
         if resetter is not None:
-            resetter()
+            try:
+                resetter()
+            except Exception as error:
+                if lifecycle_error is None:
+                    lifecycle_error = error
+        if lifecycle_error is not None and key:
+            self._errors[key] = (
+                str(lifecycle_error) or "Page release failed")
 
     def prepare(self, screen):
         """Activate the target in its allocation-bounded default state."""
@@ -346,7 +362,13 @@ class PageResidency:
         if activator is None:
             activator = getattr(screen, "activate", None)
         if activator is not None:
-            activator()
+            try:
+                activator()
+            except Exception as error:
+                if key:
+                    self._errors[key] = (
+                        str(error) or "Page activation failed")
+                self._restore_pending = False
 
     def is_restoring(self, screen):
         return screen is self._current and not self._restore_finished
@@ -392,10 +414,16 @@ class PageResidency:
             self.swap.discard(key)
         resetter = getattr(screen, "reset_state", None)
         if resetter is not None:
-            resetter()
+            try:
+                resetter()
+            except Exception:
+                pass
         reporter = getattr(screen, "show_residency_error", None)
         if reporter is not None:
-            reporter(message)
+            try:
+                reporter(message)
+            except Exception:
+                pass
 
     def settle(self, screen):
         """Perform one post-animation write, restore or page rebuild step."""
