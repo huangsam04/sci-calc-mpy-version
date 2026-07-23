@@ -65,6 +65,18 @@ def _record_header(payload_size, checksum):
             + str(payload_size) + "|" + str(checksum) + "\n")
 
 
+def _read_record_header(source, limit=96):
+    characters = []
+    while len(characters) < limit:
+        char = source.read(1)
+        if not char:
+            break
+        characters.append(char)
+        if char == "\n":
+            return "".join(characters)
+    raise SwapError("Invalid page snapshot header")
+
+
 class SessionSwap:
     """Store independent bounded page records for the current boot session."""
 
@@ -204,7 +216,7 @@ class SessionSwap:
             raise SwapError(self.last_error or "SD unavailable")
         try:
             with open(self._path(key), "r") as source:
-                header = source.readline(96)
+                header = _read_record_header(source)
                 payload = source.read(self.max_snapshot_bytes + 1)
             parts = header.rstrip("\n").split("|")
             if (len(parts) != 4
