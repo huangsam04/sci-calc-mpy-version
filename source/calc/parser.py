@@ -1,7 +1,8 @@
 """Compile and evaluate SCI-CALC expressions with a Pratt parser."""
-import math
 from micropython import const  # type: ignore
 
+from calc import number as numeric
+from calc.number import Number, coerce
 from calc.functions import KIND_INFIX, KIND_LIST, KIND_POSTFIX, KIND_PREFIX
 from calc.functions import UNARY_CALLBACKS
 
@@ -63,8 +64,8 @@ def tokenize(expr, registry):
                 if digit_start == i:
                     i = exponent
             try:
-                value = float(expr[start:i])
-            except ValueError:
+                value = Number.parse(expr[start:i])
+            except (TypeError, ValueError):
                 raise ParseError("Invalid number", start, expr)
             tokens.append(_token(T_NUM, value, start))
             continue
@@ -237,7 +238,7 @@ def compile_expression(expr, registry):
 def _evaluate(node, context):
     kind = node[0]
     if kind == "literal":
-        return node[1]
+        return _normalise_result(node[1])
     if kind == "sequence":
         value = None
         for statement in node[1]:
@@ -246,30 +247,40 @@ def _evaluate(node, context):
     if kind == "variable":
         name = node[1]
         if name in context.variables:
-            return context.variables[name]
+            return _normalise_result(context.variables[name])
         if name == "pi":
-            return math.pi
+            return numeric.PI
         if name == "e":
-            return math.e
+            return numeric.E
         raise ParseError("Undefined variable: '" + name + "'", node[2])
     if kind == "unary":
-        return UNARY_CALLBACKS[node[1]](_evaluate(node[2], context), context)
+        return _normalise_result(
+            UNARY_CALLBACKS[node[1]](_evaluate(node[2], context), context))
     definition = context.registry.get(node[1])
     if definition is None:
         raise ParseError("Function is no longer loaded: '" + node[1] + "'", node[-1])
     callback = definition[5]
     if kind == "prefix" or kind == "postfix":
-        return callback(_evaluate(node[2], context), context)
+        return _normalise_result(callback(_evaluate(node[2], context), context))
     if kind == "list":
         args = []
         for child in node[2]:
             args.append(_evaluate(child, context))
-        return callback(args, context)
+        return _normalise_result(callback(args, context))
     if kind == "infix":
         if node[1] == "=":
-            return callback(node[2][1], _evaluate(node[3], context), context)
-        return callback(_evaluate(node[2], context), _evaluate(node[3], context), context)
+            return _normalise_result(
+                callback(node[2][1], _evaluate(node[3], context), context))
+        return _normalise_result(
+            callback(_evaluate(node[2], context), _evaluate(node[3], context), context))
     raise ParseError("Invalid compiled expression", node[-1])
+
+
+def _normalise_result(value):
+    """Prevent third-party callbacks from leaking ``nan``/``inf`` into state."""
+    if isinstance(value, (Number, int, float)):
+        return coerce(value)
+    return value
 
 
 def evaluate_program(program, context):

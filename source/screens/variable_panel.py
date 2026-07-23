@@ -89,10 +89,7 @@ class VariablePanel(UIElement):
         draw_footer(display, hint, self.font, right)
 
     def _fmt(self, val):
-        if isinstance(val, float):
-            s = f"{val:.4f}".rstrip('0').rstrip('.')
-            return s if s else "0"
-        return str(val)
+        return self.calc._fmt(val)
 
     def update(self, kb, event=None):
         if event is None:

@@ -2,7 +2,9 @@
 
 SCI-CALC 的 MicroPython 固件，目标硬件为 ESP32-WROOM-32E、SSD1322 256×64 灰阶 OLED、5×6 矩阵键盘和 FAT32 SD 卡。
 
-当前应用版本为 **1.2.0**。源码编译基线是本仓库 `micropython/` 中的 **MicroPython 1.29.0-preview**，并已在设备的 **MicroPython 1.28.0 (2026-04-06)** 上完成冷启动验证。项目不修改 MicroPython 核心。
+当前应用版本为 **1.2.1**。源码编译基线是本仓库 `micropython/` 中的 **MicroPython 1.29.0-preview**，并已在设备的 **MicroPython 1.28.0 (2026-04-06)** 上完成冷启动验证。项目不修改 MicroPython 核心。
+
+只想日常使用计算器时，请先看 [简明使用说明](USER_GUIDE.md)。本文保留部署、插件和维护细节。
 
 ## 目录与启动方式
 
@@ -85,6 +87,10 @@ SD 卡和 OLED 共用 GPIO18/23 上的 SPI2，通过 CS4/CS5 分隔事务。内�
 - `ANG`：切换 DEG/RAD 并保存
 - `ESC`：先清空输入；空输入时返回。长按一秒直接返回
 
+输入框默认只有一行，首行放不下时自动扩展为两行，最多保存 96 个字符。公式会按屏幕实际宽度自动换行，并且始终让光标所在内容保持可见；
+右侧 `^` / `v` 表示上方或下方还有内容，右下角的 `n/96` 显示当前长度。按 `Shift+4` / `Shift+6`
+可向左 / 向右移动光标，适合检查和修改长公式。
+
 历史模式中，`8/2` 选择记录，`ENT` 插入结果，物理 `4/6` 插入原表达式。
 
 支持示例：
@@ -112,7 +118,19 @@ max(3, 5, 4)          -> 5
 后等待提示消失或重新执行一次赋值。
 
 本机定位为离线科学计算与快速函数分析工具。它不会自动补全隐式乘法（请写 `2*x`，
-不要写 `2x`），也不应替代需要单位追踪、任意精度或可审计过程的专业计算软件。
+不要写 `2x`）。计算核心保留 30 位有效数字而非无限精度，也不应替代需要单位追踪或可审计
+过程的专业计算软件。
+
+### 高精度结果
+
+数字字面量和变量由有限高精度十进制数执行，内部保存“有效数字 + 十进制指数”，不会把
+`10^100000` 一类有限结果变为 `inf`。计算器、历史记录和变量面板统一显示为
+`x.xxxx*10^x`；例如 `10^1000` 显示为 `1.0000*10^1000`。零显示为
+`0.0000*10^0`。
+
+设置页第四项 `Display digits` 控制尾数小数点后的位数，范围为 1--12，默认 4。它只改变
+显示和从历史插入公式时的文本，不会降低已经保存的计算结果精度。极大的三角函数自变量或
+超出实现可可靠约化范围的超越函数会给出错误提示，而不会返回 `inf` 或 `nan`。
 
 ### 绘图
 
@@ -132,7 +150,8 @@ max(3, 5, 4)          -> 5
 - 秒表：`ENT` 开始/暂停/继续，运行时 `DEL` 计圈，停止时 `DEL` 复位
 - 字母面板：`Sh` 切换大小写，`OK` 写入，`ESC` 取消，`Bk` 退格
 - 设置：第一项显示固件版本，第二项进入关于页面；第三项亮度使用物理 `4/6` 或
-  左右方向键调节，范围为 10%–100%，每次调整 10%，立即应用并在空闲时保存。`ENT` 可循环亮度档位。
+  左右方向键调节，范围为 10%–100%，每次调整 10%，立即应用并在空闲时保存。第四项
+  `Display digits` 用相同按键调整科学记数法尾数位数。`ENT` 可循环各档位。
 
 ### 自动休眠
 
@@ -172,9 +191,46 @@ def register(registry):
 回调的最后一个参数是 `EvalContext`。读取变量使用 `context.variables`；需要持久化
 变量时必须调用 `context.set_var(name, value)` 或 `context.delete_var(name)`。
 `context.registry` 始终指向当前实时注册表，因此求解器和元函数不会持有过期表。
+数字参数是高精度 `Number`；普通的 `+`、`-`、`*`、`/`、`**` 和 `abs()` 会保持该类型。
+需要科学函数时可使用 `context.numeric`（例如 `context.numeric.sqrt(value)`），不要将结果
+转成 Python `float`。
 
 单个插件先在隔离注册表中完成加载和校验，成功后才合并。损坏插件只会记录串口
 错误，不影响其他插件或内置函数。
+
+### Add-in 依赖与导出
+
+Add-in 可在模块顶层声明 `DEPENDENCIES`（旧名 `REQUIRES` 也兼容）。装载器会递归、按顺序
+先装载依赖；缺失、循环或依赖失败会让依赖方保持未注册。依赖不必预先在设置中勾选，装载器
+会自动补齐，函数面板随后将其勾选并显示 `Auto on: 名称`。
+
+依赖之间只通过显式 `EXPORTS` 共享函数，不依赖加载顺序或模块全局变量：
+
+```python
+# base.py
+def double_value(value):
+    return value * 2
+
+EXPORTS = {"double_value": double_value}
+
+def register(registry):
+    pass
+
+# dependent.py
+DEPENDENCIES = ("base",)
+
+def apply(value, context):
+    return context.plugin("base")["double_value"](value) + 1
+
+def register(registry):
+    # register() 阶段也可访问已声明依赖。
+    assert callable(registry.plugin("base")["double_value"])
+    registry.prefix("apply", apply)
+```
+
+`context.plugin(name)` 用于表达式执行期间，`registry.plugin(name)` 用于 `register()` 期间；
+注册期只会看到已声明且成功装载的 Add-in 导出。回调应继续通过其显式 `DEPENDENCIES` 使用
+运行期导出，而不依赖其他已加载 Add-in 的偶然存在。`EXPORTS` 必须是以字符串为键的字典。
 
 设置文件使用 `plugin:文件名` 标识插件，例如 `plugin:solve`，因此 `basic.py` 与
 内置 `basic` 函数组不会发生名称冲突。插件默认关闭，可在函数面板中启用。

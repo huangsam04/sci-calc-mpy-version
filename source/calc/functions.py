@@ -4,7 +4,8 @@ The public seam is intentionally small: plugins receive a FunctionRegistry and
 register callbacks by kind.  Internally definitions stay as compact tuples to
 keep heap use predictable on MicroPython.
 """
-import math
+from calc import number as numeric
+from calc.number import Number, coerce
 
 
 KIND_INFIX = "infix"
@@ -30,6 +31,16 @@ class EvalContext:
     def __init__(self, variables, registry):
         self.variables = variables
         self.registry = registry
+        # Variables loaded from older JSON files are ordinary ints/floats.
+        # Normalize them once at the evaluation seam so old persisted values
+        # participate in the new arithmetic without a migration step.
+        for name in list(variables):
+            value = variables[name]
+            if isinstance(value, (Number, int, float)):
+                variables[name] = coerce(value)
+        # Add-ons can use the high-precision helpers without importing a
+        # particular internal implementation file.
+        self.numeric = numeric
         self.dirty = False
 
     @property
@@ -37,6 +48,8 @@ class EvalContext:
         return self.registry.angle_mode
 
     def set_var(self, name, value):
+        if isinstance(value, (Number, int, float)):
+            value = coerce(value)
         if self.variables.get(name, _MISSING) != value:
             self.variables[name] = value
             self.dirty = True
@@ -56,6 +69,10 @@ class EvalContext:
         """Request another persistence attempt without changing variables."""
         self.dirty = True
 
+    def plugin(self, name):
+        """Return exports from a declared, loaded add-on dependency."""
+        return self.registry.plugin(name)
+
 
 _MISSING = object()
 
@@ -71,6 +88,8 @@ class FunctionRegistry:
         self._revision = 0
         self.angle_mode = 0
         self.plugin_errors = []
+        self._plugin_exports = {}
+        self._dependency_exports = {}
 
     def _add(self, name, callback, kind, precedence, associativity, min_args):
         if not isinstance(name, str) or not name:
@@ -140,6 +159,8 @@ class FunctionRegistry:
         if self._defs:
             self._defs.clear()
             self._revision += 1
+        self._plugin_exports.clear()
+        self._dependency_exports.clear()
 
     def replace(self, other):
         """Replace definitions in-place so existing users keep a live reference."""
@@ -147,6 +168,8 @@ class FunctionRegistry:
         self._defs.update(other._defs)
         self.angle_mode = other.angle_mode
         self.plugin_errors = list(other.plugin_errors)
+        self._plugin_exports = dict(other._plugin_exports)
+        self._dependency_exports = {}
         self._revision += 1
 
     def merge(self, other):
@@ -158,6 +181,28 @@ class FunctionRegistry:
             self._revision += 1
         return self
 
+    def set_plugin_dependencies(self, exports):
+        """Internal loader hook exposing only declared dependencies to a plugin."""
+        self._dependency_exports = dict(exports)
+
+    def register_plugin(self, name, exports):
+        """Store explicitly exported helpers after a plugin registered safely."""
+        if not isinstance(name, str) or not name:
+            raise ValueError("Plugin name must be a non-empty string")
+        if not isinstance(exports, dict):
+            raise ValueError("Plugin EXPORTS must be a dictionary")
+        self._plugin_exports[name] = dict(exports)
+
+    def plugin(self, name):
+        """Get exports for a declared dependency or any live loaded add-on."""
+        if name in self._dependency_exports:
+            return self._dependency_exports[name]
+        if name in self._plugin_exports:
+            return self._plugin_exports[name]
+        raise ValueError("Plugin dependency is not loaded: " + str(name))
+
+    dependency = plugin
+
     def symbolic_names(self):
         names = []
         for name in self._defs:
@@ -168,33 +213,34 @@ class FunctionRegistry:
 
 
 def _to_rad(value, context):
-    return value * math.pi / 180.0 if context.angle_mode else value
+    return value * numeric.PI / Number(180) if context.angle_mode else value
 
 
 def _from_rad(value, context):
-    return value * 180.0 / math.pi if context.angle_mode else value
+    return value * Number(180) / numeric.PI if context.angle_mode else value
 
 
 def _add(a, b, context):
-    return a + b
+    return coerce(a) + coerce(b)
 
 
 def _sub(a, b, context):
-    return a - b
+    return coerce(a) - coerce(b)
 
 
 def _mul(a, b, context):
-    return a * b
+    return coerce(a) * coerce(b)
 
 
 def _div(a, b, context):
+    b = coerce(b)
     if b == 0:
         raise ZeroDivisionError("Division by zero")
-    return a / b
+    return coerce(a) / b
 
 
 def _pow(a, b, context):
-    return math.pow(a, b)
+    return coerce(a) ** coerce(b)
 
 
 def _assign(name, value, context):
@@ -202,67 +248,67 @@ def _assign(name, value, context):
 
 
 def _negative(value, context):
-    return -value
+    return -coerce(value)
 
 
 def _positive(value, context):
-    return value
+    return coerce(value)
 
 
 def _sin(value, context):
-    return math.sin(_to_rad(value, context))
+    return numeric.sin(_to_rad(coerce(value), context))
 
 
 def _cos(value, context):
-    return math.cos(_to_rad(value, context))
+    return numeric.cos(_to_rad(coerce(value), context))
 
 
 def _tan(value, context):
-    return math.tan(_to_rad(value, context))
+    return numeric.tan(_to_rad(coerce(value), context))
 
 
 def _asin(value, context):
-    return _from_rad(math.asin(value), context)
+    return _from_rad(numeric.asin(coerce(value)), context)
 
 
 def _acos(value, context):
-    return _from_rad(math.acos(value), context)
+    return _from_rad(numeric.acos(coerce(value)), context)
 
 
 def _atan(value, context):
-    return _from_rad(math.atan(value), context)
+    return _from_rad(numeric.atan(coerce(value)), context)
 
 
 def _sec(value, context):
-    return 1.0 / math.cos(_to_rad(value, context))
+    return Number(1) / numeric.cos(_to_rad(coerce(value), context))
 
 
 def _csc(value, context):
-    return 1.0 / math.sin(_to_rad(value, context))
+    return Number(1) / numeric.sin(_to_rad(coerce(value), context))
 
 
 def _cot(value, context):
-    return 1.0 / math.tan(_to_rad(value, context))
+    return Number(1) / numeric.tan(_to_rad(coerce(value), context))
 
 
 def _sqrt(value, context):
-    return math.sqrt(value)
+    return numeric.sqrt(coerce(value))
 
 
 def _ln(value, context):
-    return math.log(value)
+    return numeric.ln(coerce(value))
 
 
 def _exp(value, context):
-    return math.exp(value)
+    return numeric.exp(coerce(value))
 
 
 def _log(value, context):
-    return math.log10(value)
+    return numeric.log10(coerce(value))
 
 
 def _abs(value, context):
-    return abs(value)
+    return abs(coerce(value))
 
 
 def _max(args, context):

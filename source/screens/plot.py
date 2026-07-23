@@ -4,6 +4,7 @@ from ui.element import UIElement
 from ui.inputbox import InputBox
 from calc.parser import compile_expression, evaluate_program, ParseError
 from calc.functions import EvalContext
+from calc.number import Number, coerce
 from anim.engine import insert_animation
 from input.keyboard import get_key_label
 from ui.theme import draw_footer
@@ -133,9 +134,10 @@ class PlotScreen(UIElement):
 
     def _eval(self, x_val):
         try:
-            self._eval_vars["x"] = x_val
+            self._eval_vars["x"] = coerce(x_val)
             result = evaluate_program(self._program, self._eval_context)
-            return float(result), True, ""
+            value = result.to_float() if isinstance(result, Number) else float(result)
+            return value, True, ""
         except Exception as e:
             return 0.0, False, str(e)
 

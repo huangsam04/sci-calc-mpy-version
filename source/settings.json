@@ -4,5 +4,6 @@
     "enabled_functions": ["basic", "trig", "math", "list"],
     "diagnostics": false,
     "sleep_timeout_s": 180,
-    "brightness": 100
+    "brightness": 100,
+    "display_digits": 4
 }

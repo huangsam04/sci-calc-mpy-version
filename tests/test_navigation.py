@@ -68,6 +68,39 @@ class KeyboardStub:
         return self.pressed
 
 
+def test_navigation_falls_back_when_transition_buffers_cannot_be_allocated(monkeypatch):
+    """A fragmented device heap must not prevent the first usable screen."""
+    def out_of_memory(_size):
+        raise MemoryError("simulated fragmented heap")
+
+    monkeypatch.setattr(renderer_module, "bytearray", out_of_memory,
+                        raising=False)
+    registry = type("Registry", (), {"angle_mode": 0})()
+    display = DisplayStub()
+    nav = main.Nav(display, None, registry)
+    first = ScreenStub()
+    second = ScreenStub()
+
+    nav.boot(first)
+    nav.present_current()
+    nav.go_to(second)
+    nav.present_current()
+
+    assert nav.current is second
+    assert nav.is_transitioning() is False
+    assert second.draws == 1
+    assert display.present_count == 2
+
+
+def test_navigation_can_reserve_transition_buffers_before_first_frame():
+    registry = type("Registry", (), {"angle_mode": 0})()
+    nav = main.Nav(DisplayStub(), None, registry)
+
+    assert nav.reserve_transition_buffers() is True
+    assert nav.renderer._outgoing is not None
+    assert nav.renderer._incoming is not None
+
+
 def test_navigation_transition_is_non_blocking_and_locks_trigger_key(monkeypatch):
     times = iter((100, 400))
     monkeypatch.setattr(main.time, "ticks_ms", lambda: next(times))
@@ -186,7 +219,7 @@ def test_transition_finishes_with_a_live_canonical_page_frame(monkeypatch):
     assert nav.is_transitioning() is False
 
 
-def test_transition_reuses_the_last_presented_outgoing_page(monkeypatch):
+def test_first_transition_captures_the_unbuffered_outgoing_page(monkeypatch):
     monkeypatch.setattr(main.time, "ticks_ms", lambda: 100)
     registry = type("Registry", (), {"angle_mode": 0})()
     nav = main.Nav(DisplayStub(), None, registry)
@@ -194,6 +227,25 @@ def test_transition_reuses_the_last_presented_outgoing_page(monkeypatch):
     incoming = ScreenStub()
     nav.boot(outgoing)
     nav.present_current()
+    outgoing_draws = outgoing.draws
+
+    nav.go_to(incoming)
+
+    assert outgoing.draws == outgoing_draws + 1
+    assert incoming.draws == 1
+
+
+def test_transition_reuses_the_last_presented_outgoing_page_after_allocation(monkeypatch):
+    monkeypatch.setattr(main.time, "ticks_ms", lambda: 100)
+    registry = type("Registry", (), {"angle_mode": 0})()
+    nav = main.Nav(DisplayStub(), None, registry)
+    first = ScreenStub()
+    outgoing = ScreenStub()
+    incoming = ScreenStub()
+    nav.boot(first)
+    nav.present_current()
+    nav.go_to(outgoing)
+    nav.draw_transition(100 + main.TRANSITION_MS)
     outgoing_draws = outgoing.draws
 
     nav.go_to(incoming)

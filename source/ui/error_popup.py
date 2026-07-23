@@ -17,8 +17,14 @@ def friendly_error(message):
         return "Unknown variable", "Define it first, e.g. x=2"
     if "math domain" in lower or "domain error" in lower:
         return "Outside valid range", "Check the function input"
-    if "overflow" in lower or "result too large" in lower:
+    if ("overflow" in lower or "result too large" in lower
+            or "decimal exponent is too large" in lower
+            or "outside float range" in lower):
         return "Result is too large", "Use a smaller value"
+    if "non-finite" in lower:
+        return "Invalid numeric result", "Check the add-on calculation"
+    if "angle is too large" in lower or "exponent is too large" in lower:
+        return "Input is too large", "Use a smaller value"
     if "convert" in lower and "float" in lower:
         return "Expected a number", "Check the entered value"
     if "missing closing" in lower or "unterminated" in lower:

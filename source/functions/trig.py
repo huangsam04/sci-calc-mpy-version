@@ -1,35 +1,35 @@
 """Hyperbolic and explicit-degree trigonometry plugin."""
-import math
+from calc.number import Number
 
 WELCOME = "Hyperbolic and degree trig functions loaded."
 
 
 def _sinh(value, context):
-    return math.sinh(value)
+    return context.numeric.sinh(value)
 
 
 def _cosh(value, context):
-    return math.cosh(value)
+    return context.numeric.cosh(value)
 
 
 def _tanh(value, context):
-    return math.tanh(value)
+    return context.numeric.tanh(value)
 
 
 def _sind(value, context):
-    return math.sin(value * math.pi / 180.0)
+    return context.numeric.sin(value * context.numeric.PI / Number(180))
 
 
 def _cosd(value, context):
-    return math.cos(value * math.pi / 180.0)
+    return context.numeric.cos(value * context.numeric.PI / Number(180))
 
 
 def _tand(value, context):
-    return math.tan(value * math.pi / 180.0)
+    return context.numeric.tan(value * context.numeric.PI / Number(180))
 
 
 def _pi(args, context):
-    return math.pi
+    return context.numeric.PI
 
 
 def register(registry):

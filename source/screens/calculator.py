@@ -3,21 +3,31 @@ import time
 from ui.element import UIElement
 from ui.inputbox import InputBox
 from calc.functions import EvalContext
+from calc.number import (DEFAULT_DISPLAY_DIGITS, MAX_DISPLAY_DIGITS,
+                         MIN_DISPLAY_DIGITS, Number, format_number)
 from calc.parser import evaluate, ParseError
 from input.keyboard import get_key_label
-from ui.theme import draw_footer
+from ui.theme import draw_footer, draw_text, fit_text, text_width
 from ui.error_popup import ErrorPopup
 
-HIST_ROW_H = 10    # Four history rows fit above the footer.
-HIST_VISIBLE = 4
+INPUT_SINGLE_H = 12
+INPUT_DOUBLE_H = 22
+INPUT_DIVIDER_GAP = 1
+HIST_TOP_GAP = 2
+HIST_ROW_H = 9
+HIST_VISIBLE_SINGLE = 4
+HIST_VISIBLE_DOUBLE = 3
+MAX_EXPRESSION_CHARS = 96
 
 
 class CalculatorScreen(UIElement):
-    def __init__(self, font, small_font=None, registry=None, variables=None):
+    def __init__(self, font, small_font=None, registry=None, variables=None,
+                 display_digits=DEFAULT_DISPLAY_DIGITS):
         super().__init__(0, 0, 210, 64)
         self.font = font
         self.small_font = small_font or font
-        self.input_box = InputBox(0, 0, 210, 12, 42, font)
+        self.input_box = InputBox(0, 0, 210, INPUT_SINGLE_H,
+                                  MAX_EXPRESSION_CHARS, font, visible_rows=2)
         self.mode = 0        # 0=input, 1=history nav, 2=error popup
         self.history = []
         self._cursor = 0         # selected history index
@@ -26,6 +36,8 @@ class CalculatorScreen(UIElement):
         self._hist_last_key = None
         self._esc_guard = 0       # prevent ESC double-fire after exiting history
         self.context = EvalContext(variables if variables is not None else {}, registry)
+        self.display_digits = DEFAULT_DISPLAY_DIGITS
+        self.set_display_digits(display_digits)
         self.storage_error = ""
         self._storage_error_time = 0
         self.error_popup = ErrorPopup(font, self.small_font)
@@ -55,25 +67,56 @@ class CalculatorScreen(UIElement):
             self.mode = 2
 
     def _fmt(self, val):
-        if isinstance(val, float):
-            if abs(val) < 1e-6:   # snap 32-bit float noise to zero
-                val = 0.0
-            if abs(val) >= 1e10 or (abs(val) < 1e-6 and val != 0):
-                return f"{val:.6g}"
-            s = f"{val:.6f}".rstrip('0').rstrip('.')
-            return s if s else "0"
+        if isinstance(val, (Number, int, float)):
+            return format_number(val, self.display_digits)
         return str(val)
 
-    def _clamp_view(self):
-        max_off = max(0, len(self.history) - HIST_VISIBLE)
+    def set_display_digits(self, digits):
+        """Apply the user preference without changing stored calculation values."""
+        if not isinstance(digits, int):
+            digits = DEFAULT_DISPLAY_DIGITS
+        self.display_digits = max(MIN_DISPLAY_DIGITS,
+                                  min(MAX_DISPLAY_DIGITS, digits))
+
+    def _panel_layout(self):
+        """Size the editor first, then give the remaining room to history."""
+        if self.input_box.active_rows > 1:
+            input_height = INPUT_DOUBLE_H
+            history_visible = HIST_VISIBLE_DOUBLE
+        else:
+            input_height = INPUT_SINGLE_H
+            history_visible = HIST_VISIBLE_SINGLE
+        self.input_box.set_height(input_height)
+        divider_y = input_height + INPUT_DIVIDER_GAP
+        history_start_y = divider_y + HIST_TOP_GAP
+        return divider_y, history_start_y, history_visible
+
+    def _clamp_view(self, history_visible):
+        max_off = max(0, len(self.history) - history_visible)
         if self._cursor < self._view_offset:
             self._view_offset = self._cursor
-        if self._cursor >= self._view_offset + HIST_VISIBLE:
-            self._view_offset = self._cursor - HIST_VISIBLE + 1
+        if self._cursor >= self._view_offset + history_visible:
+            self._view_offset = self._cursor - history_visible + 1
         if self._view_offset > max_off:
             self._view_offset = max_off
         if self._view_offset < 0:
             self._view_offset = 0
+
+    def _history_text(self, expr, result):
+        """Fit expression and result into one row without letting them overlap."""
+        result_text = fit_text("= " + self._fmt(result), 78, self.font)
+        result_x = max(108, self.width - text_width(result_text, self.font) - 4)
+        expr_width = max(24, result_x - 8)
+        return fit_text(expr, expr_width, self.font), result_text, result_x
+
+    def _draw_history_row(self, display, y, expr, result, selected):
+        expr_text, result_text, result_x = self._history_text(expr, result)
+        if selected:
+            display.fill_rectangle(2, y, 206, HIST_ROW_H - 1, 12)
+        draw_text(display, 4, y, expr_text, self.font,
+                  gs=14 if selected else 15, invert=selected)
+        draw_text(display, result_x, y, result_text, self.font,
+                  gs=14 if selected else 15, invert=selected)
 
     def draw(self, display):
         if self.mode == 2:
@@ -84,53 +127,37 @@ class CalculatorScreen(UIElement):
                 self.error_popup.draw(display)
                 return
 
-        # --- Input box (y=0..11) ---
+        # --- One-line editor that expands to two rows only when needed ---
         self.input_box.y = 0
+        divider_y, hist_start_y, hist_visible = self._panel_layout()
         self.input_box.cursor.is_visible = (self.mode == 0)
         self.input_box.draw(display)
 
         # --- Divider ---
-        display.draw_hline(0, 12, 210, 8)
+        display.draw_hline(0, divider_y, 210, 8)
 
-        # --- Scrollable history (y=14..53, 4 rows × 10px) ---
-        hist_start_y = 14
-        self._clamp_view()
-        for i in range(HIST_VISIBLE):
+        # --- History: four rows with a compact editor, three when expanded ---
+        self._clamp_view(hist_visible)
+        for i in range(hist_visible):
             hist_idx = self._view_offset + i
             if hist_idx >= len(self.history):
                 break
             y = hist_start_y + i * HIST_ROW_H
             expr_str, result = self.history[hist_idx]
-            rhs = "= " + self._fmt(result)
             is_selected = (self.mode == 1 and hist_idx == self._cursor)
-            font_h = self.font.height if self.font else 8
-            expr_disp = expr_str[:22] + "~" if len(expr_str) > 23 else expr_str
-
-            if is_selected:
-                display.fill_rectangle(2, y, 206, font_h, 12)
-                if self.font:
-                    display.draw_text(4, y, expr_disp, self.font, invert=True, gs=14)
-                    display.draw_text(120, y, rhs, self.font, invert=True, gs=14)
-                else:
-                    display.draw_text8x8(4, y, expr_disp, gs=0)
-                    display.draw_text8x8(120, y, rhs, gs=0)
-            else:
-                if self.font:
-                    display.draw_text(4, y, expr_disp, self.font, gs=15)
-                    display.draw_text(120, y, rhs, self.font, gs=15)
-                else:
-                    display.draw_text8x8(4, y, expr_disp, gs=15)
-                    display.draw_text8x8(120, y, rhs, gs=15)
+            self._draw_history_row(display, y, expr_str, result, is_selected)
 
         # --- Status line (y=55..63) ---
         if self.storage_error and time.ticks_diff(time.ticks_ms(), self._storage_error_time) < 5000:
             status = self.storage_error
+            right = ""
         elif self.mode == 0:
-            total = len(self.history)
-            status = f"[Tab:hist] [{total}]" if total else "[Tab:hist]"
+            status = "ENT calc  Tab history"
+            right = str(len(self.input_box.get_str())) + "/" + str(MAX_EXPRESSION_CHARS)
         else:
-            status = f"[{self._cursor+1}/{len(self.history)}] [Tab:input]"
-        draw_footer(display, status, self.small_font)
+            status = "8/2 select  Tab input"
+            right = str(self._cursor + 1) + "/" + str(len(self.history))
+        draw_footer(display, status, self.small_font, right)
 
     def update(self, kb, event=None):
         if self.mode == 2:

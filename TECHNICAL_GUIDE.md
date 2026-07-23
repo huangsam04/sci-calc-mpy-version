@@ -1,6 +1,6 @@
 # SCI-CALC MicroPython 技术说明
 
-本文是 `mp_version` 1.2.0 的实现说明和维护入口。它以源码当前行为为准，使用伪代码解释
+本文是 `mp_version` 1.2.1 的实现说明和维护入口。它以源码当前行为为准，使用伪代码解释
 从 ESP32 上电到应用、输入、计算、显示、持久化、部署与诊断的完整逻辑；其中已合并
 2026-07-23 的性能调优记录。除 C 字体文件和 PNG 截图这类纯数据资产外，所有运行时和
 主机侧可执行逻辑均在本文中覆盖。
@@ -26,7 +26,7 @@ display/      恢复界面所需驱动                    fonts/*.xglcd（构建
 | 区域 | 责任 |
 | --- | --- |
 | `source/main.py` | 应用构造、事件循环、导航状态机、崩溃恢复。 |
-| `source/calc/` | 函数注册表、插件加载、Pratt 表达式解析与求值。 |
+| `source/calc/` | 高精度十进制数、函数注册表、依赖感知插件加载、Pratt 表达式解析与求值。 |
 | `source/screens/` | 各业务页面的状态、绘制和按键处理。 |
 | `source/ui/`、`source/anim/` | 通用控件、帧合成、页面/控件动画和状态栏。 |
 | `source/display/` | SSD1322 帧缓冲/SPI 驱动、单色调色板、X-GLCD 字体读取。 |
@@ -326,8 +326,9 @@ forever:
 ### 5.1 JSON 状态与原子提交
 
 默认设置：`angle_mode=0`、`cursor_mode=1`、四个内置函数组均开启、诊断关闭、休眠 180 秒、
-亮度 100%。读取时合并默认值，丢弃旧版本字段，校验函数列表、角度、亮度和休眠时间；休眠
-范围为 0..86400 秒，亮度范围为 10..100%。
+亮度 100%、`display_digits=4`。读取时合并默认值，丢弃旧版本字段，校验函数列表、角度、
+亮度、显示位数和休眠时间；休眠范围为 0..86400 秒，亮度范围为 10..100%，显示位数范围为
+1..12。
 
 主文件损坏时先读 `.bak`；两个候选都不可用才返回默认对象。写入按如下顺序完成：
 
@@ -405,9 +406,10 @@ registry.merge(staged):
     revision += 1 iff definitions were added
 ```
 
-`EvalContext` 共享变量字典和实时注册表。`set_var` 仅在值变化时置 `dirty`；`delete_var` 同理。
-主循环消费 dirty 位后才安排变量持久化。角度模式不在 context 自己缓存，而是始终转发
-`context.registry.angle_mode`，使重载后的注册表仍然是单一事实来源。
+`EvalContext` 共享变量字典和实时注册表。它在构造和 `set_var` 时把普通 int/float 正规化为
+高精度 `Number`，并通过 `context.numeric` 暴露同一套科学函数。`set_var` 仅在值变化时置
+`dirty`；`delete_var` 同理。主循环消费 dirty 位后才安排变量持久化。角度模式不在 context
+自己缓存，而是始终转发 `context.registry.angle_mode`，使重载后的注册表仍然是单一事实来源。
 
 内置组及优先级：
 
@@ -418,12 +420,19 @@ registry.merge(staged):
 | `math` | `sqrt ln exp log abs`。 |
 | `list` | `max(...)`、`min(...)`，至少一个参数。 |
 
-除零会在除法中明确抛错；幂使用 `math.pow`。`pi`、`e` 是求值期保留常量。用户变量和函数名
-区分大小写，不支持隐式乘法。
+除零会在除法中明确抛错；幂和科学函数均基于 `calc.number.Number`，不经过 `math.pow` 的
+浮点溢出路径。`pi`、`e` 是求值期的 30 位保留常量。用户变量和函数名区分大小写，不支持
+隐式乘法。
+
+`Number` 使用标准化的 `(signed_coefficient, decimal_exponent)` 表示
+`coefficient * 10^exponent`。每一步四则、幂和科学函数计算保留最多 30 位有效数字，指数单独
+保存，因此 `10^100000` 只产生指数 100000 而不会分配十万位十进制字符串或得到 `inf`。
+超越函数通过高精度级数/范围约化计算；无法可靠约化的超大角度和指数抛出可见错误。显示层将
+值圆整为 `x.xxxx*10^x`，与计算精度分离。
 
 ### 6.2 词法、Pratt 解析和 AST
 
-`tokenize(expr, registry)` 忽略空白，识别十进制/科学记数法浮点数、标识符、单/双引号字符串、
+`tokenize(expr, registry)` 忽略空白，识别十进制/科学记数法 `Number` 字面量、标识符、单/双引号字符串、
 `() , ;` 和当前注册表允许的符号。多小数点、未闭合字符串、未知字符会带源位置的 `ParseError`。
 
 `_Compiler` 是最大深度 30 的 Pratt parser。它把表达式编译为元组 AST，而不是使用 Python
@@ -472,42 +481,45 @@ evaluate(node, context):
     list -> evaluate every child to args; callback(args, context)
     infix '=' -> callback(left.variable_name, evaluate(right), context)
     other infix -> callback(evaluate(left), evaluate(right), context)
+    numeric callback result -> normalize to Number; reject nan/inf
     wrap unexpected runtime errors as ParseError(source position)
 ```
 
 ### 6.3 SD 插件隔离、热重载和附带插件
 
-插件为 `/sd/functions/*.py` 中不以 `_` 开头的文件，每个必须定义 `register(registry)`。加载器先
-在全新的 staging registry 中 `exec(compile(source))`，仅在 `register` 成功且没有名称冲突时
-合并到 live registry。单个插件的语法、执行或注册错误会记录到 `LoadReport.errors` 和串口，
-不能破坏其他插件。
+插件为 `/sd/functions/*.py` 中不以 `_` 开头的文件，每个必须定义 `register(registry)`。可选的
+`DEPENDENCIES = ("other", ...)`（兼容旧名 `REQUIRES`）声明其他 Add-in；可选 `EXPORTS` 字典
+显式提供可复用的函数或常量。加载器先在全新的 staging registry 中 `exec(compile(source))`，
+仅在 `register` 成功且没有名称冲突时合并到 live registry。单个插件的语法、执行、依赖或注册
+错误会记录到 `LoadReport.errors` 和串口，不能破坏其他插件。
 
 ```text
 load_function_files(live, enabled_names):
-    for sorted discovered .py files:
-        skip unless enabled
-        try:
-            namespace = execute file in isolated namespace
-            staging = empty FunctionRegistry(angle_mode=live.angle_mode)
-            require callable namespace.register
-            namespace.register(staging)
-            live.merge(staging)
-            report.loaded += (file name, number of definitions, WELCOME text)
-        except error:
-            report.errors += (file name, text(error)); print serial diagnostic
+    for requested add-on:
+        execute source in an isolated namespace once
+        read DEPENDENCIES and recursively load every dependency first
+        reject missing dependency or cycle without registering the dependent
+        staging = empty FunctionRegistry(angle_mode=live.angle_mode)
+        staging receives only declared dependency EXPORTS
+        require callable namespace.register; namespace.register(staging)
+        validate EXPORTS, live.merge(staging), then retain plugin exports
+        report.loaded += (file name, definition count, WELCOME text)
+        report.auto_enabled += dependencies absent from enabled_names
 ```
 
-`describe_function_files()` 也在隔离 registry 中运行插件，以生成面板摘要；失败插件显示空摘要。
-`_reload_functions(settings, existing_registry)` 从保存的内置组和 `plugin:` 名称建立 staged
-registry；若传入旧 registry 则原地 `replace`，保持所有页面指针有效并保留原角度模式。
+Add-in 可在注册期使用 `registry.plugin(name)`，在回调运行期使用 `context.plugin(name)`；注册期
+只注入已声明并成功装载的 `EXPORTS`，Add-in 应在两个阶段都遵循其显式依赖。`describe_function_files()`
+也在隔离 registry 中运行插件，以生成面板摘要；`describe_plugin_dependencies()` 单独读取依赖元数据。
+`_reload_functions(settings, existing_registry)` 从保存的内置组和 `plugin:` 名称建立 staged registry；
+若传入旧 registry 则原地 `replace`，保持所有页面指针有效并保留原角度模式。
 
 随附插件：
 
 | 文件 | 注册逻辑 |
 | --- | --- |
 | `basic.py` | 左结合、优先级 30 的 `%`；右操作数为零时报错。 |
-| `trig.py` | `sinh/cosh/tanh`、固定按度计算的 `sind/cosd/tand`，以及无参数列表函数 `PI()`。 |
-| `solve.py` | `solve("expr", "var", guess)`：只编译一次，复制父变量字典，以中央差分导数运行最多 60 次牛顿迭代，容差 `1e-9`；拒绝非有限值、极小导数和不收敛。它不改写持久变量。 |
+| `trig.py` | 使用 `context.numeric` 注册 `sinh/cosh/tanh`、固定按度计算的 `sind/cosd/tand`，以及无参数列表函数 `PI()`。 |
+| `solve.py` | `solve("expr", "var", guess)`：只编译一次，复制父变量字典，以高精度中央差分导数运行最多 60 次牛顿迭代；拒绝极小导数和不收敛。它不改写持久变量。 |
 
 ## 7. 页面与控件状态机
 
@@ -515,7 +527,8 @@ registry；若传入旧 registry 则原地 `replace`，保持所有页面指针�
 
 `Menu` 保存项目、选择下标和视图偏移；上下键移动并保持选择行可见，`ENT` 返回 `ENTER`，
 `ESC` 返回 `BACK`。光标独立动画到目标行，标签在加入菜单时只截断一次。`InputBox` 保存文本、
-插入点和水平视图，按比例字体测量前缀后移动光标；最大 42 字符。`DEL` 删除插入点之前字符，
+插入点和可配置行数的视图；它按比例字体的实际像素宽度切分文本，并用同一测量结果定位光标。
+紧凑覆盖层保留单行、42 字符默认值；计算器传入最多双行和 96 字符上限，短公式仍只占一行。`DEL` 删除插入点之前字符，
 按住超过 750 ms 后每 100 ms 重复；函数键自动插入如 `sin(`，快捷键则交还页面。
 
 `ErrorPopup` 将内部错误映射到可行动文字（除零、未知变量、定义域、溢出、括号、参数不足、
@@ -527,7 +540,15 @@ registry；若传入旧 registry 则原地 `replace`，保持所有页面指针�
 主菜单有 Calculator、Plot、Function Panel、Stopwatch、Settings 五项；返回根页面保留原选择。
 
 计算器有三种模式：输入、历史导航、错误弹窗。成功求值将 `(expr, result)` 插到最多 20 条历史
-的头部，清空输入；结果格式会抹除小于 `1e-6` 的浮点噪声，极大/极小数使用 6 位有效数字。
+的头部，清空输入；每个 `Number` 统一格式化为 `x.xxxx*10^x`。显示位数来自
+`settings.display_digits`，只作用于渲染和从历史插入的表达式文本，不改变历史中保留的数值对象。
+
+计算页将高度优先留给编辑：顶部 `InputBox` 默认是 12 px 的单行表达式区，首行放不下时扩展为
+22 px 的双行区。单行时下面显示四条 9 px 高的历史记录；展开后显示三条，页脚始终保留状态和长度
+计数。`InputBox` 的容量为 96 个字符；它不再把“屏幕能显示多少字”当作“允许输入多少字”。控件按
+字体实际像素宽度切分整条表达式，缓存每个视觉行的 `(start, end)` 范围，并让 `view_offset` 始终
+指向包含光标的一到两行窗口。这样比例字体、长函数名和光标位置使用同一套宽度计算，历史行中的公式
+与结果也会分别裁切，避免互相覆盖。
 
 ```text
 Calculator.update:
@@ -554,10 +575,12 @@ Calculator.update:
 
 ### 7.3 函数面板、函数选择器、字母面板和变量面板
 
-函数面板构造时（启动进度仍可见）读取插件文件列表和注册摘要；普通 `activate()` 只重建菜单，
-不会执行 SD 插件源码。它列出四个内置组以及 `Add-on:` 项，使用不同 ID（如 `basic` 与
-`plugin:basic`），防止同名冲突。`ENT` 翻转当前会话选择，离开时把 `enabled_functions` 排入
-异步设置保存，主循环随后原地重载 registry。加载失败插件会自动聚焦，用户可关闭它。
+函数面板构造时（启动进度仍可见）读取插件文件列表、注册摘要和依赖元数据；普通 `activate()`
+只重建菜单，不会执行 SD 插件源码。它列出四个内置组以及 `Add-on:` 项，使用不同 ID（如
+`basic` 与 `plugin:basic`），防止同名冲突。若已启用的 Add-in 缺少已知依赖，激活时递归加入
+依赖闭包、标为待保存，并在页脚显示 `Auto on: name`；用户关闭一个依赖时，已启用的依赖方也会
+关闭。`ENT` 翻转当前会话选择，离开时把 `enabled_functions` 排入异步设置保存，主循环随后原地
+重载 registry。加载失败插件会自动聚焦，用户可关闭它。
 
 `Shift+ENT` 是唯一主动重扫路径：重新执行隔离摘要、保持可用的原选择并夹住光标。这样运行中
 更换 SD 内容可见，同时不会将任意插件代码带回普通页面转场关键路径。
@@ -614,9 +637,10 @@ render_curve(auto_scale=true):
 计时一律由 `ticks_diff(now, start_time)` 求得，故页面不刷新或 OLED 睡眠不会停表。列表上下滚动，
 相同标签 200 ms 冷却。
 
-设置页三个行：固定版本号、打开 About、亮度。亮度始终夹到 10..100，步长 10；物理 4/6 增减，
-ENT 循环递增至 100 后回 10。变更立即写 SSD1322 的 master current、异步保存设置并在底栏显示
-保存状态。About 显示版本、ESP32、SSD1322 与键盘硬件说明，ESC 返回。
+设置页四行：固定版本号、打开 About、亮度和 `Display digits`。亮度始终夹到 10..100，步长 10；
+物理 4/6 增减，ENT 循环递增至 100 后回 10。显示位数夹到 1..12，步长 1，立即通知
+CalculatorScreen 重绘格式。两项可写设置都会异步保存并在底栏显示保存状态。About 显示版本、
+ESP32、SSD1322 与键盘硬件说明，ESC 返回。
 
 ## 8. 显示、字体和 SD block device
 

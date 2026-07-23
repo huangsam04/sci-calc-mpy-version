@@ -8,6 +8,8 @@ def test_internal_errors_become_actionable_messages():
         "Unknown variable", "Define it first, e.g. x=2")
     assert friendly_error("Function is no longer loaded: 'sin'") == (
         "Function disabled", "Enable it in Functions")
+    assert friendly_error("Non-finite number") == (
+        "Invalid numeric result", "Check the add-on calculation")
 
 
 def test_popup_timeout_is_independent_of_page_input(monkeypatch):

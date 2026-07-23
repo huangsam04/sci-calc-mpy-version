@@ -211,6 +211,10 @@ class Nav:
         self.stack.append(screen)
         screen.activate()
 
+    def reserve_transition_buffers(self):
+        """Reserve page-slide layers before screen construction fragments RAM."""
+        return self.renderer.reserve_transition_buffers()
+
     @property
     def current(self):
         return self.stack[-1]
@@ -232,9 +236,14 @@ class Nav:
         from anim.engine import cancel_animations
         cancel_animations(old)
         new.activate()
-        self.renderer.capture_transition(old, new)
-        self._transition = (time.ticks_ms(), forward)
         self._input_locked = True
+        if not self.renderer.capture_transition(old, new):
+            # The renderer can decline transitions when the heap cannot hold
+            # both page layers. The main loop will present the new page in
+            # this same input frame without leaving the user on the splash.
+            self._transition = None
+            return
+        self._transition = (time.ticks_ms(), forward)
 
     def is_transitioning(self):
         return self._transition is not None
@@ -326,7 +335,7 @@ def main():
         _boot_progress(display, 4, 8, "Loading variables...")
     except Exception as e:
         _boot_fail(display, 4, 8, "Settings", e)
-        settings = {"angle_mode": 0, "enabled_functions": ["basic", "trig", "math", "list"], "diagnostics": False, "brightness": 100}
+        settings = {"angle_mode": 0, "enabled_functions": ["basic", "trig", "math", "list"], "diagnostics": False, "brightness": 100, "display_digits": 4}
     display.set_brightness(settings.get("brightness", 100))
     metrics.mark_boot("settings")
     # Variables (fallback: empty dict)
@@ -351,6 +360,12 @@ def main():
         registry.angle_mode = settings.get("angle_mode", 0)
     metrics.mark_boot("functions")
 
+    # Reserve the two page-slide layers before importing and constructing all
+    # screens. Once the UI object graph exists the ESP32 heap is fragmented,
+    # even though its reported total free space is still large enough.
+    nav = Nav(display, font_small, registry)
+    nav.reserve_transition_buffers()
+
     # Screens (import + build — skip broken ones)
     try:
         from screens.main_menu import MainMenu
@@ -374,15 +389,18 @@ def main():
         from utils.storage import DeferredStorage
         persistence = DeferredStorage()
         about = AboutScreen(font_main, VERSION)
+        calc_screen = CalculatorScreen(
+            font_main, font_small, registry, vars_dict,
+            display_digits=settings.get("display_digits", 4))
         settings_screen = SettingsScreen(
             font_main, display, settings, about,
-            request_save=persistence.request_settings)
+            request_save=persistence.request_settings,
+            on_display_digits_change=calc_screen.set_display_digits)
         func_panel = FunctionPanel(
             font_main, request_settings=persistence.request_settings,
             settings=settings)
         func_panel.set_load_errors(registry.plugin_errors)
         stopwatch = StopwatchScreen(font_main)
-        calc_screen = CalculatorScreen(font_main, font_small, registry, vars_dict)
         letter_panel = LetterPanel(font_main, calc_screen.input_box)
         func_picker = FunctionPicker(font_main, calc_screen)
         var_panel = VariablePanel(font_main, calc_screen)
@@ -409,7 +427,6 @@ def main():
     from anim.engine import animate_all, update_tmp, has_active_animations, active_animation_count
     from utils.power import AWAKE, WOKE, DisplayPower
 
-    nav = Nav(display, font_small, registry)
     nav.boot(main_menu)
     metrics.bind_runtime(nav, main_menu,
                          (calc_screen, plot_screen, func_panel, stopwatch,

@@ -30,7 +30,7 @@ def test_display_brightness_uses_ssd1322_master_current_command():
     ]
 
 
-def test_settings_rows_are_version_about_then_brightness():
+def test_settings_rows_include_display_precision_control():
     about = AboutScreen(None, "1.2.3")
     screen = SettingsScreen(
         None, DisplayStub(), {"version": "1.2.3", "brightness": 80}, about)
@@ -39,6 +39,7 @@ def test_settings_rows_are_version_about_then_brightness():
         "Version  " + VERSION,
         "About",
         "Brightness  80%",
+        "Display digits  4",
     ]
 
 
@@ -60,3 +61,21 @@ def test_about_opens_from_second_row_and_brightness_queues_persistence():
     assert settings["brightness"] == 90
     assert display.brightness_values == [90]
     assert queued[0][0]["brightness"] == 90
+
+
+def test_display_digits_updates_the_live_formatter_and_is_saved():
+    display = DisplayStub()
+    settings = {"display_digits": 4}
+    applied = []
+    queued = []
+    screen = SettingsScreen(
+        None, display, settings, AboutScreen(None, "1.2.3"),
+        request_save=lambda value, callback: queued.append((dict(value), callback)),
+        on_display_digits_change=applied.append)
+
+    screen.menu.cursor_pos = 3
+    screen.update(KeyboardStub(), (2, 2, False))
+
+    assert settings["display_digits"] == 5
+    assert applied == [5]
+    assert queued[0][0]["display_digits"] == 5

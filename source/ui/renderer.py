@@ -1,6 +1,7 @@
 """Single composition and presentation path for application frames."""
 import sys
 import time
+import gc
 
 from framebuf import FrameBuffer, GS4_HMSB  # type: ignore
 
@@ -65,14 +66,52 @@ class Renderer:
         self.display = display
         self.sidebar = sidebar
         self.last_present_us = 0
-        buffer_length = ((CONTENT_W + 1) // 2) * display.height
-        self._outgoing_buffer = bytearray(buffer_length)
-        self._incoming_buffer = bytearray(buffer_length)
-        self._outgoing = FrameBuffer(self._outgoing_buffer, CONTENT_W,
-                                     display.height, GS4_HMSB)
-        self._incoming = FrameBuffer(self._incoming_buffer, CONTENT_W,
-                                     display.height, GS4_HMSB)
+        # These two 6.7 KB buffers are useful only while a page is sliding.
+        # The normal boot path reserves them before loading screens; keeping
+        # the constructor itself cheap still protects alternate launch paths.
+        self._outgoing_buffer = None
+        self._incoming_buffer = None
+        self._outgoing = None
+        self._incoming = None
         self._outgoing_screen = None
+        self._transitions_available = True
+
+    def reserve_transition_buffers(self):
+        """Reserve page layers while callers still have a contiguous heap."""
+        return self._ensure_transition_buffers()
+
+    def _ensure_transition_buffers(self):
+        """Allocate page layers lazily, or permanently use direct switching."""
+        if self._outgoing is not None:
+            return True
+        if not self._transitions_available:
+            return False
+
+        buffer_length = ((CONTENT_W + 1) // 2) * self.display.height
+        outgoing_buffer = None
+        incoming_buffer = None
+        try:
+            outgoing_buffer = bytearray(buffer_length)
+            incoming_buffer = bytearray(buffer_length)
+            outgoing = FrameBuffer(outgoing_buffer, CONTENT_W,
+                                   self.display.height, GS4_HMSB)
+            incoming = FrameBuffer(incoming_buffer, CONTENT_W,
+                                   self.display.height, GS4_HMSB)
+        except MemoryError:
+            # A later retry cannot make a fragmented heap more contiguous.
+            # Release a partially allocated layer and retain the direct page
+            # rendering path for the rest of this session.
+            outgoing_buffer = None
+            incoming_buffer = None
+            gc.collect()
+            self._transitions_available = False
+            return False
+
+        self._outgoing_buffer = outgoing_buffer
+        self._incoming_buffer = incoming_buffer
+        self._outgoing = outgoing
+        self._incoming = incoming
+        return True
 
     def _capture(self, screen, target):
         self.display.clear_buffers(0)
@@ -82,6 +121,8 @@ class Renderer:
 
     def capture_transition(self, outgoing, incoming):
         """Capture both content-only page layers into reusable buffers."""
+        if not self._ensure_transition_buffers():
+            return False
         # A normal present has already rendered the current page into the
         # outgoing layer. Reuse it at navigation time so an input event does
         # not synchronously redraw both pages before the first slide frame.
@@ -89,6 +130,7 @@ class Renderer:
             self._capture(outgoing, self._outgoing)
             self._outgoing_screen = outgoing
         self._capture(incoming, self._incoming)
+        return True
 
     def _present_composed(self):
         # Sidebar.draw first erases the entire non-content region. This also
@@ -102,9 +144,12 @@ class Renderer:
         """Present one canonical live page frame."""
         self.display.clear_buffers(0)
         screen.draw(self.display)
-        self._outgoing.fill(0)
-        self._outgoing.blit(self.display.gs4_fb, 0, 0)
-        self._outgoing_screen = screen
+        if self._outgoing is not None:
+            self._outgoing.fill(0)
+            self._outgoing.blit(self.display.gs4_fb, 0, 0)
+            self._outgoing_screen = screen
+        else:
+            self._outgoing_screen = None
         self._present_composed()
 
     def present_transition(self, eased_progress, forward):

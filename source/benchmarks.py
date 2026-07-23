@@ -84,15 +84,18 @@ def _build_runtime(metrics):
     metrics.mark_boot("screen_imports")
 
     about = AboutScreen(font_main, VERSION)
+    calc_screen = CalculatorScreen(
+        font_main, font_small, registry, vars_dict,
+        display_digits=settings.get("display_digits", 4))
     settings_screen = SettingsScreen(
         font_main, display, settings, about,
-        request_save=persistence.request_settings)
+        request_save=persistence.request_settings,
+        on_display_digits_change=calc_screen.set_display_digits)
     func_panel = FunctionPanel(
         font_main, request_settings=persistence.request_settings,
         settings=settings)
     func_panel.set_load_errors(registry.plugin_errors)
     stopwatch = StopwatchScreen(font_main)
-    calc_screen = CalculatorScreen(font_main, font_small, registry, vars_dict)
     plot_screen = PlotScreen(font_main, font_small, registry)
     main_menu = MainMenu(font_main)
     main_menu.add_screen("Calculator", calc_screen)

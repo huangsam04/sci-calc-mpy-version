@@ -53,3 +53,48 @@ def test_held_delete_requests_redraw_without_a_new_edge(monkeypatch):
 
     assert screen.update(HeldDeleteKeyboard(), None) == "REDRAW"
     assert screen.input_box.get_str() == "12"
+
+
+def test_calculator_expands_the_input_panel_only_after_the_first_line_wraps():
+    screen = CalculatorScreen(None, registry=build_registry(), variables={})
+    expression = "1+" * 47 + "1"
+
+    assert screen._panel_layout() == (13, 15, 4)
+    assert screen.input_box.height == 12
+    assert screen.input_box.active_rows == 1
+
+    screen.input_box.set_str(expression)
+    screen.input_box.move_cursor_end()
+
+    assert screen.input_box.max_char == 96
+    assert screen.input_box.visible_rows == 2
+    assert screen.input_box.get_str() == expression
+    assert screen.input_box.view_offset > 0
+    assert screen._panel_layout() == (23, 25, 3)
+    assert screen.input_box.height == 22
+    assert screen.input_box.active_rows == 2
+
+    screen.input_box.clear_str()
+
+    assert screen._panel_layout() == (13, 15, 4)
+    assert screen.input_box.height == 12
+    assert screen.input_box.active_rows == 1
+
+
+def test_expanding_the_input_panel_keeps_selected_history_visible():
+    screen = CalculatorScreen(None, registry=build_registry(), variables={})
+    screen.history = [(str(index), float(index)) for index in range(4)]
+    screen._cursor = 3
+
+    _, _, compact_history_rows = screen._panel_layout()
+    screen._clamp_view(compact_history_rows)
+
+    assert compact_history_rows == 4
+    assert screen._view_offset == 0
+
+    screen.input_box.set_str("1+" * 47 + "1")
+    _, _, expanded_history_rows = screen._panel_layout()
+    screen._clamp_view(expanded_history_rows)
+
+    assert expanded_history_rows == 3
+    assert screen._view_offset == 1

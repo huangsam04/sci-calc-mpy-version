@@ -11,8 +11,12 @@ DEFAULTS = {
     "diagnostics": False,
     "sleep_timeout_s": 180,
     "brightness": 100,
+    "display_digits": 4,
 }
 MAX_SLEEP_TIMEOUT_S = 86_400
+MIN_DISPLAY_DIGITS = 1
+MAX_DISPLAY_DIGITS = 12
+_NUMBER_TAG = "__sci_calc_number__"
 
 _storage_override = None
 _settings_cache = None
@@ -56,6 +60,38 @@ def _copy_defaults():
 def _read_json_file(path):
     with open(path, "r") as source:
         return json.load(source)
+
+
+def _encode_numbers(value):
+    """Turn high-precision variables into explicit JSON-safe literals."""
+    try:
+        from calc.number import Number
+    except ImportError:
+        Number = ()
+    if isinstance(value, Number):
+        return {_NUMBER_TAG: value.to_literal()}
+    if isinstance(value, dict):
+        return {key: _encode_numbers(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_encode_numbers(item) for item in value]
+    return value
+
+
+def _decode_numbers(value):
+    """Restore values written by :func:`_encode_numbers` after a reboot."""
+    if isinstance(value, dict):
+        if set(value) == {_NUMBER_TAG} and isinstance(value[_NUMBER_TAG], str):
+            try:
+                from calc.number import Number
+                return Number.parse(value[_NUMBER_TAG])
+            except (ImportError, TypeError, ValueError):
+                # Preserve malformed third-party data so it can still be
+                # inspected or replaced rather than silently deleting it.
+                return value
+        return {key: _decode_numbers(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_decode_numbers(item) for item in value]
+    return value
 
 
 def _read_with_backup(path, default):
@@ -153,6 +189,11 @@ def load_settings():
         if (not isinstance(brightness, int)
                 or brightness < 10 or brightness > 100):
             merged["brightness"] = DEFAULTS["brightness"]
+        display_digits = merged.get("display_digits")
+        if (not isinstance(display_digits, int)
+                or display_digits < MIN_DISPLAY_DIGITS
+                or display_digits > MAX_DISPLAY_DIGITS):
+            merged["display_digits"] = DEFAULTS["display_digits"]
         _settings_cache = merged
     return _settings_cache
 
@@ -169,14 +210,16 @@ def save_settings(settings):
 def load_vars():
     global _vars_cache
     if _vars_cache is None:
-        _vars_cache = _read_with_backup(_join(_storage_dir(), "vars.json"), {})
+        _vars_cache = _decode_numbers(
+            _read_with_backup(_join(_storage_dir(), "vars.json"), {}))
     return _vars_cache
 
 
 def save_vars(variables):
     global _vars_cache
     _vars_cache = dict(variables)
-    return _atomic_write_json(_join(_storage_dir(), "vars.json"), variables)
+    return _atomic_write_json(_join(_storage_dir(), "vars.json"),
+                              _encode_numbers(variables))
 
 
 def _snapshot(value):
