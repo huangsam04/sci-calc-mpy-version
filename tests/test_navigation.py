@@ -264,7 +264,10 @@ def test_only_escape_is_accepted_until_page_restore_finishes(monkeypatch):
     nav.draw_transition(100 + main.TRANSITION_MS)
 
     assert nav.filter_event(KeyboardStub(), (1, 1, False)) is None
-    assert nav.filter_event(KeyboardStub(), (0, 0, False)) == (0, 0, False)
+    assert nav.allows_page_update(None) is False
+    escape = nav.filter_event(KeyboardStub(), (0, 0, False))
+    assert escape == (0, 0, False)
+    assert nav.allows_page_update(escape) is True
 
 
 def test_navigation_reveals_default_page_before_restoring_swap(

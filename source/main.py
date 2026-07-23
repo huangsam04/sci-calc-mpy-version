@@ -372,6 +372,11 @@ class Nav:
             return None
         return event
 
+    def allows_page_update(self, event):
+        """Block held-key polling while a default page is still restoring."""
+        return (event is not None
+                or not self.residency.is_restoring(self.current))
+
     def draw_transition(self, now):
         if self._transition is None:
             return False
@@ -671,6 +676,7 @@ def main():
                     persistence.request_settings(settings)
                     event = None
             if (not nav.is_transitioning()
+                    and nav.allows_page_update(event)
                     and (event is not None or kb.is_pressed(0, 0) or kb.is_pressed(4, 3))):
                 result = cur.update(kb, event)
                 nav.residency.mark_dirty(cur)
