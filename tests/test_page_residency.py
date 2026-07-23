@@ -9,6 +9,7 @@ from screens.calculator import CalculatorScreen
 from screens.plot import PlotScreen
 from screens.settings import SettingsScreen
 from screens.stopwatch import StopwatchScreen
+from screens import stopwatch as stopwatch_module
 
 
 def test_session_swap_round_trips_one_page_and_rejects_corruption(tmp_path):
@@ -19,28 +20,38 @@ def test_session_swap_round_trips_one_page_and_rejects_corruption(tmp_path):
     assert swap.read("calculator") == {"input": "2+2", "cursor": 3}
 
     path = tmp_path / "calculator.swp"
-    envelope = json.loads(path.read_text(encoding="utf-8"))
-    envelope["payload"] = '{"input":"corrupt"}'
-    path.write_text(json.dumps(envelope), encoding="utf-8")
+    header, _ = path.read_text(encoding="utf-8").split("\n", 1)
+    path.write_text(
+        header + '\n{"input":"corrupt"}', encoding="utf-8")
 
     with pytest.raises(SwapError):
         swap.read("calculator")
     assert not path.exists()
 
 
-def test_session_swap_counts_utf8_without_materializing_a_second_payload(
+def test_session_swap_counts_payload_without_materializing_a_second_copy(
         tmp_path):
     swap = SessionSwap(str(tmp_path))
     swap.start_session()
     state = {"input": "正弦🙂"}
-    payload = json.dumps(state, ensure_ascii=False)
+    payload = swap.pack(state)
 
     assert swap.write_packed("unicode", payload) is True
 
-    envelope = json.loads(
-        (tmp_path / "unicode.swp").read_text(encoding="utf-8"))
-    assert envelope["length"] == len(payload.encode("utf-8"))
+    record = (tmp_path / "unicode.swp").read_bytes()
+    header, _ = record.split(b"\n", 1)
+    assert int(header.split(b"|")[2]) == len(payload.encode("utf-8"))
+    assert len(record) <= 4096
     assert swap.read("unicode") == state
+
+
+def test_session_swap_rejects_payload_that_only_fits_without_record_header(
+        tmp_path):
+    swap = SessionSwap(str(tmp_path), max_snapshot_bytes=128)
+    swap.start_session()
+
+    assert swap.write("bounded", {"value": "x" * 110}) is False
+    assert not (tmp_path / "bounded.swp").exists()
 
 
 class Page:
@@ -163,14 +174,32 @@ def test_only_one_bounded_packed_write_is_retained_in_ram(tmp_path):
     residency.leave(Page("first", "older"))
     residency.leave(Page("second", "latest"))
 
-    assert residency._pending_key == "second"
-    assert residency._pending_state == {"value": "latest"}
+    assert residency._pending_key == "first"
+    assert residency._pending_state == {"value": "older"}
     assert residency._pending_payload is None
     residency.prepare(Page("destination"))
     assert residency.settle(residency._current) & SETTLE_MORE
     assert isinstance(residency._pending_payload, str)
     assert len(residency._pending_payload.encode("utf-8")) <= 4096
-    assert "first" not in residency._expected
+    assert "first" in residency._expected
+    assert "second" not in residency._expected
+
+
+def test_immediate_back_keeps_the_outgoing_page_pending_snapshot(tmp_path):
+    swap = SessionSwap(str(tmp_path))
+    swap.start_session()
+    residency = PageResidency(swap=swap)
+    first = Page("first", "latest edit")
+    second = Page("second", "default only")
+
+    residency.leave(first)
+    residency.prepare(second)
+    residency.leave(second)
+    residency.prepare(first)
+    _settle_all(residency, first)
+
+    assert first.value == "latest edit"
+    assert second.error == ""
 
 
 def test_one_page_write_failure_does_not_reset_an_unrelated_page(
@@ -237,6 +266,22 @@ def test_dirty_page_snapshot_is_encoded_and_written_only_during_settle(
     assert not (tmp_path / "live.swp").exists()
     assert residency.settle(page) & SETTLE_MORE
     assert swap.read("live") == {"value": "after"}
+
+
+def test_running_stopwatch_counts_time_spent_outside_the_page(monkeypatch):
+    now = [1000]
+    monkeypatch.setattr(stopwatch_module.time, "ticks_ms", lambda: now[0])
+    stopwatch = StopwatchScreen(None)
+    stopwatch._start()
+    now[0] = 2500
+    state = stopwatch.snapshot_state()
+
+    stopwatch.reset_state()
+    now[0] = 4000
+    stopwatch.restore_state(state)
+
+    assert stopwatch._running is True
+    assert stopwatch._get_elapsed() == 3000
 
 
 class DefaultFrameDisplay:

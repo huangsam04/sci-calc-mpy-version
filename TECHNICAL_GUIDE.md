@@ -357,8 +357,9 @@ on any failure:
 对象引用并合并同类请求，编码和写入都发生在无动画的空闲阶段。失败时保留请求，约2秒后重试，
 并调用回调更新 UI 的“Not saved - check SD”。
 
-`SessionSwap` 在 `/sd/.sci-calc/swap` 为每页保存独立、最大4 KiB的会话记录，外层包含魔数、
-版本、UTF-8长度和校验值，并通过 `.tmp/.bak` 原子替换。启动时删除旧会话；文件缺失、损坏或
+`SessionSwap` 在 `/sd/.sci-calc/swap` 为每页保存独立、整体最大4 KiB的会话记录；固定 ASCII
+头包含魔数、版本、UTF-8长度和校验值，后接原始 JSON 载荷，避免外层二次转义和内存复制，并
+通过 `.tmp/.bak` 原子替换。启动时删除旧会话；文件缺失、损坏或
 SD不可用时，`PageResidency` 只作废当前页记录、显示错误并保留长期 settings/variables。
 
 ### 5.2 OLED 休眠
@@ -852,6 +853,9 @@ CPython `compileall`、对所有源码使用 `-march=xtensawin` 编译 `.mpy`。
 内存密集页面的直切，不代表当前实现。当前版本已用默认页揭示和低内存淡入淡出替代所有正常
 导航直切，部署后应重新运行逐页监控更新本表。此前动画路径最慢帧仍低于16.7 ms，设备接受
 ABI探针并能导入 `main.mpy`；基准与诊断后执行过设备复位，恢复正常应用。
+
+当前 `device_runtime_monitor.py` 默认在所有目标页间分配500次完整往返，并持续驱动
+`settle_current()`，因此会覆盖 SWAP 编码/读写、FunctionPanel 逐行恢复、Plot 分片计算和曲线渐显。
 
 复现命令：
 

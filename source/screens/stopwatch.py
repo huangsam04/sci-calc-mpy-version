@@ -36,6 +36,7 @@ class StopwatchScreen(UIElement):
             "running": bool(self._running),
             "paused": bool(self._paused),
             "elapsed": int(self._get_elapsed()),
+            "start_time": int(self._start_time) if self._running else 0,
             "laps": [[int(number), int(elapsed)]
                      for number, elapsed in self._laps[:LAP_MAX]],
             "cursor": self._lap_cursor,
@@ -65,8 +66,17 @@ class StopwatchScreen(UIElement):
         self._elapsed = elapsed
         self._running = bool(state.get("running", False))
         self._paused = bool(state.get("paused", False)) and not self._running
-        self._start_time = (time.ticks_add(time.ticks_ms(), -elapsed)
-                            if self._running else 0)
+        if self._running:
+            now = time.ticks_ms()
+            saved_start = int(state.get(
+                "start_time", time.ticks_add(now, -elapsed)))
+            live_elapsed = time.ticks_diff(now, saved_start)
+            if live_elapsed < elapsed:
+                live_elapsed = elapsed
+            self._elapsed = live_elapsed
+            self._start_time = time.ticks_add(now, -live_elapsed)
+        else:
+            self._start_time = 0
         self._laps = restored
         self._lap_cursor = max(0, int(state.get("cursor", 0)))
         self._view_offset = max(0, int(state.get("view", 0)))

@@ -18,7 +18,7 @@ from anim.engine import (active_animation_count, animate_all,
 from performance import metrics
 
 
-CYCLES_PER_SCREEN = 10
+TOTAL_ROUND_TRIPS = 500
 FRAME_PACE_MS = 16
 
 
@@ -40,6 +40,7 @@ def _drive(nav):
     frames = 0
     elapsed_total = 0
     elapsed_max = 0
+    first_present_us = 0
     heap_min = _heap_free()
     animated = nav.is_transitioning()
 
@@ -49,6 +50,8 @@ def _drive(nav):
         started = time.ticks_us()
         nav.draw_transition(time.ticks_ms())
         elapsed = time.ticks_diff(time.ticks_us(), started)
+        if first_present_us == 0:
+            first_present_us = elapsed
         frames += 1
         elapsed_total += elapsed
         elapsed_max = max(elapsed_max, elapsed)
@@ -56,27 +59,42 @@ def _drive(nav):
         if nav.is_transitioning() and FRAME_PACE_MS:
             time.sleep_ms(FRAME_PACE_MS)
 
-    if frames == 0:
+    # Continue through the real post-transition lifecycle. This includes page
+    # SWAP encode/write/read, progressive menu rows, plot workspace rebuild,
+    # curve sampling, and the curve reveal animation.
+    settling = True
+    while settling or active_animation_count():
+        was_active = bool(active_animation_count())
         animate_all()
         update_tmp()
         started = time.ticks_us()
-        nav.present_current()
+        if was_active:
+            nav.present_current()
+            settling = True
+        else:
+            settling = nav.settle_current()
         elapsed = time.ticks_diff(time.ticks_us(), started)
-        frames = 1
-        elapsed_total = elapsed
-        elapsed_max = elapsed
+        if first_present_us == 0:
+            first_present_us = elapsed
+        frames += 1
+        elapsed_total += elapsed
+        elapsed_max = max(elapsed_max, elapsed)
         heap_min = _minimum(heap_min, _heap_free())
+        if (settling or active_animation_count()) and FRAME_PACE_MS:
+            time.sleep_ms(FRAME_PACE_MS)
 
     nav.restore_optional_resources()
     heap_min = _minimum(heap_min, _heap_free())
-    return animated, frames, elapsed_total, elapsed_max, heap_min
+    return (animated, frames, elapsed_total, elapsed_max, heap_min,
+            first_present_us)
 
 
-def _exercise(nav, root, target):
+def _exercise(nav, root, target, cycles):
     gc.collect()
     heap_before = _heap_free()
     heap_min = heap_before
     nav_elapsed_max = 0
+    input_to_first_max = 0
     frame_elapsed_max = 0
     frame_elapsed_total = 0
     frame_count = 0
@@ -90,7 +108,7 @@ def _exercise(nav, root, target):
     direct_count = 0
     failures = 0
 
-    for _ in range(CYCLES_PER_SCREEN):
+    for _ in range(cycles):
         for forward in (True, False):
             try:
                 started = time.ticks_us()
@@ -102,8 +120,10 @@ def _exercise(nav, root, target):
                 nav_elapsed_max = max(nav_elapsed_max, nav_elapsed)
                 heap_min = _minimum(heap_min, _heap_free())
 
-                animated, frames, elapsed_total, elapsed_max, drive_heap = (
-                    _drive(nav))
+                (animated, frames, elapsed_total, elapsed_max, drive_heap,
+                 first_present_us) = _drive(nav)
+                input_to_first_max = max(
+                    input_to_first_max, nav_elapsed + first_present_us)
                 if animated:
                     animated_count += 1
                     animated_frame_count += frames
@@ -132,10 +152,11 @@ def _exercise(nav, root, target):
     direct_average = direct_frame_total // max(1, direct_frame_count)
     buffers = ",".join(sorted(nav.memory._buffers.keys()))
     print("MONITOR_SCREEN name=" + target.__class__.__name__
-          + " cycles=" + str(CYCLES_PER_SCREEN)
+          + " cycles=" + str(cycles)
           + " animated=" + str(animated_count)
           + " direct=" + str(direct_count)
           + " nav_max_us=" + str(nav_elapsed_max)
+          + " input_to_first_max_us=" + str(input_to_first_max)
           + " frame_avg_us=" + str(average)
           + " frame_max_us=" + str(frame_elapsed_max)
           + " animated_frame_avg_us=" + str(animated_average)
@@ -174,8 +195,11 @@ def run():
           + " targets=" + str(len(targets)))
 
     failures = 0
-    for target in targets:
-        failures += _exercise(nav, root, target)
+    base_cycles = TOTAL_ROUND_TRIPS // max(1, len(targets))
+    remainder = TOTAL_ROUND_TRIPS % max(1, len(targets))
+    for index, target in enumerate(targets):
+        cycles = base_cycles + (1 if index < remainder else 0)
+        failures += _exercise(nav, root, target, cycles)
 
     if nav.current is not root:
         nav.reset(root)

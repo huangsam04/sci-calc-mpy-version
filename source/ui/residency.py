@@ -60,6 +60,11 @@ def _safe_key(key):
     return key
 
 
+def _record_header(payload_size, checksum):
+    return (SWAP_MAGIC + "|" + str(SWAP_VERSION) + "|"
+            + str(payload_size) + "|" + str(checksum) + "\n")
+
+
 class SessionSwap:
     """Store independent bounded page records for the current boot session."""
 
@@ -121,7 +126,9 @@ class SessionSwap:
     def pack(self, state):
         """Encode one bounded state record without touching the filesystem."""
         payload = json.dumps(state)
-        if _payload_metrics(payload)[0] > self.max_snapshot_bytes:
+        payload_size, checksum = _payload_metrics(payload)
+        header = _record_header(payload_size, checksum)
+        if len(header) + payload_size > self.max_snapshot_bytes:
             raise SwapError("Page snapshot is too large")
         return payload
 
@@ -139,20 +146,15 @@ class SessionSwap:
                 return False
         try:
             payload_size, checksum = _payload_metrics(payload)
-            if payload_size > self.max_snapshot_bytes:
+            header = _record_header(payload_size, checksum)
+            if len(header) + payload_size > self.max_snapshot_bytes:
                 raise SwapError("Page snapshot is too large")
-            envelope = {
-                "magic": SWAP_MAGIC,
-                "version": SWAP_VERSION,
-                "length": payload_size,
-                "checksum": checksum,
-                "payload": payload,
-            }
             primary = self._path(key)
             temporary = self._path(key, ".tmp")
             backup = self._path(key, ".bak")
             with open(temporary, "w") as target:
-                json.dump(envelope, target)
+                target.write(header)
+                target.write(payload)
                 flusher = getattr(target, "flush", None)
                 if flusher is not None:
                     flusher()
@@ -202,16 +204,19 @@ class SessionSwap:
             raise SwapError(self.last_error or "SD unavailable")
         try:
             with open(self._path(key), "r") as source:
-                envelope = json.load(source)
-            payload = envelope.get("payload")
-            if (envelope.get("magic") != SWAP_MAGIC
-                    or envelope.get("version") != SWAP_VERSION
-                    or not isinstance(payload, str)):
+                header = source.readline(96)
+                payload = source.read(self.max_snapshot_bytes + 1)
+            parts = header.rstrip("\n").split("|")
+            if (len(parts) != 4
+                    or parts[0] != SWAP_MAGIC
+                    or int(parts[1]) != SWAP_VERSION):
                 raise SwapError("Invalid page snapshot header")
+            expected_size = int(parts[2])
+            expected_checksum = int(parts[3])
             size, checksum = _payload_metrics(payload)
-            if (size != envelope.get("length")
-                    or size > self.max_snapshot_bytes
-                    or checksum != envelope.get("checksum")):
+            if (len(header) + size > self.max_snapshot_bytes
+                    or size != expected_size
+                    or checksum != expected_checksum):
                 raise SwapError("Page snapshot checksum failed")
             state = json.loads(payload)
             if not isinstance(state, dict):
@@ -255,13 +260,14 @@ class PageResidency:
 
     def _queue_state(self, key, state):
         previous = self._pending_key
-        if previous and previous != key and previous not in self._persisted:
-            self._expected.discard(previous)
+        if previous and previous != key:
+            return False
         self._pending_key = key
         self._pending_state = state
         self._pending_payload = None
         self._expected.add(key)
         self._errors.pop(key, None)
+        return True
 
     def mark_dirty(self, screen):
         """Queue a zero-copy save request for the next quiet loop."""
@@ -296,7 +302,8 @@ class PageResidency:
 
         if captured:
             try:
-                self._queue_state(key, state)
+                if not self._queue_state(key, state):
+                    raise SwapError("Another page snapshot is still pending")
             except Exception as error:
                 snapshot_error = error
         if snapshot_error is not None:
@@ -328,6 +335,9 @@ class PageResidency:
             activator = getattr(screen, "activate", None)
         if activator is not None:
             activator()
+
+    def is_restoring(self, screen):
+        return screen is self._current and not self._restore_finished
 
     def _flush_one(self):
         if self._pending_key is None:
@@ -403,7 +413,9 @@ class PageResidency:
                 snapshotter = getattr(screen, "snapshot_state", None)
                 if key and snapshotter is not None:
                     try:
-                        self._queue_state(key, snapshotter())
+                        if not self._queue_state(key, snapshotter()):
+                            raise SwapError(
+                                "Another page snapshot is still pending")
                         return SETTLE_MORE
                     except Exception as error:
                         self._errors[key] = (

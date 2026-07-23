@@ -39,7 +39,11 @@ def test_plot_snapshot_restores_parameters_before_building_curve():
     assert plot.x_max == 7.0
     assert plot._curve_fb is None
 
-    assert plot.settle_step() == 3
+    flags = plot.settle_step()
+    assert flags & 1
+    while flags != 3 and plot._curve_job is not None:
+        flags = plot.settle_step()
+    assert flags == 3
     assert plot._curve_fb is not None
 
 
@@ -47,17 +51,45 @@ def test_plot_waits_for_panel_animation_before_rendering_new_curve(monkeypatch):
     plot = PlotScreen(None, registry=build_registry())
     plot.mode = 1
     plot.input_box.set_str("x+1")
-    renders = []
-    monkeypatch.setattr(
-        plot, "_render_curve",
-        lambda auto_scale=True: renders.append(auto_scale) or True)
+    starts = []
+
+    def begin(auto_scale):
+        starts.append(auto_scale)
+        plot._curve_job = {}
+        return True
+
+    monkeypatch.setattr(plot, "_begin_curve_job", begin)
+    monkeypatch.setattr(plot, "_advance_curve_job", lambda: 1)
 
     plot._leave_edit(plot=True)
 
-    assert renders == []
+    assert starts == []
     assert plot._needs_curve_restore is True
+    assert plot.settle_step() == 1
+    assert starts == [True]
     assert plot.settle_step() == 3
-    assert renders == [True]
+
+
+def test_plot_restore_limits_each_quiet_step_to_one_sampling_slice(monkeypatch):
+    plot = PlotScreen(None, registry=build_registry())
+    plot.expr = "x+1"
+    plot._needs_curve_restore = True
+    plot._curve_restore_auto_scale = True
+    evaluations = []
+    monkeypatch.setattr(
+        plot, "_eval",
+        lambda x: evaluations.append(x) or (x + 1, True, ""))
+
+    per_step = []
+    for _ in range(40):
+        before = len(evaluations)
+        flags = plot.settle_step()
+        per_step.append(len(evaluations) - before)
+        if plot._curve_fb is not None and flags == 3:
+            break
+
+    assert plot._curve_fb is not None
+    assert max(per_step) <= plot_module.CURVE_WORK_SLICE
 
 
 def test_plot_reuses_compiled_expression_across_pan_and_zoom(monkeypatch):

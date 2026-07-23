@@ -1,4 +1,5 @@
 """Plot screen — full-screen graph with slide-in expression editor."""
+import time
 from framebuf import FrameBuffer, MONO_HMSB  # type: ignore
 from ui.element import UIElement
 from ui.inputbox import InputBox
@@ -21,6 +22,9 @@ ROBUST_SAMPLE_LIMIT = 24
 # The curve renderer joins adjacent points, so evaluating every second pixel
 # preserves the visible horizontal resolution while halving evaluator work.
 CURVE_SAMPLE_STEP = 2
+CURVE_WORK_SLICE = 24
+CURVE_CLEAR_SLICE = 256
+CURVE_WORK_BUDGET_US = 8000
 
 
 class PlotScreen(UIElement):
@@ -59,6 +63,7 @@ class PlotScreen(UIElement):
         self._needs_curve_restore = False
         self._curve_restore_auto_scale = False
         self._curve_reveal = self.width
+        self._curve_job = None
 
     def activate(self):
         self.mode = 0
@@ -82,6 +87,7 @@ class PlotScreen(UIElement):
         self._program_cache.clear()
         self._program_cache_order = []
         self._program_cache_revision = None
+        self._curve_job = None
         self.error_popup.dismiss()
         self.input_box.release_memory()
         return released
@@ -115,6 +121,7 @@ class PlotScreen(UIElement):
         self._needs_curve_restore = False
         self._curve_restore_auto_scale = False
         self._curve_reveal = 0
+        self._curve_job = None
         self.error_popup.dismiss()
 
     def activate_default(self):
@@ -144,17 +151,30 @@ class PlotScreen(UIElement):
         self._curve_restore_auto_scale = False
 
     def settle_step(self):
-        if not self._needs_curve_restore:
+        if self._needs_curve_restore:
+            self._needs_curve_restore = False
+            auto_scale = self._curve_restore_auto_scale
+            self._curve_restore_auto_scale = False
+            try:
+                if not self._begin_curve_job(auto_scale):
+                    return SETTLE_REDRAW
+            except MemoryError:
+                return self._fail_curve_job_memory()
+            return SETTLE_MORE
+        if self._curve_job is None:
             return 0
-        self._needs_curve_restore = False
-        auto_scale = self._curve_restore_auto_scale
-        self._curve_restore_auto_scale = False
-        rendered = self._render_curve(auto_scale=auto_scale)
-        if rendered:
-            graph_width = self.width - GRAPH_PAD_X * 2 + 1
-            self._curve_reveal = 0
-            insert_animation(self, '_curve_reveal', 0, graph_width,
-                             PANEL_SLIDE_MS, MOTION_EASING)
+        try:
+            status = self._advance_curve_job()
+        except MemoryError:
+            return self._fail_curve_job_memory()
+        if status == 0:
+            return SETTLE_MORE
+        if status < 0:
+            return SETTLE_REDRAW
+        graph_width = self.width - GRAPH_PAD_X * 2 + 1
+        self._curve_reveal = 0
+        insert_animation(self, '_curve_reveal', 0, graph_width,
+                         PANEL_SLIDE_MS, MOTION_EASING)
         return SETTLE_REDRAW | SETTLE_MORE
 
     def draw_transition_default(self, display):
@@ -265,6 +285,186 @@ class PlotScreen(UIElement):
             return value, True, ""
         except Exception as e:
             return 0.0, False, str(e)
+
+    def _begin_curve_job(self, auto_scale):
+        """Prepare a bounded curve job; sampling happens in later slices."""
+        self._curve_job = None
+        if not self.expr.strip():
+            self._curve_fb = None
+            return False
+        if (self.memory is not None
+                and self.memory.get_buffer("plot_curve") is None):
+            self.memory.reserve_plot_workspace(self.height)
+        try:
+            self._compile_program()
+        except ParseError as error:
+            self._curve_fb = None
+            self.error_popup.show(self.expr, error, error.pos)
+            self.mode = 2
+            return False
+
+        graph_w = self.width - GRAPH_PAD_X * 2
+        graph_right = self.width - GRAPH_PAD_X
+        n = graph_right - GRAPH_PAD_X + 1
+        self._curve_job = {
+            "phase": 0 if auto_scale else 1,
+            "graph_w": graph_w,
+            "graph_h": self.height - HINT_H,
+            "n": n,
+            "index": 0,
+            "valid": 0,
+            "y_min": 0.0,
+            "y_max": 0.0,
+            "robust": [],
+            "stride": max(1, n // ROBUST_SAMPLE_LIMIT),
+            "first_err": "",
+            "clear": 0,
+            "prev_x": None,
+            "prev_y": None,
+        }
+        return True
+
+    def _advance_curve_job(self):
+        """Run one fixed work slice: 0=more, 1=done, -1=failed."""
+        job = self._curve_job
+        phase = job["phase"]
+        if phase == 0:
+            processed = 0
+            index = job["index"]
+            slice_started = time.ticks_us()
+            while index < job["n"] and processed < CURVE_WORK_SLICE:
+                x_val = (self.x_min + index / job["graph_w"]
+                         * (self.x_max - self.x_min))
+                y_val, ok, err = self._eval(x_val)
+                if ok and abs(y_val) < 1e6:
+                    if job["valid"] == 0:
+                        job["y_min"] = y_val
+                        job["y_max"] = y_val
+                    else:
+                        job["y_min"] = min(job["y_min"], y_val)
+                        job["y_max"] = max(job["y_max"], y_val)
+                    job["valid"] += 1
+                    if (index % job["stride"] == 0
+                            and len(job["robust"]) < ROBUST_SAMPLE_LIMIT):
+                        job["robust"].append(y_val)
+                elif err and not job["first_err"]:
+                    job["first_err"] = err
+                index += CURVE_SAMPLE_STEP
+                processed += 1
+                if (time.ticks_diff(time.ticks_us(), slice_started)
+                        >= CURVE_WORK_BUDGET_US):
+                    break
+            job["index"] = index
+            if index < job["n"]:
+                return 0
+            if job["valid"] == 0:
+                self._y_min = -1.0
+                self._y_max = 1.0
+                self._curve_fb = None
+                self.error_popup.show(
+                    self.expr, job["first_err"] or "Cannot evaluate expression")
+                self.mode = 2
+                self._curve_job = None
+                return -1
+
+            y_min = job["y_min"]
+            y_max = job["y_max"]
+            y_range = y_max - y_min
+            robust_values = job["robust"]
+            if len(robust_values) > 2:
+                robust_values.sort()
+                trim = max(1, len(robust_values) // 10)
+                robust_min = robust_values[trim]
+                robust_max = robust_values[-trim - 1]
+                robust_range = robust_max - robust_min
+                if (robust_range > 1e-10
+                        and y_range > robust_range * 4.0):
+                    y_min = robust_min
+                    y_max = robust_max
+                    y_range = robust_range
+            pad = max(y_range * 0.1, 0.5)
+            if y_range < 1e-10:
+                pad = 1.0
+            self._y_min = y_min - pad
+            self._y_max = y_max + pad
+            job["phase"] = 1
+            job["index"] = 0
+            # The robust list has served its purpose. Drop it before acquiring
+            # the curve buffer so both allocations do not overlap.
+            job["robust"] = None
+            return 0
+
+        if phase == 1:
+            if "buf_size" not in job:
+                buf_size = ((job["n"] + 7) // 8) * job["graph_h"]
+                if self.memory is not None:
+                    curve_buf = self.memory.get_buffer("plot_curve", buf_size)
+                    if curve_buf is None:
+                        raise MemoryError("Plot workspace was not reserved")
+                else:
+                    curve_buf = self._curve_buf
+                    if curve_buf is None or len(curve_buf) < buf_size:
+                        curve_buf = bytearray(buf_size)
+                job["buf_size"] = buf_size
+                job["curve_buf"] = curve_buf
+            start = job["clear"]
+            end = min(job["buf_size"], start + CURVE_CLEAR_SLICE)
+            curve_buf = job["curve_buf"]
+            for index in range(start, end):
+                curve_buf[index] = 0
+            job["clear"] = end
+            if end < job["buf_size"]:
+                return 0
+            self._curve_buf = curve_buf
+            self._curve_fb = FrameBuffer(
+                curve_buf, job["n"], job["graph_h"], MONO_HMSB)
+            job["phase"] = 2
+            job["index"] = 0
+            return 0
+
+        processed = 0
+        index = job["index"]
+        slice_started = time.ticks_us()
+        y_range = self._y_max - self._y_min
+        prev_px = job["prev_x"]
+        prev_py = job["prev_y"]
+        while index < job["n"] and processed < CURVE_WORK_SLICE:
+            x_val = (self.x_min + index / job["graph_w"]
+                     * (self.x_max - self.x_min))
+            y_val, ok, _ = self._eval(x_val)
+            if (ok and abs(y_val) < 1e6 and y_range > 0
+                    and self._y_min <= y_val <= self._y_max):
+                ratio = (y_val - self._y_min) / y_range
+                py = job["graph_h"] - 1 - int(
+                    ratio * (job["graph_h"] - 1))
+                py = max(0, min(job["graph_h"] - 1, py))
+                self._curve_fb.pixel(index, py, 1)
+                if (prev_px is not None
+                        and abs(py - prev_py) <= job["graph_h"] * 3 // 4):
+                    self._curve_fb.line(prev_px, prev_py, index, py, 1)
+                prev_px, prev_py = index, py
+            else:
+                prev_px = prev_py = None
+            index += CURVE_SAMPLE_STEP
+            processed += 1
+            if (time.ticks_diff(time.ticks_us(), slice_started)
+                    >= CURVE_WORK_BUDGET_US):
+                break
+        job["index"] = index
+        job["prev_x"] = prev_px
+        job["prev_y"] = prev_py
+        if index < job["n"]:
+            return 0
+        self._curve_job = None
+        self._curve_reveal = self.width
+        return 1
+
+    def _fail_curve_job_memory(self):
+        self._curve_job = None
+        self._curve_fb = None
+        self.error_popup.show(self.expr, "Graph memory is busy")
+        self.mode = 2
+        return SETTLE_REDRAW
 
     def _render_curve(self, auto_scale=True):
         """Render once, reclaiming inactive caches before one retry on pressure."""

@@ -361,6 +361,11 @@ class Nav:
             if keyboard.any_pressed():
                 return None
             self._input_locked = False
+        if self.residency.is_restoring(self.current):
+            # The default shell remains safe to leave immediately, but other
+            # edits must wait or restore_state() could overwrite them.
+            if event is None or (event[0], event[1]) != (0, 0):
+                return None
         if event is not None and getattr(self.current,
                                          "_residency_error", ""):
             self.current.clear_residency_error()

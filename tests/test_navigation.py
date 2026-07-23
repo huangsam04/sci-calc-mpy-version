@@ -236,7 +236,35 @@ def test_navigation_transition_is_non_blocking_and_locks_trigger_key(monkeypatch
     nav.draw_transition(400)
     assert nav.is_transitioning() is False
     assert nav.filter_event(KeyboardStub(pressed=True), (1, 1, False)) is None
+    nav.settle_current()
     assert nav.filter_event(KeyboardStub(), (1, 1, False)) == (1, 1, False)
+
+
+def test_only_escape_is_accepted_until_page_restore_finishes(monkeypatch):
+    monkeypatch.setattr(main.time, "ticks_ms", lambda: 100)
+    registry = type("Registry", (), {"angle_mode": 0})()
+    nav = main.Nav(DisplayStub(), None, registry)
+
+    class RestoringScreen(ScreenStub):
+        swap_key = "restoring"
+
+        def reset_state(self):
+            pass
+
+        def activate_default(self):
+            pass
+
+        def settle_step(self):
+            return 1
+
+    first = ScreenStub()
+    second = RestoringScreen()
+    nav.boot(first)
+    nav.go_to(second)
+    nav.draw_transition(100 + main.TRANSITION_MS)
+
+    assert nav.filter_event(KeyboardStub(), (1, 1, False)) is None
+    assert nav.filter_event(KeyboardStub(), (0, 0, False)) == (0, 0, False)
 
 
 def test_navigation_reveals_default_page_before_restoring_swap(
@@ -297,6 +325,62 @@ def test_navigation_reveals_default_page_before_restoring_swap(
     assert first.value == "saved"
 
 
+def test_transition_performs_no_swap_or_page_rebuild_work(monkeypatch, tmp_path):
+    monkeypatch.setattr(main.time, "ticks_ms", lambda: 100)
+
+    class CountingSwap(SessionSwap):
+        def __init__(self, directory):
+            super().__init__(directory)
+            self.calls = []
+
+        def pack(self, state):
+            self.calls.append("pack")
+            return super().pack(state)
+
+        def write_packed(self, key, payload):
+            self.calls.append("write")
+            return super().write_packed(key, payload)
+
+        def read(self, key):
+            self.calls.append("read")
+            return super().read(key)
+
+    class DeferredScreen(ScreenStub):
+        def __init__(self, key):
+            super().__init__()
+            self.swap_key = key
+            self.rebuilds = 0
+
+        def snapshot_state(self):
+            return {"value": "bounded"}
+
+        def reset_state(self):
+            pass
+
+        def activate_default(self):
+            pass
+
+        def settle_step(self):
+            self.rebuilds += 1
+            return 0
+
+    swap = CountingSwap(str(tmp_path))
+    swap.start_session()
+    residency = PageResidency(swap=swap)
+    registry = type("Registry", (), {"angle_mode": 0})()
+    nav = main.Nav(DisplayStub(), None, registry, residency=residency)
+    first = DeferredScreen("first")
+    second = DeferredScreen("second")
+    nav.boot(first)
+
+    nav.go_to(second)
+    nav.draw_transition(150)
+    nav.draw_transition(100 + main.TRANSITION_MS)
+
+    assert swap.calls == []
+    assert second.rebuilds == 0
+
+
 def test_page_transition_stays_within_responsive_motion_budget():
     assert 160 <= main.TRANSITION_MS <= 200
     assert main.TRANSITION_MS == PAGE_TRANSITION_MS
@@ -334,6 +418,15 @@ def test_idle_work_rechecks_animations_started_by_page_settlement():
     persistence = idle_work.index("persistence.flush(now)")
     assert recheck < persistence
     assert "elif not settling and not active" in idle_work
+
+
+def test_device_monitor_runs_full_residency_lifecycle_for_500_round_trips():
+    source = (Path(__file__).parents[1] / "tools"
+              / "device_runtime_monitor.py").read_text(encoding="utf-8")
+
+    assert "TOTAL_ROUND_TRIPS = 500" in source
+    assert "settling = nav.settle_current()" in source
+    assert "while settling or active_animation_count()" in source
 
 
 def test_returning_to_main_menu_preserves_selected_item(monkeypatch, tmp_path):
