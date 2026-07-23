@@ -238,6 +238,7 @@ class PageResidency:
         self.swap = swap or SessionSwap()
         self.memory = memory
         self._pending_key = None
+        self._pending_state = None
         self._pending_payload = None
         self._expected = set()
         self._persisted = set()
@@ -252,12 +253,13 @@ class PageResidency:
     def _key(screen):
         return getattr(screen, "swap_key", None)
 
-    def _queue_packed(self, key, payload):
+    def _queue_state(self, key, state):
         previous = self._pending_key
         if previous and previous != key and previous not in self._persisted:
             self._expected.discard(previous)
         self._pending_key = key
-        self._pending_payload = payload
+        self._pending_state = state
+        self._pending_payload = None
         self._expected.add(key)
         self._errors.pop(key, None)
 
@@ -294,12 +296,13 @@ class PageResidency:
 
         if captured:
             try:
-                self._queue_packed(key, self.swap.pack(state))
+                self._queue_state(key, state)
             except Exception as error:
                 snapshot_error = error
         if snapshot_error is not None:
             if self._pending_key == key:
                 self._pending_key = None
+                self._pending_state = None
                 self._pending_payload = None
             self._expected.discard(key)
             message = str(snapshot_error) or "Page snapshot failed"
@@ -330,8 +333,20 @@ class PageResidency:
         if self._pending_key is None:
             return False
         key = self._pending_key
+        if self._pending_payload is None:
+            try:
+                self._pending_payload = self.swap.pack(self._pending_state)
+                self._pending_state = None
+            except Exception as error:
+                self._pending_key = None
+                self._pending_state = None
+                self._expected.discard(key)
+                self._persisted.discard(key)
+                self._errors[key] = str(error) or "Page snapshot failed"
+            return True
         payload = self._pending_payload
         self._pending_key = None
+        self._pending_state = None
         self._pending_payload = None
         if not self.swap.write_packed(key, payload):
             self._expected.discard(key)
@@ -350,6 +365,7 @@ class PageResidency:
             self._persisted.discard(key)
             if self._pending_key == key:
                 self._pending_key = None
+                self._pending_state = None
                 self._pending_payload = None
             self.swap.discard(key)
         resetter = getattr(screen, "reset_state", None)
@@ -387,8 +403,7 @@ class PageResidency:
                 snapshotter = getattr(screen, "snapshot_state", None)
                 if key and snapshotter is not None:
                     try:
-                        self._queue_packed(
-                            key, self.swap.pack(snapshotter()))
+                        self._queue_state(key, snapshotter())
                         return SETTLE_MORE
                     except Exception as error:
                         self._errors[key] = (
@@ -437,6 +452,7 @@ class PageResidency:
         if pending and pending not in self._persisted:
             self._expected.discard(pending)
         self._pending_key = None
+        self._pending_state = None
         self._pending_payload = None
         self._unavailable_error = ""
         self._dirty_screen = None

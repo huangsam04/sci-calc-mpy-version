@@ -164,6 +164,10 @@ def test_only_one_bounded_packed_write_is_retained_in_ram(tmp_path):
     residency.leave(Page("second", "latest"))
 
     assert residency._pending_key == "second"
+    assert residency._pending_state == {"value": "latest"}
+    assert residency._pending_payload is None
+    residency.prepare(Page("destination"))
+    assert residency.settle(residency._current) & SETTLE_MORE
     assert isinstance(residency._pending_payload, str)
     assert len(residency._pending_payload.encode("utf-8")) <= 4096
     assert "first" not in residency._expected
@@ -225,6 +229,11 @@ def test_dirty_page_snapshot_is_encoded_and_written_only_during_settle(
     assert not (tmp_path / "live.swp").exists()
     assert residency.settle(page) & SETTLE_MORE
     assert residency._pending_key == "live"
+    assert residency._pending_state == {"value": "after"}
+    assert residency._pending_payload is None
+    assert not (tmp_path / "live.swp").exists()
+    assert residency.settle(page) & SETTLE_MORE
+    assert isinstance(residency._pending_payload, str)
     assert not (tmp_path / "live.swp").exists()
     assert residency.settle(page) & SETTLE_MORE
     assert swap.read("live") == {"value": "after"}

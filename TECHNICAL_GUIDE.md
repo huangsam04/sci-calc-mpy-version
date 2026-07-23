@@ -207,8 +207,9 @@ cancel_animations(root):
 ### 4.2 `Nav` 栈和输入锁
 
 `Nav` 维护页面栈，并把页面状态生命周期委托给 `PageResidency` 的 `leave/prepare/settle` 三个
-接口。离页时旧像素继续留在 OLED 显示 RAM，页面核心状态被编码成有界待写记录，派生缓存和
-Plot workspace 随即释放；目标页只激活默认空布局。真实状态和重缓存必须等转场结束后恢复。
+接口。离页时旧像素继续留在 OLED 显示 RAM，只捕获一条有界逻辑状态，派生缓存和 Plot
+workspace 随即释放；JSON 编码与写盘都推迟到无动画的安静循环。目标页只激活默认空布局，
+真实状态和重缓存必须等转场结束后恢复。
 
 ```text
 Nav.filter_event(keyboard, event):
