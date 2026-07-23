@@ -28,6 +28,21 @@ def test_session_swap_round_trips_one_page_and_rejects_corruption(tmp_path):
     assert not path.exists()
 
 
+def test_session_swap_counts_utf8_without_materializing_a_second_payload(
+        tmp_path):
+    swap = SessionSwap(str(tmp_path))
+    swap.start_session()
+    state = {"input": "正弦🙂"}
+    payload = json.dumps(state, ensure_ascii=False)
+
+    assert swap.write_packed("unicode", payload) is True
+
+    envelope = json.loads(
+        (tmp_path / "unicode.swp").read_text(encoding="utf-8"))
+    assert envelope["length"] == len(payload.encode("utf-8"))
+    assert swap.read("unicode") == state
+
+
 class Page:
     def __init__(self, key, value=""):
         self.swap_key = key
@@ -85,7 +100,7 @@ def test_page_residency_releases_before_default_view_and_restores_after_settle(
     residency.leave(first)
 
     assert first.value == ""
-    assert first.events == ["release", "snapshot", "deactivate", "reset"]
+    assert first.events == ["snapshot", "release", "deactivate", "reset"]
     assert not (tmp_path / "first.swp").exists()
 
     residency.prepare(second)
@@ -138,6 +153,81 @@ def test_missing_sd_reports_error_and_resets_the_destination(tmp_path):
 
     assert destination.value == ""
     assert destination.error
+
+
+def test_only_one_bounded_packed_write_is_retained_in_ram(tmp_path):
+    swap = SessionSwap(str(tmp_path))
+    swap.start_session()
+    residency = PageResidency(swap=swap)
+
+    residency.leave(Page("first", "older"))
+    residency.leave(Page("second", "latest"))
+
+    assert residency._pending_key == "second"
+    assert isinstance(residency._pending_payload, str)
+    assert len(residency._pending_payload.encode("utf-8")) <= 4096
+    assert "first" not in residency._expected
+
+
+def test_one_page_write_failure_does_not_reset_an_unrelated_page(
+        monkeypatch, tmp_path):
+    swap = SessionSwap(str(tmp_path))
+    swap.start_session()
+    residency = PageResidency(swap=swap)
+    first = Page("first", "cannot write")
+    destination = Page("destination", "still usable")
+    monkeypatch.setattr(swap, "write_packed", lambda key, payload: False)
+    swap.last_error = "record write failed"
+
+    residency.leave(first)
+    residency.prepare(destination)
+    _settle_all(residency, destination)
+
+    assert destination.error == ""
+    assert destination.value == "still usable"
+
+    residency.prepare(first)
+    _settle_all(residency, first)
+    assert first.error == "record write failed"
+
+
+def test_settle_step_failure_is_contained_to_the_active_page(tmp_path):
+    class BrokenPage(Page):
+        def settle_step(self):
+            raise ValueError("invalid restored state")
+
+    swap = SessionSwap(str(tmp_path))
+    swap.start_session()
+    residency = PageResidency(swap=swap)
+    page = BrokenPage("broken", "unsafe")
+
+    residency.prepare(page)
+    flags = residency.settle(page)
+
+    assert flags == SETTLE_REDRAW
+    assert page.value == ""
+    assert page.error == "invalid restored state"
+
+
+def test_dirty_page_snapshot_is_encoded_and_written_only_during_settle(
+        tmp_path):
+    swap = SessionSwap(str(tmp_path))
+    swap.start_session()
+    residency = PageResidency(swap=swap)
+    page = Page("live", "before")
+    residency.prepare(page)
+    residency.settle(page)
+
+    page.value = "after"
+    residency.mark_dirty(page)
+
+    assert residency._pending_payload is None
+    assert not (tmp_path / "live.swp").exists()
+    assert residency.settle(page) & SETTLE_MORE
+    assert residency._pending_key == "live"
+    assert not (tmp_path / "live.swp").exists()
+    assert residency.settle(page) & SETTLE_MORE
+    assert swap.read("live") == {"value": "after"}
 
 
 class DefaultFrameDisplay:

@@ -1,4 +1,5 @@
 import main
+from pathlib import Path
 from anim import engine
 from ui import renderer as renderer_module
 from ui.element import UIElement
@@ -302,6 +303,37 @@ def test_page_transition_stays_within_responsive_motion_budget():
     assert TEXT_CURSOR_MS < MENU_CURSOR_MS < PANEL_SLIDE_MS < PAGE_TRANSITION_MS
     assert ACTIVE_FRAME_MS == 16
     assert ACTIVE_LOOP_SLEEP_MS == 1
+
+
+def test_periodic_gc_is_suspended_while_any_animation_is_active():
+    source = (Path(__file__).parents[1] / "source" / "main.py").read_text(
+        encoding="utf-8")
+    start = source.index("if (_frame % 100 == 0")
+    end = source.index("_frame += 1", start)
+    gc_gate = source[start:end]
+
+    assert "not nav.is_transitioning()" in gc_gate
+    assert "not has_active_animations()" in gc_gate
+
+    diagnostics_start = source.index("if (diagnostics", end)
+    diagnostics_end = source.index(
+        "if calc_screen.context.dirty", diagnostics_start)
+    diagnostics_gate = source[diagnostics_start:diagnostics_end]
+    assert "and not active" in diagnostics_gate
+
+
+def test_idle_work_rechecks_animations_started_by_page_settlement():
+    source = (Path(__file__).parents[1] / "source" / "main.py").read_text(
+        encoding="utf-8")
+    start = source.index("settling = nav.settle_current()")
+    end = source.index("time.sleep_ms", start)
+    idle_work = source[start:end]
+
+    recheck = idle_work.index(
+        "active = nav.is_transitioning() or has_active_animations()")
+    persistence = idle_work.index("persistence.flush(now)")
+    assert recheck < persistence
+    assert "elif not settling and not active" in idle_work
 
 
 def test_returning_to_main_menu_preserves_selected_item(monkeypatch, tmp_path):

@@ -51,7 +51,11 @@ def test_function_panel_restores_choices_only_after_settle(monkeypatch):
     panel.restore_state(state)
 
     assert panel.menu.items == []
-    assert panel.settle_step() == 2
+    first_flags = panel.settle_step()
+    assert first_flags & 1
+    assert len(panel.menu.items) == 1
+    while panel.settle_step() & 1:
+        pass
     assert panel.menu.items
     assert panel.menu.cursor_pos == 2
     assert panel._toggled == {"math": True}

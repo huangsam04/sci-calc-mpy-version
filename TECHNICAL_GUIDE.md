@@ -613,19 +613,18 @@ ENT 提交，ESC 恢复编辑前表达式，Shift+Tab 重置 x 范围。
 ```text
 render_curve(auto_scale=true):
     program = LRU.get(expr) or compile_expression(expr, live registry)
-    for every horizontal sample pixel exactly once:
+    if auto_scale, for every second horizontal sample pixel:
         x = x_min + normalized_pixel * (x_max - x_min)
         y = float(evaluate_program(program, temporary x context))
-        accept only finite-ish |y| < 1e6; record first error otherwise
+        accept only finite-ish |y| < 1e6; retain at most 24 robust samples
     if no valid sample: clear curve; show popup; return
     if auto_scale:
-        sort valid y values
         full_range = min..max
-        central_90_percent = trim 5% each side
+        central_range = trimmed bounded robust samples
         if full_range > 4 * robust_range: use central range  # 抑制极点
         add 10% padding (at least 0.5; constant curve gets 1)
     reuse or allocate MONO_HMSB curve buffer
-    every second x sample:
+    evaluate every second x sample again without retaining a float array:
         map y to pixel only if inside viewport
         plot point; connect to predecessor only if vertical jump <= 3/4 height
         otherwise break polyline to avoid渐近线伪竖线
@@ -884,7 +883,8 @@ ABI探针并能导入 `main.mpy`；基准与诊断后执行过设备复位，恢
 修改时应保持以下不变量：
 
 1. 主循环是唯一事件消费者；页面返回结果而不是自行操纵 `Nav`。
-2. 转场开始后至触发键释放前不允许业务输入；结束帧必须是实时 canonical page frame。
+2. 转场开始后至触发键释放前不允许业务输入；转场结束帧必须是目标页 canonical 默认空布局，
+   实时数据只能在其后的安静循环中渐进加入。
 3. 插件必须隔离加载，函数重载必须原地替换 live registry；插件执行不可落入普通转场路径。
 4. 写设置/变量必须使用原子提交和空闲期 `DeferredStorage`；失败不得清空内存状态。
 5. OLED 与 SD 使用同一 SPI2 但不同 CS；部署前复位释放旧 SPI 状态。

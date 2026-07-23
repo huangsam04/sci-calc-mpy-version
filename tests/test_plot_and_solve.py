@@ -39,8 +39,25 @@ def test_plot_snapshot_restores_parameters_before_building_curve():
     assert plot.x_max == 7.0
     assert plot._curve_fb is None
 
-    assert plot.settle_step() == 2
+    assert plot.settle_step() == 3
     assert plot._curve_fb is not None
+
+
+def test_plot_waits_for_panel_animation_before_rendering_new_curve(monkeypatch):
+    plot = PlotScreen(None, registry=build_registry())
+    plot.mode = 1
+    plot.input_box.set_str("x+1")
+    renders = []
+    monkeypatch.setattr(
+        plot, "_render_curve",
+        lambda auto_scale=True: renders.append(auto_scale) or True)
+
+    plot._leave_edit(plot=True)
+
+    assert renders == []
+    assert plot._needs_curve_restore is True
+    assert plot.settle_step() == 3
+    assert renders == [True]
 
 
 def test_plot_reuses_compiled_expression_across_pan_and_zoom(monkeypatch):

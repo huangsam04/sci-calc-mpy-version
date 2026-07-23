@@ -3,16 +3,12 @@ from ui.element import UIElement
 from ui.menu import Menu
 from utils.storage import load_settings
 from ui.theme import draw_footer, draw_header
-from ui.residency import SETTLE_REDRAW
+from ui.residency import SETTLE_MORE, SETTLE_REDRAW
 
 
 class FunctionPanel(UIElement):
     swap_key = "functions"
     transition_title = "Functions"
-
-    # Input is locked during page reveals and this screen has no timer-driven
-    # state, so the incoming transition capture is already its live final UI.
-    transition_snapshot_is_live = True
 
     def __init__(self, font, request_settings=None, settings=None,
                  plugin_functions=None, plugin_dependencies=None):
@@ -37,6 +33,8 @@ class FunctionPanel(UIElement):
         self._needs_menu_restore = False
         self._restore_cursor = 0
         self._restore_view = 0
+        self._restore_group_index = 0
+        self._restore_plugin_index = 0
         # Listing SD filenames is safe during boot.  Function/dependency
         # metadata comes from the live registry's first load; recompiling
         # add-ons here used to create a second peak that could freeze splash.
@@ -137,6 +135,8 @@ class FunctionPanel(UIElement):
         self._needs_menu_restore = False
         self._restore_cursor = 0
         self._restore_view = 0
+        self._restore_group_index = 0
+        self._restore_plugin_index = 0
 
     def activate_default(self):
         self.menu.clear_items()
@@ -146,6 +146,8 @@ class FunctionPanel(UIElement):
         self.menu.view_offset = 0
         self.menu.activate()
         self._needs_menu_restore = True
+        self._restore_group_index = 0
+        self._restore_plugin_index = 0
 
     def restore_state(self, state):
         toggled = state.get("toggled", {})
@@ -159,18 +161,61 @@ class FunctionPanel(UIElement):
         self._restore_cursor = max(0, int(state.get("cursor", 0)))
         self._restore_view = max(0, int(state.get("view", 0)))
         self._needs_menu_restore = True
+        self._restore_group_index = 0
+        self._restore_plugin_index = 0
 
     def settle_step(self):
         if not self._needs_menu_restore:
             return 0
+        if self._append_restore_item():
+            return SETTLE_REDRAW | SETTLE_MORE
         self._needs_menu_restore = False
-        self._refresh()
+        self._menu_built = True
         self.menu.cursor_pos = max(
             0, min(self._restore_cursor, len(self._items) - 1))
         self.menu.view_offset = self._restore_view
         self.menu._clamp_view()
         self.menu.activate()
         return SETTLE_REDRAW
+
+    def _append_restore_item(self):
+        """Build at most one menu row so restored details visibly stream in."""
+        from calc.functions import (FUNCTION_GROUPS, FUNCTION_GROUP_LABELS,
+                                    DEFAULT_ENABLED_GROUPS)
+
+        while self._restore_group_index < len(DEFAULT_ENABLED_GROUPS):
+            index = self._restore_group_index
+            self._restore_group_index += 1
+            group_name = DEFAULT_ENABLED_GROUPS[index]
+            if group_name not in FUNCTION_GROUPS:
+                continue
+            is_on = self._is_enabled(group_name)
+            prefix = "[x]" if is_on else "[ ]"
+            display_name = FUNCTION_GROUP_LABELS.get(group_name, group_name)
+            function_names = FUNCTION_GROUPS[group_name]
+            label = (prefix + " " + display_name + " ("
+                     + ", ".join(function_names[:3]) + "...)")
+            self.menu.add_item(label, None)
+            self._items.append((group_name, is_on, True))
+            return True
+
+        if self._restore_plugin_index < len(self._plugin_files):
+            name, _ = self._plugin_files[self._restore_plugin_index]
+            self._restore_plugin_index += 1
+            setting_name = "plugin:" + name
+            is_on = self._is_enabled(setting_name)
+            prefix = "[x]" if is_on else "[ ]"
+            label = prefix + " Add-on: " + name
+            function_names = self._plugin_functions.get(name, ())
+            if function_names:
+                summary = ", ".join(function_names[:2])
+                if len(function_names) > 2:
+                    summary += "..."
+                label += " (" + summary + ")"
+            self.menu.add_item(label, None)
+            self._items.append((setting_name, is_on, False))
+            return True
+        return False
 
     def draw_transition_default(self, display):
         display.draw_text8x8(4, 2, "Functions", gs=15)

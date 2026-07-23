@@ -248,6 +248,7 @@ class Nav:
     def boot(self, screen):
         """Set root screen (no transition)."""
         self.stack.append(screen)
+        self.residency.recover(screen)
         screen.activate()
 
     def reserve_transition_buffers(self):
@@ -305,48 +306,8 @@ class Nav:
         old = self.stack.pop()
         self._start_transition(old, self.stack[-1], False)
 
-    def _requires_serial_memory(self, screen):
-        return bool(getattr(screen, "requires_serial_memory", False))
-
     def _requires_plot_workspace(self, screen):
         return bool(getattr(screen, "requires_plot_workspace", False))
-
-    def _start_direct(self, old, new, animations_cancelled=False,
-                      force_reclaim=False):
-        """Switch pages after serially freeing high-pressure resources."""
-        if not animations_cancelled:
-            from anim.engine import cancel_animations
-            cancel_animations(old)
-
-        serial = (self._requires_serial_memory(old)
-                  or self._requires_serial_memory(new))
-        entering_plot = self._requires_plot_workspace(new)
-        leaving_plot = self._requires_plot_workspace(old)
-        if serial:
-            self.renderer.release_transition_buffers()
-
-        old.deactivate()
-        self.memory.reclaim_for(new, aggressive=serial or force_reclaim)
-
-        # The outgoing plot screen has released its FrameBuffer wrapper above;
-        # only then may its backing bytearray be returned to the heap.
-        if leaving_plot and self.memory.release_plot_workspace():
-            self.memory.collect()
-
-        if entering_plot:
-            # A stale curve buffer cannot coexist with new graph state.  This
-            # happens after transition layers and inactive caches are gone.
-            if self.memory.release_plot_workspace():
-                self.memory.collect()
-            self.memory.reserve_plot_workspace(self.renderer.display.height)
-
-        if serial or force_reclaim:
-            # A restore attempt is deferred until this direct page has drawn
-            # once and the active page is no longer memory-intensive.
-            self._optional_resources_pending = True
-        new.activate()
-        self._input_locked = True
-        self._transition = None
 
     def _start_transition(self, old, new, forward):
         from anim.engine import cancel_animations
@@ -477,6 +438,7 @@ class Nav:
         # all cache owners were already empty, so a failed temporary
         # allocation cannot strand the UI on a fragmented heap.
         self.memory.collect()
+        self.residency.recover(root)
         root.activate()
         self._optional_resources_pending = True
 
@@ -664,7 +626,9 @@ def main():
                 time.sleep_ms(SLEEP_SCAN_MS)
                 continue
 
-            if _frame % 100 == 0:
+            if (_frame % 100 == 0
+                    and not nav.is_transitioning()
+                    and not has_active_animations()):
                 if diagnostics:
                     gc_started = time.ticks_us()
                 gc.collect()
@@ -704,6 +668,7 @@ def main():
             if (not nav.is_transitioning()
                     and (event is not None or kb.is_pressed(0, 0) or kb.is_pressed(4, 3))):
                 result = cur.update(kb, event)
+                nav.residency.mark_dirty(cur)
                 if diagnostics and result is not None:
                     print("ACTION page=" + cur.__class__.__name__
                           + " result=" + str(result))
@@ -753,7 +718,9 @@ def main():
                 _diag_frames += 1
                 _dirty = False
 
-            if diagnostics and time.ticks_diff(now, _diag_last) >= 5000:
+            if (diagnostics
+                    and not active
+                    and time.ticks_diff(now, _diag_last) >= 5000):
                 heap_before = gc.mem_free() if hasattr(gc, "mem_free") else -1
                 gc.collect()
                 heap_after = gc.mem_free() if hasattr(gc, "mem_free") else -1
@@ -776,7 +743,11 @@ def main():
             # underlying storage functions retain their atomic backup scheme.
             if not active and not had_event and result is None:
                 settling = nav.settle_current()
-                if not settling and _function_reload_pending:
+                # A settle step can itself start a curve/menu animation. Read
+                # the scheduler state again before permitting any SD or
+                # plugin work in this same loop iteration.
+                active = nav.is_transitioning() or has_active_animations()
+                if not settling and not active and _function_reload_pending:
                     _reload_functions_after_reclaim(
                         nav, nav.current, settings, registry)
                     func_panel.set_plugin_catalog(
@@ -785,7 +756,7 @@ def main():
                     func_panel.set_load_errors(registry.plugin_errors)
                     _function_reload_pending = False
                     _dirty = True
-                elif not settling:
+                elif not settling and not active:
                     nav.restore_optional_resources()
                     persisted = persistence.flush(now)
                     if persisted is not None and not persisted[1]:

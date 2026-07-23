@@ -10,7 +10,7 @@ from input.keyboard import get_key_label
 from ui.theme import draw_footer
 from ui.error_popup import ErrorPopup
 from ui.motion import PANEL_SLIDE_MS, MOTION_EASING
-from ui.residency import SETTLE_REDRAW
+from ui.residency import SETTLE_MORE, SETTLE_REDRAW
 
 
 # Layout constants
@@ -57,6 +57,8 @@ class PlotScreen(UIElement):
         self._eval_vars = {"x": 0.0}
         self._eval_context = EvalContext(self._eval_vars, registry)
         self._needs_curve_restore = False
+        self._curve_restore_auto_scale = False
+        self._curve_reveal = self.width
 
     def activate(self):
         self.mode = 0
@@ -111,6 +113,8 @@ class PlotScreen(UIElement):
         self.input_box._layout_dirty = True
         self.input_box.cursor.is_visible = False
         self._needs_curve_restore = False
+        self._curve_restore_auto_scale = False
+        self._curve_reveal = 0
         self.error_popup.dismiss()
 
     def activate_default(self):
@@ -137,13 +141,21 @@ class PlotScreen(UIElement):
         self._overlay_y = 0 if self.mode == 1 else -OVERLAY_H
         self.input_box.cursor.is_visible = (self.mode == 1)
         self._needs_curve_restore = bool(self.expr)
+        self._curve_restore_auto_scale = False
 
     def settle_step(self):
         if not self._needs_curve_restore:
             return 0
         self._needs_curve_restore = False
-        self._render_curve(auto_scale=False)
-        return SETTLE_REDRAW
+        auto_scale = self._curve_restore_auto_scale
+        self._curve_restore_auto_scale = False
+        rendered = self._render_curve(auto_scale=auto_scale)
+        if rendered:
+            graph_width = self.width - GRAPH_PAD_X * 2 + 1
+            self._curve_reveal = 0
+            insert_animation(self, '_curve_reveal', 0, graph_width,
+                             PANEL_SLIDE_MS, MOTION_EASING)
+        return SETTLE_REDRAW | SETTLE_MORE
 
     def draw_transition_default(self, display):
         graph_h = self.height - HINT_H
@@ -163,7 +175,10 @@ class PlotScreen(UIElement):
         self._y_min = mid - half
         self._y_max = mid + half
         if self.expr:
-            self._render_curve(auto_scale=False)
+            self._curve_fb = None
+            self._curve_buf = None
+            self._needs_curve_restore = True
+            self._curve_restore_auto_scale = False
 
     def _zoom_x(self, factor):
         mid = (self.x_min + self.x_max) / 2.0
@@ -171,14 +186,20 @@ class PlotScreen(UIElement):
         self.x_min = mid - half
         self.x_max = mid + half
         if self.expr:
-            self._render_curve()
+            self._curve_fb = None
+            self._curve_buf = None
+            self._needs_curve_restore = True
+            self._curve_restore_auto_scale = True
 
     def _pan_x(self, fraction):
         shift = (self.x_max - self.x_min) * fraction
         self.x_min += shift
         self.x_max += shift
         if self.expr:
-            self._render_curve()
+            self._curve_fb = None
+            self._curve_buf = None
+            self._needs_curve_restore = True
+            self._curve_restore_auto_scale = True
 
     # ── mode switching ──────────────────────────────────────────
 
@@ -199,9 +220,15 @@ class PlotScreen(UIElement):
         if plot:
             self.expr = self.input_box.get_str().strip()
             if self.expr:
-                self._render_curve()
+                self._curve_fb = None
+                self._curve_buf = None
+                self._needs_curve_restore = True
+                self._curve_restore_auto_scale = True
             else:
                 self._curve_fb = None
+                self._curve_buf = None
+                self._needs_curve_restore = False
+                self._curve_restore_auto_scale = False
         else:
             self.input_box.set_str(self._edit_original)
 
@@ -245,12 +272,18 @@ class PlotScreen(UIElement):
                 and self.memory.get_buffer("plot_curve") is None):
             self.memory.reserve_plot_workspace(self.height)
         try:
-            return self._render_curve_once(auto_scale)
+            rendered = self._render_curve_once(auto_scale)
+            if rendered:
+                self._curve_reveal = self.width
+            return rendered
         except MemoryError:
             if self.memory is not None and self.memory.reclaim_for(
                     self, aggressive=True):
                 try:
-                    return self._render_curve_once(auto_scale)
+                    rendered = self._render_curve_once(auto_scale)
+                    if rendered:
+                        self._curve_reveal = self.width
+                    return rendered
                 except MemoryError:
                     pass
             self._curve_fb = None
@@ -396,12 +429,26 @@ class PlotScreen(UIElement):
         graph_h = self.height - HINT_H
         graph_bot = self.height - HINT_H
 
+        # Blit pre-rendered curve first, then mask its unrevealed tail. Axes
+        # and the border are redrawn afterward so they remain stable while the
+        # restored curve appears from left to right.
+        y_range = self._y_max - self._y_min
+        if self._curve_fb is not None and y_range > 0:
+            display.palette.bg(0)
+            display.palette.fg(15)
+            display.gs4_fb.blit(self._curve_fb, graph_left, graph_top,
+                                0, display.palette)
+            curve_width = graph_right - graph_left + 1
+            reveal = max(0, min(curve_width, int(self._curve_reveal)))
+            if reveal < curve_width:
+                display.fill_rectangle(graph_left + reveal, graph_top,
+                                       curve_width - reveal, graph_h, 0)
+
         # Border
         display.draw_rectangle(graph_left - 1, graph_top,
                                graph_right - graph_left + 2, graph_h, 8)
 
         # Axes
-        y_range = self._y_max - self._y_min
         x_range = self.x_max - self.x_min
         x_zero = y_zero = None
 
@@ -423,13 +470,6 @@ class PlotScreen(UIElement):
                 display.draw_pixel(x_zero + dx, y_zero, 12)
             for dy in (-2, 2):
                 display.draw_pixel(x_zero, y_zero + dy, 12)
-
-        # Blit pre-rendered curve (MONO → GS4 via palette)
-        if self._curve_fb is not None and y_range > 0:
-            display.palette.bg(0)
-            display.palette.fg(15)
-            display.gs4_fb.blit(self._curve_fb, graph_left, graph_top,
-                                0, display.palette)  # key=0: black pixels transparent
 
     def _draw_overlay(self, display):
         oy = self._overlay_y
