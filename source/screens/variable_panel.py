@@ -3,6 +3,7 @@ import time
 from ui.element import UIElement
 from input.keyboard import get_key_label
 from ui.theme import draw_empty, draw_footer, draw_header
+from ui.residency import SETTLE_REDRAW
 
 VISIBLE = 4
 ROW_H = 10
@@ -11,6 +12,9 @@ COL2_X = 108
 
 
 class VariablePanel(UIElement):
+    swap_key = "variable_panel"
+    transition_title = "Variables"
+
     def __init__(self, font, calc_screen):
         super().__init__(0, 0, 210, 64)
         self.font = font
@@ -27,6 +31,49 @@ class VariablePanel(UIElement):
         self._offset = 0
         self._cooldown = 0
         self._last_key = None
+
+    def release_memory(self):
+        """Variable names are a disposable sorted view of calculator state."""
+        if not self._names:
+            return False
+        self._names = []
+        return True
+
+    def snapshot_state(self):
+        return {"cursor": self._cursor, "offset": self._offset}
+
+    def reset_state(self):
+        self._names = []
+        self._cursor = 0
+        self._offset = 0
+        self._cooldown = 0
+        self._last_key = None
+        self._needs_names_restore = False
+
+    def activate_default(self):
+        self._names = []
+        self._cooldown = 0
+        self._last_key = None
+        self._needs_names_restore = True
+
+    def restore_state(self, state):
+        self._cursor = max(0, int(state.get("cursor", 0)))
+        self._offset = max(0, int(state.get("offset", 0)))
+        self._needs_names_restore = True
+
+    def settle_step(self):
+        if not getattr(self, "_needs_names_restore", False):
+            return 0
+        self._needs_names_restore = False
+        self._rebuild()
+        self._clamp()
+        return SETTLE_REDRAW
+
+    def draw_transition_default(self, display):
+        display.draw_text8x8(4, 2, "Variables", gs=15)
+        display.draw_hline(2, 11, self.width - 4, 8)
+        display.draw_rectangle(1, 13, self.width - 2, 40, 8)
+        display.draw_text8x8(4, self.height - 9, "Loading list...", gs=8)
 
     def _rebuild(self):
         self._names = sorted(self.calc.vars.keys())

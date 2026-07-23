@@ -1,3 +1,5 @@
+from pathlib import Path
+
 from benchmarks import run
 from performance import PerformanceMetrics
 
@@ -7,6 +9,8 @@ class FakeNav:
         self.current = root
         self._transitioning = False
         self.frames = 0
+        self.presents = 0
+        self.restores = 0
 
     def reset(self, root):
         self.current = root
@@ -26,6 +30,13 @@ class FakeNav:
     def draw_transition(self, now):
         self.frames += 1
         self._transitioning = False
+
+    def present_current(self):
+        self.presents += 1
+
+    def restore_optional_resources(self):
+        self.restores += 1
+        return False
 
 
 def test_performance_metrics_reports_phase_latency_frame_and_gc_summaries():
@@ -47,6 +58,10 @@ def test_performance_metrics_reports_phase_latency_frame_and_gc_summaries():
     assert snapshot["frame_us"]["count"] == 6
     assert snapshot["frame_us"]["max_us"] == 60
     assert snapshot["gc_us"] == {"count": 1, "p95_us": 75, "max_us": 75}
+
+
+def test_default_diagnostic_window_fits_the_device_memory_budget():
+    assert PerformanceMetrics().sample_limit == 16
 
 
 def test_frame_summary_keeps_every_frame_beyond_raw_sample_limit():
@@ -72,6 +87,31 @@ def test_frame_summary_does_not_understate_an_overflow_p95():
         "count": 100, "p95_us": 250, "max_us": 250}
 
 
+def test_latency_and_gc_metrics_keep_fixed_storage_across_long_runs():
+    metrics = PerformanceMetrics(sample_limit=2)
+    input_values = metrics._input_to_present_us.values
+    gc_values = metrics._gc_us.values
+
+    for index in range(20):
+        started = index * 100
+        metrics.record_input(started)
+        metrics.record_frame(1, started + 10)
+        metrics.record_gc(index)
+
+    before_reset = metrics.snapshot()
+    assert metrics._input_to_present_us.values is input_values
+    assert metrics._gc_us.values is gc_values
+    assert before_reset["input_to_present_us"] == {
+        "count": 2, "p95_us": 10, "max_us": 10}
+    assert before_reset["gc_us"] == {"count": 2, "p95_us": 19, "max_us": 19}
+
+    metrics.reset_run()
+
+    assert metrics._input_to_present_us.values is input_values
+    assert metrics._gc_us.values is gc_values
+    assert metrics.snapshot()["input_to_present_us"]["count"] == 0
+
+
 def test_device_benchmark_runner_exercises_repeated_navigation_without_writes():
     metrics = PerformanceMetrics(sample_limit=16)
     root = "root"
@@ -89,6 +129,7 @@ def test_device_benchmark_runner_exercises_repeated_navigation_without_writes():
     assert report["input_to_present_us"]["count"] == 3
     assert report["frame_us"]["count"] == 6
     assert nav.frames == 10
+    assert nav.restores == 10
     assert any(line.startswith("BENCH nav_event_p95_us=") for line in lines)
     assert any(line.startswith("BENCH frame_p95_us=") for line in lines)
 
@@ -108,3 +149,16 @@ def test_benchmark_runner_builds_a_standalone_runtime_when_app_state_is_absent()
 
     assert builds == [metrics]
     assert report["navigation_cycles"] == 1
+
+
+def test_standalone_benchmark_enables_transitions_only_after_first_frame():
+    source = (Path(__file__).parents[1] / "source" / "benchmarks.py").read_text(
+        encoding="utf-8")
+
+    runtime = source.index("def _build_runtime")
+    boot = source.index("nav.boot(main_menu)", runtime)
+    first_frame = source.index("nav.mark_first_frame_presented()", runtime)
+    restore = source.index("nav.restore_optional_resources()", runtime)
+
+    assert boot < first_frame < restore
+    assert "nav.reserve_transition_buffers()" not in source[runtime:source.index("def run", runtime)]

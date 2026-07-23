@@ -5,6 +5,9 @@ from ui.theme import draw_header
 
 
 class MainMenu(UIElement):
+    swap_key = "main_menu"
+    transition_title = "SCI-CALC"
+
     def __init__(self, font):
         super().__init__(0, 0, 210, 64)
         self.font = font
@@ -22,6 +25,32 @@ class MainMenu(UIElement):
         # Selection is persistent navigation state. Returning from a page must
         # restore the item the user entered instead of jumping to the top.
         self.menu.activate()
+
+    def snapshot_state(self):
+        return {"cursor": self.menu.cursor_pos,
+                "view": self.menu.view_offset}
+
+    def reset_state(self):
+        self.menu.cursor_pos = 0
+        self.menu.view_offset = 0
+
+    def activate_default(self):
+        self.menu.cursor_pos = 0
+        self.menu.view_offset = 0
+        self.menu.activate()
+
+    def restore_state(self, state):
+        self.menu.cursor_pos = max(0, min(
+            int(state.get("cursor", 0)), len(self._items) - 1))
+        self.menu.view_offset = max(0, int(state.get("view", 0)))
+        self.menu._clamp_view()
+        self.menu.activate()
+
+    def draw_transition_default(self, display):
+        display.draw_text8x8(4, 2, "SCI-CALC", gs=15)
+        display.draw_hline(2, 11, self.width - 4, 8)
+        for index, (label, _) in enumerate(self._items[:4]):
+            display.draw_text8x8(6, 15 + index * 10, label[:23], gs=10)
 
     def draw(self, display):
         draw_header(display, "SCI-CALC", self.font)

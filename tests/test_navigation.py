@@ -2,6 +2,8 @@ import main
 from anim import engine
 from ui import renderer as renderer_module
 from ui.element import UIElement
+from ui.memory import MemoryManager
+from ui.residency import PageResidency, SessionSwap
 from ui.theme import CONTENT_W
 from ui.motion import (PAGE_TRANSITION_MS, PANEL_SLIDE_MS,
                        MENU_CURSOR_MS, TEXT_CURSOR_MS, ACTIVE_FRAME_MS,
@@ -12,7 +14,8 @@ from screens.main_menu import MainMenu
 class DisplayStub:
     width = 256
     height = 64
-    buffer_length = 8
+    byte_width = 128
+    buffer_length = byte_width * height
 
     def __init__(self):
         self.gs4_buf = bytearray(self.buffer_length)
@@ -23,6 +26,9 @@ class DisplayStub:
             {"blit": lambda _, source, x, y: self.blits.append(
                 (source, x, y))})()
         self.present_count = 0
+        self.regions = []
+        self.brightness = 100
+        self.transition_currents = []
 
     def clear_buffers(self, color=0):
         for index in range(len(self.gs4_buf)):
@@ -30,6 +36,17 @@ class DisplayStub:
 
     def present(self):
         self.present_count += 1
+
+    def present_region(self, column_start, column_count, data):
+        self.regions.append(
+            (column_start, column_count, bytes(data)))
+        self.present_count += 1
+
+    def set_transition_current(self, value):
+        self.transition_currents.append(value)
+
+    def set_brightness(self, value):
+        self.brightness = value
 
     def draw_rectangle(self, *args):
         pass
@@ -68,8 +85,31 @@ class KeyboardStub:
         return self.pressed
 
 
-def test_navigation_falls_back_when_transition_buffers_cannot_be_allocated(monkeypatch):
-    """A fragmented device heap must not prevent the first usable screen."""
+class HeapStub:
+    def __init__(self, free):
+        self.free = free
+        self.collects = 0
+
+    def mem_free(self):
+        return self.free
+
+    def collect(self):
+        self.collects += 1
+
+
+class SidebarSpy:
+    def __init__(self):
+        self.battery_refreshes = []
+
+    def draw(self, display, refresh_battery=True):
+        self.battery_refreshes.append(refresh_battery)
+
+
+def test_navigation_uses_controller_fade_when_reveal_buffer_cannot_be_allocated(
+        monkeypatch):
+    """A fragmented heap still produces motion instead of a hard page cut."""
+    monkeypatch.setattr(main.time, "ticks_ms", lambda: 100)
+
     def out_of_memory(_size):
         raise MemoryError("simulated fragmented heap")
 
@@ -83,32 +123,109 @@ def test_navigation_falls_back_when_transition_buffers_cannot_be_allocated(monke
 
     nav.boot(first)
     nav.present_current()
+    assert nav.enable_optional_resources() is False
     nav.go_to(second)
-    nav.present_current()
 
     assert nav.current is second
-    assert nav.is_transitioning() is False
+    assert nav.is_transitioning() is True
+    nav.draw_transition(100 + main.TRANSITION_MS // 2)
     assert second.draws == 1
-    assert display.present_count == 2
+    nav.draw_transition(100 + main.TRANSITION_MS)
+    assert nav.is_transitioning() is False
+    assert display.transition_currents
+    assert display.brightness == 100
 
 
-def test_navigation_can_reserve_transition_buffers_before_first_frame():
+def test_partial_transition_construction_releases_buffer_before_recovery_gc(
+        monkeypatch):
+    """Failed strip views must not pin the optional reveal workspace."""
+    events = []
+
+    class MemorySpy(MemoryManager):
+        def collect(self):
+            events.append(("collect", tuple(sorted(self._buffers))))
+
+    monkeypatch.setattr(
+        renderer_module, "memoryview",
+        lambda buffer: (_ for _ in ()).throw(
+            MemoryError("simulated view pressure")),
+        raising=False)
+    registry = type("Registry", (), {"angle_mode": 0})()
+    memory = MemorySpy()
+    nav = main.Nav(DisplayStub(), None, registry, memory=memory)
+
+    assert nav.enable_optional_resources() is False
+    assert memory._buffers == {}
+    assert events[-1] == ("collect", ())
+
+    # Releasing a failed optional phase must leave it retryable once heap
+    # pressure has passed.
+    monkeypatch.setattr(renderer_module, "memoryview", memoryview)
+    assert nav.enable_optional_resources() is True
+    assert tuple(sorted(memory._buffers)) == ("transition_strip",)
+
+
+def test_navigation_defers_transition_buffers_until_optional_resources_are_enabled():
     registry = type("Registry", (), {"angle_mode": 0})()
     nav = main.Nav(DisplayStub(), None, registry)
 
-    assert nav.reserve_transition_buffers() is True
-    assert nav.renderer._outgoing is not None
-    assert nav.renderer._incoming is not None
+    assert nav.renderer._transition_strip is None
+    assert nav.enable_optional_resources() is True
+    assert nav.renderer._transition_strip is not None
 
 
-def test_navigation_transition_is_non_blocking_and_locks_trigger_key(monkeypatch):
-    times = iter((100, 400))
-    monkeypatch.setattr(main.time, "ticks_ms", lambda: next(times))
+def test_first_navigation_allocates_only_the_fixed_reveal_strip_after_release(
+        monkeypatch):
+    allocated = []
+    real_bytearray = bytearray
+
+    def track_allocation(size):
+        allocated.append(size)
+        return real_bytearray(size)
+
+    monkeypatch.setattr(renderer_module, "bytearray", track_allocation,
+                        raising=False)
     registry = type("Registry", (), {"angle_mode": 0})()
     nav = main.Nav(DisplayStub(), None, registry)
     first = ScreenStub()
     second = ScreenStub()
+
     nav.boot(first)
+    nav.go_to(second)
+
+    assert allocated == [
+        renderer_module.TRANSITION_STRIP_GROUPS * 2 * DisplayStub.height]
+    assert nav.is_transitioning() is True
+
+
+def test_navigation_uses_fade_below_reveal_headroom():
+    heap = HeapStub(100_000)
+    memory = MemoryManager(gc_module=heap)
+    registry = type("Registry", (), {"angle_mode": 0})()
+    nav = main.Nav(DisplayStub(), None, registry, memory=memory)
+    first = ScreenStub()
+    second = ScreenStub()
+
+    assert nav.enable_optional_resources() is True
+    nav.boot(first)
+    heap.free = renderer_module.TRANSITION_ACTIVE_HEADROOM - 1
+
+    nav.go_to(second)
+
+    assert nav.is_transitioning() is True
+    assert nav.renderer._transition_strip is None
+    assert second.activations == 1
+
+
+def test_navigation_transition_is_non_blocking_and_locks_trigger_key(monkeypatch):
+    monkeypatch.setattr(main.time, "ticks_ms", lambda: 100)
+    registry = type("Registry", (), {"angle_mode": 0})()
+    nav = main.Nav(DisplayStub(), None, registry)
+    nav.enable_optional_resources()
+    first = ScreenStub()
+    second = ScreenStub()
+    nav.boot(first)
+    nav.present_current()
 
     nav.go_to(second)
 
@@ -121,6 +238,64 @@ def test_navigation_transition_is_non_blocking_and_locks_trigger_key(monkeypatch
     assert nav.filter_event(KeyboardStub(), (1, 1, False)) == (1, 1, False)
 
 
+def test_navigation_reveals_default_page_before_restoring_swap(
+        monkeypatch, tmp_path):
+    monkeypatch.setattr(main.time, "ticks_ms", lambda: 100)
+    swap = SessionSwap(str(tmp_path))
+    swap.start_session()
+    residency = PageResidency(swap=swap)
+    registry = type("Registry", (), {"angle_mode": 0})()
+    nav = main.Nav(DisplayStub(), None, registry, residency=residency)
+
+    class StatefulScreen(ScreenStub):
+        def __init__(self, key, value):
+            super().__init__()
+            self.swap_key = key
+            self.value = value
+            self.default_draws = 0
+
+        def snapshot_state(self):
+            return {"value": self.value}
+
+        def reset_state(self):
+            self.value = ""
+
+        def restore_state(self, state):
+            self.value = state["value"]
+
+        def draw_transition_default(self, display):
+            self.default_draws += 1
+
+        def settle_step(self):
+            return 0
+
+    first = StatefulScreen("first", "saved")
+    second = StatefulScreen("second", "")
+    nav.enable_optional_resources()
+    nav.boot(first)
+    nav.present_current()
+
+    nav.go_to(second)
+
+    assert first.value == ""
+    assert second.default_draws == 1
+    assert second.draws == 0
+    assert not (tmp_path / "first.swp").exists()
+
+    nav.draw_transition(100 + main.TRANSITION_MS)
+    while nav.settle_current():
+        pass
+    assert (tmp_path / "first.swp").exists()
+
+    nav.go_back()
+    assert first.value == ""
+    nav.draw_transition(100 + main.TRANSITION_MS)
+    while nav.settle_current():
+        pass
+
+    assert first.value == "saved"
+
+
 def test_page_transition_stays_within_responsive_motion_budget():
     assert 160 <= main.TRANSITION_MS <= 200
     assert main.TRANSITION_MS == PAGE_TRANSITION_MS
@@ -129,10 +304,14 @@ def test_page_transition_stays_within_responsive_motion_budget():
     assert ACTIVE_LOOP_SLEEP_MS == 1
 
 
-def test_returning_to_main_menu_preserves_selected_item(monkeypatch):
+def test_returning_to_main_menu_preserves_selected_item(monkeypatch, tmp_path):
     monkeypatch.setattr(main.time, "ticks_ms", lambda: 100)
     registry = type("Registry", (), {"angle_mode": 0})()
-    nav = main.Nav(DisplayStub(), None, registry)
+    swap = SessionSwap(str(tmp_path))
+    swap.start_session()
+    nav = main.Nav(
+        DisplayStub(), None, registry,
+        residency=PageResidency(swap=swap))
     root = MainMenu(None)
     pages = [ScreenStub(), ScreenStub(), ScreenStub()]
     for index, page in enumerate(pages):
@@ -143,6 +322,10 @@ def test_returning_to_main_menu_preserves_selected_item(monkeypatch):
     nav.go_to(pages[2])
     nav.go_back()
 
+    assert root.menu.cursor_pos == 0
+    nav.draw_transition(100 + main.TRANSITION_MS)
+    while nav.settle_current():
+        pass
     assert root.menu.cursor_pos == 2
 
 
@@ -168,58 +351,88 @@ def test_navigation_reset_clears_transition_lock_and_owned_animations(monkeypatc
     assert engine.is_animating(child) is False
 
 
-def test_transition_moves_only_content_with_balanced_deceleration(monkeypatch):
-    """The sidebar stays fixed and the page enters without a violent jump."""
+def test_transition_reveals_only_new_content_columns(monkeypatch):
+    """A forward wipe starts at the right and never uploads a full frame."""
     monkeypatch.setattr(main.time, "ticks_ms", lambda: 100)
     registry = type("Registry", (), {"angle_mode": 0})()
     display = DisplayStub()
     nav = main.Nav(display, None, registry)
+    nav.enable_optional_resources()
     nav.boot(ScreenStub())
     nav.go_to(ScreenStub())
 
-    display.blits[:] = []
+    display.regions[:] = []
     nav.draw_transition(100 + main.TRANSITION_MS // 4)
 
-    assert len(display.blits) == 2
-    assert all(source.width == CONTENT_W
-               for source, _, _ in display.blits)
-    incoming = max(x for _, x, _ in display.blits)
-    assert CONTENT_W // 2 < incoming < CONTENT_W * 2 // 3
+    assert display.regions
+    revealed = sum(count for _, count, _ in display.regions)
+    assert 0 < revealed < renderer_module.TRANSITION_TOTAL_GROUPS
+    assert min(start for start, _, _ in display.regions) > 0
+    assert all(len(data) == count * 2 * display.height
+               for _, count, data in display.regions)
 
 
-def test_transition_erases_every_pixel_outside_content_before_sidebar(monkeypatch):
-    """Sliding page pixels cannot remain behind the fixed status panel."""
+def test_transition_regions_never_cross_the_content_window(monkeypatch):
+    """The hardware wipe leaves the fixed status-panel columns untouched."""
     monkeypatch.setattr(main.time, "ticks_ms", lambda: 100)
     registry = type("Registry", (), {"angle_mode": 0})()
     display = DisplayStub()
     nav = main.Nav(display, None, registry)
+    nav.enable_optional_resources()
     nav.boot(ScreenStub())
     nav.go_to(ScreenStub())
 
-    display.fills[:] = []
+    display.regions[:] = []
     nav.draw_transition(100 + main.TRANSITION_MS // 2)
 
-    assert (CONTENT_W, 0, display.width - CONTENT_W, display.height, 0) in display.fills
+    assert display.regions
+    assert all(start >= 0 and start + count <=
+               renderer_module.TRANSITION_TOTAL_GROUPS
+               for start, count, _ in display.regions)
 
 
-def test_transition_finishes_with_a_live_canonical_page_frame(monkeypatch):
-    """The last transition frame cannot linger until the idle refresh."""
+def test_transition_finishes_from_the_captured_live_frame(monkeypatch):
+    """The final reveal avoids an expensive duplicate destination redraw."""
     monkeypatch.setattr(main.time, "ticks_ms", lambda: 100)
     registry = type("Registry", (), {"angle_mode": 0})()
     display = DisplayStub()
     incoming = ScreenStub()
     nav = main.Nav(display, None, registry)
+    nav.enable_optional_resources()
     nav.boot(ScreenStub())
     nav.go_to(incoming)
     captured_draws = incoming.draws
 
     nav.draw_transition(100 + main.TRANSITION_MS)
 
-    assert incoming.draws == captured_draws + 1
+    assert incoming.draws == captured_draws
+    assert sum(count for _, count, _ in display.regions) == (
+        renderer_module.TRANSITION_TOTAL_GROUPS)
     assert nav.is_transitioning() is False
 
 
-def test_first_transition_captures_the_unbuffered_outgoing_page(monkeypatch):
+def test_backward_transition_reveals_from_the_left(monkeypatch):
+    """Back navigation mirrors the hardware reveal direction."""
+    monkeypatch.setattr(main.time, "ticks_ms", lambda: 100)
+    registry = type("Registry", (), {"angle_mode": 0})()
+    display = DisplayStub()
+    nav = main.Nav(display, None, registry)
+    nav.enable_optional_resources()
+    outgoing = ScreenStub()
+    incoming = ScreenStub()
+    nav.boot(outgoing)
+    nav.present_current()
+    nav.go_to(incoming)
+    nav.draw_transition(100 + main.TRANSITION_MS)
+    display.regions[:] = []
+    nav.go_back()
+    nav.draw_transition(100 + main.TRANSITION_MS // 4)
+
+    assert display.regions
+    assert display.regions[0][0] == 0
+
+
+def test_first_transition_reuses_the_page_already_held_by_display_ram(monkeypatch):
     monkeypatch.setattr(main.time, "ticks_ms", lambda: 100)
     registry = type("Registry", (), {"angle_mode": 0})()
     nav = main.Nav(DisplayStub(), None, registry)
@@ -228,10 +441,11 @@ def test_first_transition_captures_the_unbuffered_outgoing_page(monkeypatch):
     nav.boot(outgoing)
     nav.present_current()
     outgoing_draws = outgoing.draws
+    nav.enable_optional_resources()
 
     nav.go_to(incoming)
 
-    assert outgoing.draws == outgoing_draws + 1
+    assert outgoing.draws == outgoing_draws
     assert incoming.draws == 1
 
 
@@ -239,6 +453,7 @@ def test_transition_reuses_the_last_presented_outgoing_page_after_allocation(mon
     monkeypatch.setattr(main.time, "ticks_ms", lambda: 100)
     registry = type("Registry", (), {"angle_mode": 0})()
     nav = main.Nav(DisplayStub(), None, registry)
+    nav.enable_optional_resources()
     first = ScreenStub()
     outgoing = ScreenStub()
     incoming = ScreenStub()
@@ -265,6 +480,19 @@ def test_renderer_reports_present_time_for_diagnostics(monkeypatch):
     nav.present_current()
 
     assert nav.last_present_us == 275
+
+
+def test_hardware_transition_preserves_sidebar_without_redrawing_it(monkeypatch):
+    """Incremental region uploads must not resample fixed chrome per frame."""
+    display = DisplayStub()
+    sidebar = SidebarSpy()
+    renderer = renderer_module.Renderer(display, sidebar)
+    renderer.enable_transition_buffers()
+
+    renderer.present_transition(0.5, True)
+
+    assert sidebar.battery_refreshes == []
+    assert display.regions
 
 
 def test_page_animation_cancel_does_not_cancel_another_page():
@@ -309,7 +537,7 @@ def test_quadratic_ease_out_is_responsive_without_a_stalled_tail():
 
 
 def test_page_transition_has_enough_visible_motion_samples():
-    """A full-width slide must not turn into a handful of large jumps."""
+    """A full-width reveal must not turn into a handful of large jumps."""
     positions = list(range(0, main.TRANSITION_MS, ACTIVE_FRAME_MS))
     if positions[-1] != main.TRANSITION_MS:
         positions.append(main.TRANSITION_MS)
@@ -321,6 +549,60 @@ def test_page_transition_has_enough_visible_motion_samples():
 
     assert len(steps) >= 12
     assert max(steps) <= CONTENT_W // 6
+
+
+def test_thousand_navigation_cycles_keep_animation_buffers_bounded(
+        monkeypatch, tmp_path):
+    now = [100]
+    monkeypatch.setattr(main.time, "ticks_ms", lambda: now[0])
+    swap = SessionSwap(str(tmp_path))
+    swap.start_session()
+    memory = MemoryManager()
+    registry = type("Registry", (), {"angle_mode": 0})()
+    nav = main.Nav(
+        DisplayStub(), None, registry, memory=memory,
+        residency=PageResidency(swap=swap, memory=memory))
+
+    class Stateful(ScreenStub):
+        def __init__(self, key):
+            super().__init__()
+            self.swap_key = key
+            self.value = 0
+
+        def snapshot_state(self):
+            return {"value": self.value}
+
+        def reset_state(self):
+            self.value = 0
+
+        def restore_state(self, state):
+            self.value = int(state.get("value", 0))
+
+    root = Stateful("stress_root")
+    child = Stateful("stress_child")
+    nav.enable_optional_resources()
+    nav.boot(root)
+    nav.present_current()
+
+    for index in range(1000):
+        root.value = index
+        nav.go_to(child)
+        assert nav.is_transitioning()
+        now[0] += main.TRANSITION_MS
+        nav.draw_transition(now[0])
+        while nav.settle_current():
+            pass
+
+        child.value = index
+        nav.go_back()
+        assert nav.is_transitioning()
+        now[0] += main.TRANSITION_MS
+        nav.draw_transition(now[0])
+        while nav.settle_current():
+            pass
+
+    assert set(memory._buffers) == {"transition_strip"}
+    assert nav.is_transitioning() is False
 
 
 def test_delayed_animation_stays_registered_until_start(monkeypatch):

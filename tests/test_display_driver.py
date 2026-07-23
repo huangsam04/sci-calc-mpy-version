@@ -38,3 +38,19 @@ def test_write_cmd_reuses_command_buffers_for_common_payload_sizes():
     assert writes[2][0] is display._command_byte
     assert writes[3][0] is display._command_arg1
     assert writes[4][0] is display._command_byte
+
+
+def test_present_region_programs_only_the_requested_controller_window():
+    display = Display.__new__(Display)
+    display.height = 64
+    events = []
+    display.set_address = lambda *args: events.append(("address", args))
+    display.write_data = lambda data: events.append(("data", bytes(data)))
+    payload = memoryview(bytearray(range(16)))
+
+    display.present_region(40, 8, payload)
+
+    assert events == [
+        ("address", (40, 0, 47, 63)),
+        ("data", bytes(range(16))),
+    ]

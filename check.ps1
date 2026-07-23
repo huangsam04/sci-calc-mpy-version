@@ -8,7 +8,10 @@ $Python = Join-Path $WorkspaceRoot ".venv\python.exe"
 $MpyCross = Join-Path $WorkspaceRoot "micropython\mpy-cross\build\mpy-cross.exe"
 $BuildRoot = Join-Path $ProjectRoot ".mpy-build"
 $FontBuild = Join-Path $BuildRoot "fonts"
-$PytestTemp = Join-Path $ProjectRoot ".pytest_tmp\check-tmp"
+# A unique system temp base avoids a stale or ACL-protected test directory
+# from a previous run causing unrelated test failures.
+$PytestTemp = Join-Path ([System.IO.Path]::GetTempPath()) (
+    "sci-calc-pytest-" + [guid]::NewGuid().ToString("N"))
 
 if (-not (Test-Path -LiteralPath $MpyCross)) {
     throw "Missing MicroPython 1.29 mpy-cross: build it from ..\micropython\mpy-cross first"
@@ -23,7 +26,7 @@ if ($MpyVersion -notmatch "v1\.29\.0-preview") {
     --output-dir $FontBuild
 if ($LASTEXITCODE -ne 0) { throw "compact font asset generation failed" }
 
-& $Python -m pytest ("--basetemp=" + $PytestTemp)
+& $Python -m pytest (Join-Path $ProjectRoot "tests") ("--basetemp=" + $PytestTemp)
 if ($LASTEXITCODE -ne 0) { throw "pytest failed" }
 
 & $Python -m compileall -q (Join-Path $ProjectRoot "source")

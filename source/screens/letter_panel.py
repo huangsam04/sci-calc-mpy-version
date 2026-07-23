@@ -32,6 +32,9 @@ _DISPLAY_ROWS = [
 
 
 class LetterPanel(UIElement):
+    swap_key = "letter_panel"
+    transition_title = "Letters"
+
     def __init__(self, font, input_box):
         super().__init__(0, 0, 210, 64)
         self.font = font
@@ -46,6 +49,39 @@ class LetterPanel(UIElement):
         self.upper = True
         self._last_action = time.ticks_ms()
         self._last_key = None
+
+    def release_memory(self):
+        """The bounded draft is core state; there is no derived cache."""
+        return False
+
+    def snapshot_state(self):
+        return {"text": self.text, "upper": bool(self.upper)}
+
+    def reset_state(self):
+        self.text = ""
+        self.upper = True
+        self._last_action = 0
+        self._last_key = None
+
+    def activate_default(self):
+        self._last_action = time.ticks_ms()
+        self._last_key = None
+
+    def restore_state(self, state):
+        text = state.get("text", "")
+        if not isinstance(text, str) or len(text) > self.input_box.max_char:
+            raise ValueError("Invalid letter panel snapshot")
+        self.text = text
+        self.upper = bool(state.get("upper", True))
+
+    def draw_transition_default(self, display):
+        display.draw_rectangle(2, 1, self.width - 4, 10, 10)
+        rows = ("ESC A  B  C  D  E", "F  G  H  I  J  K",
+                "L  M  N  O  P  Q", "R  S  T  X  Y  Z",
+                "Sh       ;  Bk OK")
+        for index, label in enumerate(rows):
+            display.draw_text8x8(4, 13 + index * 8, label, gs=10)
+        display.draw_text8x8(3, self.height - 9, "OK save  ESC cancel", gs=8)
 
     @staticmethod
     def _get_char(row, col):
@@ -94,12 +130,14 @@ class LetterPanel(UIElement):
 
         # ESC (0,0): cancel
         if r == 0 and c == 0:
+            self.text = ""
             return "LETTER_DONE"
 
         # OK (4,5): confirm
         if r == 4 and c == 5:
             if self.text:
                 self.input_box.insert_str(self.text)
+            self.text = ""
             return "LETTER_DONE"
 
         # Bk (4,4): backspace

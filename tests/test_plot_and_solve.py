@@ -7,6 +7,7 @@ from calc.loader import load_function_files
 from calc.parser import evaluate
 from screens.plot import PlotScreen
 from screens import plot as plot_module
+from ui.memory import MemoryManager
 
 
 def test_plot_builds_reusable_curve_for_valid_expression():
@@ -19,6 +20,27 @@ def test_plot_builds_reusable_curve_for_valid_expression():
     assert plot.mode != 2
     assert plot._curve_fb is not None
     assert plot._program is not None
+
+
+def test_plot_snapshot_restores_parameters_before_building_curve():
+    memory = MemoryManager()
+    plot = PlotScreen(None, registry=build_registry(), memory=memory)
+    plot.expr = "x^2"
+    plot.x_min = -3.0
+    plot.x_max = 7.0
+    state = plot.snapshot_state()
+
+    plot.reset_state()
+    plot.activate_default()
+    plot.restore_state(state)
+
+    assert plot.expr == "x^2"
+    assert plot.x_min == -3.0
+    assert plot.x_max == 7.0
+    assert plot._curve_fb is None
+
+    assert plot.settle_step() == 2
+    assert plot._curve_fb is not None
 
 
 def test_plot_reuses_compiled_expression_across_pan_and_zoom(monkeypatch):
@@ -134,6 +156,24 @@ def test_auto_scale_ignores_samples_clustered_around_asymptotes():
 
     assert plot._y_min > -30
     assert plot._y_max < 30
+
+
+def test_auto_scale_reuses_the_curve_sampling_step(monkeypatch):
+    plot = PlotScreen(None, registry=build_registry())
+    plot.expr = "x^2"
+    calls = []
+
+    def evaluate(x_value):
+        calls.append(x_value)
+        return x_value * x_value, True, ""
+
+    monkeypatch.setattr(plot, "_eval", evaluate)
+
+    plot._render_curve()
+
+    graph_width = plot.width - plot_module.GRAPH_PAD_X * 2
+    sample_count = len(range(0, graph_width + 1, 2))
+    assert len(calls) == sample_count * 2
 
 
 def test_plot_error_timeout_is_processed_during_draw(monkeypatch):

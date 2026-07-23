@@ -15,7 +15,7 @@ class Menu(UIElement):
         self.cursor_pos = 0
         self.view_offset = 0
         self.cursor = Cursor(x + 2, y + 2, mode=0)
-        self.cursor.width = width - 4
+        self.cursor.width = 0
         self.cursor.height = row_height - 1
         self.gs = 15
 
@@ -42,8 +42,10 @@ class Menu(UIElement):
         target_y = self.y + 2 + (self.cursor_pos - self.view_offset) * self.row_height
         self.cursor.x = self.x + 2
         self.cursor.y = target_y
+        self.cursor.width = self._highlight_width(self.cursor_pos)
         self.cursor.target_x = self.x + 2
         self.cursor.target_y = target_y
+        self.cursor.target_w = self.cursor.width
 
     def animation_children(self):
         return (self.cursor,)
@@ -72,31 +74,37 @@ class Menu(UIElement):
         self.cursor.change_target(
             self.x + 2,
             self.y + 2 + (self.cursor_pos - self.view_offset) * self.row_height,
-            MENU_CURSOR_MS
+            MENU_CURSOR_MS,
+            width=self._highlight_width(self.cursor_pos)
         )
+
+    def _highlight_width(self, item_pos):
+        """Measure the compact highlight bar for one visible menu item."""
+        if not 0 <= item_pos < len(self.items):
+            return 0
+        label = self.items[item_pos][0]
+        text_width = (self.font.measure_text(label) if self.font
+                      else len(label) * 8)
+        return min(self.width - 4, text_width + 4)
 
     def draw(self, display):
         display.draw_rectangle(self.x, self.y, self.width, self.height, self.gs)
         font_h = self.font.height if self.font else 8
         bar_y = self.cursor.y
 
-        # Highlight bar — only as wide as the selected text, not full row
-        if 0 <= self.cursor_pos < len(self.items):
-            label = self.items[self.cursor_pos][0]
-            if self.font:
-                tw = self.font.measure_text(label)
-            else:
-                tw = len(label) * 8
-            display.fill_rectangle(self.x + 2, bar_y, tw + 4, font_h, 14)
+        # Position and width move together, preserving a coherent marker as
+        # the logical selection changes on a physical key edge.
+        if self.cursor.width > 0:
+            display.fill_rectangle(self.x + 2, bar_y, self.cursor.width,
+                                   font_h, 14)
 
         # Draw items — only invert text when highlight bar fully covers it
         for i in range(self.view_offset,
                        min(self.view_offset + self.visible_rows, len(self.items))):
             label = self.items[i][0]
             draw_y = self.y + 2 + (i - self.view_offset) * self.row_height
-            dist = abs(bar_y - draw_y)
 
-            if dist <= 2:
+            if abs(bar_y - draw_y) <= 2:
                 if self.font:
                     display.draw_text(self.x + 4, draw_y, label, self.font, invert=True, gs=14)
                 else:

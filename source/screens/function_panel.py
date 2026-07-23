@@ -3,10 +3,19 @@ from ui.element import UIElement
 from ui.menu import Menu
 from utils.storage import load_settings
 from ui.theme import draw_footer, draw_header
+from ui.residency import SETTLE_REDRAW
 
 
 class FunctionPanel(UIElement):
-    def __init__(self, font, request_settings=None, settings=None):
+    swap_key = "functions"
+    transition_title = "Functions"
+
+    # Input is locked during page reveals and this screen has no timer-driven
+    # state, so the incoming transition capture is already its live final UI.
+    transition_snapshot_is_live = True
+
+    def __init__(self, font, request_settings=None, settings=None,
+                 plugin_functions=None, plugin_dependencies=None):
         super().__init__(0, 0, 210, 64)
         self.font = font
         self._request_settings = request_settings
@@ -18,24 +27,37 @@ class FunctionPanel(UIElement):
         self._save_error = ""
         self._load_error = ""
         self._load_error_detail = ""
-        self._plugin_functions = {}
-        self._plugin_dependencies = {}
+        self._plugin_functions = (plugin_functions
+                                  if plugin_functions is not None else {})
+        self._plugin_dependencies = (plugin_dependencies
+                                     if plugin_dependencies is not None else {})
         self._plugin_files = ()
         self._dependency_notice = ""
-        # Plugin inspection executes arbitrary add-on source in an isolated
-        # registry. Do it while the boot progress screen is visible, never in
-        # the navigation path that starts a page slide.
+        self._menu_built = False
+        self._needs_menu_restore = False
+        self._restore_cursor = 0
+        self._restore_view = 0
+        # Listing SD filenames is safe during boot.  Function/dependency
+        # metadata comes from the live registry's first load; recompiling
+        # add-ons here used to create a second peak that could freeze splash.
         self._load_plugin_catalog()
+        # The production app shares its already-loaded settings object.  Build
+        # its static labels while the startup screen is still visible, so the
+        # first page transition does not do repeated text measurement work.
+        # Keep the no-settings path lazy for standalone diagnostics/tests.
+        if self._settings is not None:
+            self._refresh()
 
     def _load_plugin_catalog(self):
-        """Inspect add-ons outside the normal page-transition path."""
-        from calc.loader import (describe_function_files,
-                                 describe_plugin_dependencies,
-                                 list_function_files)
+        """List add-ons without compiling their source during startup."""
+        from calc.loader import list_function_files
         self._plugin_files = list_function_files()
-        self._plugin_functions = describe_function_files()
-        self._plugin_dependencies = describe_plugin_dependencies(
-            files=self._plugin_files)
+
+    def set_plugin_catalog(self, functions, dependencies):
+        """Adopt metadata collected by a real registry load without copying it."""
+        self._plugin_functions = functions if functions is not None else {}
+        self._plugin_dependencies = (dependencies
+                                     if dependencies is not None else {})
 
     def _reload_plugin_catalog(self):
         """Explicitly rescan SD add-ons while preserving the selected item."""
@@ -43,6 +65,11 @@ class FunctionPanel(UIElement):
         if 0 <= self.menu.cursor_pos < len(self._items):
             selected = self._items[self.menu.cursor_pos][0]
         self._load_plugin_catalog()
+        from calc.loader import (describe_function_files,
+                                 describe_plugin_dependencies)
+        self._plugin_functions = describe_function_files()
+        self._plugin_dependencies = describe_plugin_dependencies(
+            files=self._plugin_files)
         self._ensure_all_enabled_dependencies()
         self._refresh()
         if selected is not None:
@@ -61,8 +88,9 @@ class FunctionPanel(UIElement):
         self._dirty = False
         self._toggled = {}
         self._dependency_notice = ""
-        self._ensure_all_enabled_dependencies()
-        self._refresh()
+        auto_enabled, _ = self._ensure_all_enabled_dependencies()
+        if not self._menu_built or auto_enabled:
+            self._refresh()
         if not self._focus_load_error():
             self.menu.cursor_pos = 0
             self.menu.view_offset = 0
@@ -70,6 +98,85 @@ class FunctionPanel(UIElement):
 
     def animation_children(self):
         return (self.menu,)
+
+    def release_memory(self):
+        """Discard rebuildable menu labels without rescanning plug-in source."""
+        if self._dirty or self._load_error or not self._menu_built:
+            return False
+        self.menu.clear_items()
+        self._items = []
+        self._menu_built = False
+        return True
+
+    def snapshot_state(self):
+        toggled = {}
+        for name, enabled in self._toggled.items():
+            if len(toggled) >= 64:
+                break
+            toggled[str(name)] = bool(enabled)
+        return {
+            "cursor": self.menu.cursor_pos,
+            "view": self.menu.view_offset,
+            "toggled": toggled,
+            "dirty": bool(self._dirty),
+            "load_error": self._load_error[:64],
+            "load_detail": self._load_error_detail[:160],
+        }
+
+    def reset_state(self):
+        self.menu.clear_items()
+        self.menu.cursor_pos = 0
+        self.menu.view_offset = 0
+        self._items = []
+        self._toggled = {}
+        self._dirty = False
+        self._load_error = ""
+        self._load_error_detail = ""
+        self._dependency_notice = ""
+        self._menu_built = False
+        self._needs_menu_restore = False
+        self._restore_cursor = 0
+        self._restore_view = 0
+
+    def activate_default(self):
+        self.menu.clear_items()
+        self._items = []
+        self._menu_built = False
+        self.menu.cursor_pos = 0
+        self.menu.view_offset = 0
+        self.menu.activate()
+        self._needs_menu_restore = True
+
+    def restore_state(self, state):
+        toggled = state.get("toggled", {})
+        if not isinstance(toggled, dict) or len(toggled) > 64:
+            raise ValueError("Invalid function panel snapshot")
+        self._toggled = {str(name): bool(value)
+                         for name, value in toggled.items()}
+        self._dirty = bool(state.get("dirty", False))
+        self._load_error = str(state.get("load_error", ""))[:64]
+        self._load_error_detail = str(state.get("load_detail", ""))[:160]
+        self._restore_cursor = max(0, int(state.get("cursor", 0)))
+        self._restore_view = max(0, int(state.get("view", 0)))
+        self._needs_menu_restore = True
+
+    def settle_step(self):
+        if not self._needs_menu_restore:
+            return 0
+        self._needs_menu_restore = False
+        self._refresh()
+        self.menu.cursor_pos = max(
+            0, min(self._restore_cursor, len(self._items) - 1))
+        self.menu.view_offset = self._restore_view
+        self.menu._clamp_view()
+        self.menu.activate()
+        return SETTLE_REDRAW
+
+    def draw_transition_default(self, display):
+        display.draw_text8x8(4, 2, "Functions", gs=15)
+        display.draw_hline(2, 11, self.width - 4, 8)
+        display.draw_rectangle(0, 13, self.width, 40, 15)
+        display.draw_text8x8(4, self.height - 9, "Loading functions...", gs=8)
 
     def deactivate(self):
         if self._dirty:
@@ -207,6 +314,7 @@ class FunctionPanel(UIElement):
                 label += " (" + summary + ")"
             self.menu.add_item(label, None)
             self._items.append((setting_name, is_on, False))
+        self._menu_built = True
 
     def get_enabled_list(self):
         """Return list of enabled group/file names."""
@@ -284,7 +392,12 @@ class FunctionPanel(UIElement):
                 self._load_error = ""
                 self._load_error_detail = ""
                 return "FUNC_PANEL_CANCEL"
-            if self._dirty and not self._queue_save():
-                return None
-            return "FUNC_PANEL_DONE"
+            if self._dirty:
+                if not self._queue_save():
+                    return None
+                return "FUNC_PANEL_DONE"
+            # A no-op visit must not reload plug-ins: on a fragmented
+            # MicroPython heap, compiling every add-on again can fail even
+            # though the user did not change the active function set.
+            return "FUNC_PANEL_CANCEL"
         return None

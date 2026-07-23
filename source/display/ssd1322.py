@@ -920,6 +920,19 @@ class Display(object):
         self.set_address(x0, y0, x1, y1)
         self.write_data(self.gs4_buf)
 
+    def present_region(self, column_start, column_count, data):
+        """Write packed rows to a contiguous SSD1322 column window.
+
+        One controller column contains four horizontal GS4 pixels (two
+        bytes).  ``data`` is packed row-major for only this window, allowing
+        page reveals to use the panel's existing RAM as the outgoing layer.
+        """
+        if column_count <= 0:
+            return
+        column_end = column_start + column_count - 1
+        self.set_address(column_start, 0, column_end, self.height - 1)
+        self.write_data(data)
+
     def reset(self):
         """Perform reset."""
         self.rst(0)
@@ -1017,6 +1030,16 @@ class Display(object):
         current = max(1, min(15, (percent * 15 + 50) // 100))
         self.write_cmd(self.MASTER_CURRENT_CONTROL, current)
         self.brightness = percent
+
+    def set_transition_current(self, level):
+        """Set a temporary raw current for an allocation-free page fade.
+
+        Unlike ``set_brightness`` this accepts zero and does not replace the
+        user's stored brightness.  Navigation restores that setting when the
+        fade completes.
+        """
+        level = max(0, min(15, int(level)))
+        self.write_cmd(self.MASTER_CURRENT_CONTROL, level)
 
     def write_cmd(self, command, *args):
         """Write command to display.

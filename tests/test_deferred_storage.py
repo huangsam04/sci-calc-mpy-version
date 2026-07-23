@@ -34,3 +34,18 @@ def test_deferred_storage_retries_failed_atomic_write_without_dropping_data():
     assert storage.flush(1_200) == ("vars", True)
     assert attempts == [{"x": 7}, {"x": 7}]
     assert outcomes == [False, True]
+
+
+def test_deferred_storage_defers_snapshot_work_until_idle_flush():
+    writes = []
+    settings = {"brightness": 80}
+    storage = DeferredStorage(
+        settings_writer=lambda value: writes.append(dict(value)) or True,
+        vars_writer=lambda value: True)
+
+    storage.request_settings(settings)
+    settings["brightness"] = 90
+
+    assert writes == []
+    assert storage.flush(100) == ("settings", True)
+    assert writes == [{"brightness": 90}]

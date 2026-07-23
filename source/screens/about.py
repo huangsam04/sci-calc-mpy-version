@@ -5,6 +5,8 @@ from version import VERSION
 
 
 class AboutScreen(UIElement):
+    transition_title = "About"
+
     def __init__(self, font, version=VERSION):
         super().__init__(0, 0, 210, 64)
         self.font = font
@@ -38,3 +40,9 @@ class AboutScreen(UIElement):
         if label == "ESC":
             return "BACK"
         return None
+
+    def draw_transition_default(self, display):
+        display.draw_text8x8(5, 3, "SCI-CALC", gs=15)
+        display.draw_hline(4, 13, self.width - 8, 8)
+        display.draw_text8x8(5, 18, "About", gs=10)
+        display.draw_text8x8(5, self.height - 11, "Loading details...", gs=8)

@@ -2,10 +2,32 @@
 import time
 
 
+class _FixedSampleWindow:
+    """A cyclic timing window whose backing list is allocated at boot only."""
+
+    def __init__(self, limit):
+        self.values = [0] * max(1, int(limit))
+        self.count = 0
+        self._next = 0
+
+    def append(self, value):
+        values = self.values
+        values[self._next] = max(0, int(value))
+        self._next += 1
+        if self._next == len(values):
+            self._next = 0
+        if self.count < len(values):
+            self.count += 1
+
+    def reset(self):
+        self.count = 0
+        self._next = 0
+
+
 class PerformanceMetrics:
-    def __init__(self, sample_limit=128, frame_bucket_us=500,
+    def __init__(self, sample_limit=16, frame_bucket_us=500,
                  frame_bucket_count=128):
-        self.sample_limit = sample_limit
+        self.sample_limit = max(1, int(sample_limit))
         self._frame_bucket_us = max(1, int(frame_bucket_us))
         self._frame_histogram = [0] * max(1, int(frame_bucket_count))
         self._frame_sample_count = 0
@@ -13,8 +35,11 @@ class PerformanceMetrics:
         self._boot_phases = []
         self._boot_last = None
         self._input_started = None
-        self._input_to_present_us = []
-        self._gc_us = []
+        # These windows are deliberately allocated with the module at boot.
+        # Appending a timing value must never grow a Python list while a page
+        # transition is using the constrained ESP32 heap.
+        self._input_to_present_us = _FixedSampleWindow(self.sample_limit)
+        self._gc_us = _FixedSampleWindow(self.sample_limit)
         self._runtime = None
 
     def _now_ms(self):
@@ -24,9 +49,7 @@ class PerformanceMetrics:
         return time.ticks_us()
 
     def _append(self, samples, value):
-        if len(samples) >= self.sample_limit:
-            samples.pop(0)
-        samples.append(max(0, int(value)))
+        samples.append(value)
 
     def _reset_frames(self):
         # One 50-cycle benchmark produces far more frame samples than it is
@@ -86,8 +109,8 @@ class PerformanceMetrics:
     def reset_run(self):
         self._input_started = None
         self._reset_frames()
-        self._input_to_present_us = []
-        self._gc_us = []
+        self._input_to_present_us.reset()
+        self._gc_us.reset()
 
     def record_input(self, now=None):
         self._input_started = self._now_us() if now is None else now
@@ -110,16 +133,26 @@ class PerformanceMetrics:
         return self._runtime
 
     def _summary(self, samples):
-        count = len(samples)
+        count = samples.count
         if count == 0:
             return {"count": 0, "p95_us": 0, "max_us": 0}
-        ordered = list(samples)
-        ordered.sort()
+
+        # Snapshotting normally happens after a benchmark, when the renderer
+        # has the least spare heap.  Sort the already-reserved cyclic window
+        # in place instead of allocating a temporary copy for ``list(... )``.
+        ordered = samples.values
+        for index in range(1, count):
+            value = ordered[index]
+            insert_at = index - 1
+            while insert_at >= 0 and ordered[insert_at] > value:
+                ordered[insert_at + 1] = ordered[insert_at]
+                insert_at -= 1
+            ordered[insert_at + 1] = value
         p95_index = max(0, (count * 95 + 99) // 100 - 1)
         return {
             "count": count,
             "p95_us": ordered[p95_index],
-            "max_us": ordered[-1],
+            "max_us": ordered[count - 1],
         }
 
     def snapshot(self):

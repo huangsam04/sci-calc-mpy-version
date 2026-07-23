@@ -82,7 +82,10 @@ def test_function_panel_auto_enables_saved_addon_dependencies_and_shows_notice(
     monkeypatch.setattr(loader, "describe_plugin_dependencies",
                         lambda files=None: {"dependent": ("base",), "base": ()})
     panel = FunctionPanel(
-        None, settings={"enabled_functions": ["basic", "plugin:dependent"]})
+        None,
+        settings={"enabled_functions": ["basic", "plugin:dependent"]},
+        plugin_functions={"base": ["double"], "dependent": ["plus_one"]},
+        plugin_dependencies={"dependent": ("base",), "base": ()})
 
     panel.activate()
     state = {name: is_on for name, is_on, _ in panel._items}

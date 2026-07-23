@@ -54,11 +54,17 @@ def test_boot_uses_generated_binary_font_assets():
     assert "/sd/fonts/Neato5x7.xglcd" in main_source
 
 
-def test_boot_reserves_transition_buffers_before_loading_screens():
+def test_boot_defers_optional_transition_buffers_until_after_core_first_frame():
     main_source = (SOURCE / "main.py").read_text(encoding="utf-8")
 
-    assert (main_source.index("nav.reserve_transition_buffers()")
-            < main_source.index("from screens.main_menu import MainMenu"))
+    nav_created = main_source.index("nav = Nav(display, font_small, registry)")
+    screens = main_source.index("from screens.main_menu import MainMenu")
+    boot = main_source.index("nav.boot(main_menu)")
+    first_frame = main_source.index("nav.mark_first_frame_presented()")
+    restore = main_source.index("nav.restore_optional_resources()")
+
+    assert nav_created < screens < boot < first_frame < restore
+    assert "nav.reserve_transition_buffers()" not in main_source[nav_created:screens]
 
 
 def test_boot_progress_avoids_artificial_animation_delay(monkeypatch):

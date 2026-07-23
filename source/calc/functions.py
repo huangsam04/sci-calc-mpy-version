@@ -88,6 +88,11 @@ class FunctionRegistry:
         self._revision = 0
         self.angle_mode = 0
         self.plugin_errors = []
+        # The initial loader already knows these summaries.  Retaining the
+        # report lets the Function Panel describe active add-ons without
+        # compiling every SD source file for a second time during boot.
+        self.plugin_functions = {}
+        self.plugin_dependencies = {}
         self._plugin_exports = {}
         self._dependency_exports = {}
 
@@ -161,6 +166,8 @@ class FunctionRegistry:
             self._revision += 1
         self._plugin_exports.clear()
         self._dependency_exports.clear()
+        self.plugin_functions = {}
+        self.plugin_dependencies = {}
 
     def replace(self, other):
         """Replace definitions in-place so existing users keep a live reference."""
@@ -168,6 +175,8 @@ class FunctionRegistry:
         self._defs.update(other._defs)
         self.angle_mode = other.angle_mode
         self.plugin_errors = list(other.plugin_errors)
+        self.plugin_functions = other.plugin_functions
+        self.plugin_dependencies = other.plugin_dependencies
         self._plugin_exports = dict(other._plugin_exports)
         self._dependency_exports = {}
         self._revision += 1

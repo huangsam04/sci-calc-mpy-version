@@ -16,6 +16,9 @@ BRIGHTNESS_STEP = 10
 class SettingsScreen(UIElement):
     """Show firmware information and small hardware-facing preferences."""
 
+    swap_key = "settings"
+    transition_title = "Settings"
+
     def __init__(self, font, display, settings, about_screen,
                  request_save=None, on_display_digits_change=None):
         super().__init__(0, 0, 210, 64)
@@ -96,6 +99,41 @@ class SettingsScreen(UIElement):
 
     def animation_children(self):
         return (self.menu,)
+
+    def snapshot_state(self):
+        return {
+            "cursor": self.menu.cursor_pos,
+            "view": self.menu.view_offset,
+            "save_failed": bool(self._save_failed),
+            "save_pending": bool(self._save_pending),
+        }
+
+    def reset_state(self):
+        self.menu.cursor_pos = 0
+        self.menu.view_offset = 0
+        self._save_failed = False
+        self._save_pending = False
+
+    def activate_default(self):
+        self.menu.cursor_pos = 0
+        self.menu.view_offset = 0
+        self.menu.activate()
+
+    def restore_state(self, state):
+        self.menu.cursor_pos = max(0, min(
+            int(state.get("cursor", 0)), len(self.menu.items) - 1))
+        self.menu.view_offset = max(0, int(state.get("view", 0)))
+        self._save_failed = bool(state.get("save_failed", False))
+        self._save_pending = bool(state.get("save_pending", False))
+        self.menu._clamp_view()
+        self.menu.activate()
+
+    def draw_transition_default(self, display):
+        display.draw_text8x8(4, 2, "Settings", gs=15)
+        display.draw_hline(2, 11, self.width - 4, 8)
+        labels = ("Version", "About", "Brightness", "Display digits")
+        for index, label in enumerate(labels):
+            display.draw_text8x8(6, 15 + index * 10, label, gs=10)
 
     def draw(self, display):
         draw_header(display, "Settings", self.font)

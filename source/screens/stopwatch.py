@@ -10,6 +10,9 @@ LAP_MAX = 99     # cap stored laps so a long session cannot exhaust RAM
 
 
 class StopwatchScreen(UIElement):
+    swap_key = "stopwatch"
+    transition_title = "Stopwatch"
+
     def __init__(self, font):
         super().__init__(0, 0, 210, 64)
         self.font = font
@@ -27,6 +30,52 @@ class StopwatchScreen(UIElement):
     def activate(self):
         self._last_action = 0
         self._last_key = ""
+
+    def snapshot_state(self):
+        return {
+            "running": bool(self._running),
+            "paused": bool(self._paused),
+            "elapsed": int(self._get_elapsed()),
+            "laps": [[int(number), int(elapsed)]
+                     for number, elapsed in self._laps[:LAP_MAX]],
+            "cursor": self._lap_cursor,
+            "view": self._view_offset,
+            "next_lap": self._next_lap_num,
+        }
+
+    def reset_state(self):
+        self._reset()
+        self._last_action = 0
+        self._last_key = ""
+
+    def activate_default(self):
+        self._last_action = 0
+        self._last_key = ""
+
+    def restore_state(self, state):
+        laps = state.get("laps", [])
+        if not isinstance(laps, list) or len(laps) > LAP_MAX:
+            raise ValueError("Invalid stopwatch snapshot")
+        restored = []
+        for row in laps:
+            if not isinstance(row, list) or len(row) != 2:
+                raise ValueError("Invalid stopwatch lap")
+            restored.append((int(row[0]), int(row[1])))
+        elapsed = max(0, int(state.get("elapsed", 0)))
+        self._elapsed = elapsed
+        self._running = bool(state.get("running", False))
+        self._paused = bool(state.get("paused", False)) and not self._running
+        self._start_time = (time.ticks_add(time.ticks_ms(), -elapsed)
+                            if self._running else 0)
+        self._laps = restored
+        self._lap_cursor = max(0, int(state.get("cursor", 0)))
+        self._view_offset = max(0, int(state.get("view", 0)))
+        self._next_lap_num = max(1, int(state.get("next_lap", 1)))
+
+    def draw_transition_default(self, display):
+        display.draw_text8x8(62, 2, "00:00:00", gs=15)
+        display.draw_hline(0, 12, self.width, 15)
+        display.draw_text8x8(3, self.height - 9, "ENT start", gs=8)
 
     # ── timer logic ─────────────────────────────────────────────
 

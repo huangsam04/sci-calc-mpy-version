@@ -22,7 +22,10 @@ class DisplayStub:
 
 
 def test_plugin_load_error_is_visible_in_function_panel():
-    panel = FunctionPanel(None)
+    panel = FunctionPanel(
+        None,
+        plugin_functions={"basic": ["%"],
+                          "trig": ["sinh", "cosh", "tanh", "sind"]})
     display = DisplayStub()
 
     panel.set_load_errors([("broken", "boom")])
@@ -31,6 +34,50 @@ def test_plugin_load_error_is_visible_in_function_panel():
     assert any("broken" in text for text in display.text)
     assert any("boom" in text for text in display.text)
     assert any("ENT off" in text for text in display.text)
+
+
+def test_function_panel_restores_choices_only_after_settle(monkeypatch):
+    monkeypatch.setattr(loader, "list_function_files", lambda: [])
+    panel = FunctionPanel(
+        None, settings={"enabled_functions": ["basic", "trig"]})
+    panel._toggled = {"math": True}
+    panel._dirty = True
+    panel.menu.cursor_pos = 2
+    panel.menu.view_offset = 1
+    state = panel.snapshot_state()
+
+    panel.reset_state()
+    panel.activate_default()
+    panel.restore_state(state)
+
+    assert panel.menu.items == []
+    assert panel.settle_step() == 2
+    assert panel.menu.items
+    assert panel.menu.cursor_pos == 2
+    assert panel._toggled == {"math": True}
+
+
+def test_function_panel_reuses_loaded_catalog_without_reexecuting_plugins(
+        monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        loader, "list_function_files",
+        lambda: calls.append("list") or [("solve", "solve.py")])
+    monkeypatch.setattr(
+        loader, "describe_function_files",
+        lambda: (_ for _ in ()).throw(
+            AssertionError("boot must not re-execute plugin source")))
+
+    panel = FunctionPanel(
+        None,
+        settings={"enabled_functions": ["basic", "plugin:solve"]},
+        plugin_functions={"solve": ["solve"]},
+        plugin_dependencies={"solve": ()})
+    panel.activate()
+
+    assert calls == ["list"]
+    assert "[x] Add-on: solve (solve)" in [
+        label for label, _ in panel.menu.items]
 
 
 def test_builtin_groups_and_addons_have_unambiguous_user_labels(monkeypatch):
@@ -45,7 +92,10 @@ def test_builtin_groups_and_addons_have_unambiguous_user_labels(monkeypatch):
     monkeypatch.setattr(
         loader, "describe_function_files",
         lambda: {"basic": ["%"], "trig": ["sinh", "cosh", "tanh", "sind"]})
-    panel = FunctionPanel(None)
+    panel = FunctionPanel(
+        None,
+        plugin_functions={"basic": ["%"],
+                          "trig": ["sinh", "cosh", "tanh", "sind"]})
 
     panel.activate()
 
@@ -66,12 +116,38 @@ def test_function_panel_uses_preloaded_plugin_catalog_during_activation(
         loader, "describe_function_files",
         lambda: calls.append("describe") or {"basic": ["%"]})
 
-    panel = FunctionPanel(None, settings={"enabled_functions": ["basic"]})
+    panel = FunctionPanel(
+        None,
+        settings={"enabled_functions": ["basic"]},
+        plugin_functions={"basic": ["%"]})
 
-    assert calls == ["list", "describe"]
+    assert calls == ["list"]
     panel.activate()
-    assert calls == ["list", "describe"]
+    assert calls == ["list"]
     assert panel._items[-1] == ("plugin:basic", False, False)
+
+
+def test_function_panel_reuses_unchanged_prebuilt_menu_on_activation(
+        monkeypatch):
+    panel = FunctionPanel(None, settings={"enabled_functions": ["basic"]})
+    refreshes = []
+    monkeypatch.setattr(panel, "_refresh", lambda: refreshes.append(True))
+
+    panel.activate()
+
+    assert refreshes == []
+
+
+def test_function_panel_cancels_unchanged_exit(monkeypatch):
+    panel = FunctionPanel(None, settings={"enabled_functions": ["basic"]})
+    panel.activate()
+    saves = []
+    monkeypatch.setattr(panel, "_queue_save", lambda: saves.append(True))
+
+    # (0, 0) is the physical ESC key, so this follows the production menu
+    # key-to-action path rather than faking a menu return value.
+    assert panel.update(None, (0, 0, False)) == "FUNC_PANEL_CANCEL"
+    assert saves == []
 
 
 def test_function_panel_only_rescans_plugins_after_explicit_shift_enter(
@@ -85,6 +161,9 @@ def test_function_panel_only_rescans_plugins_after_explicit_shift_enter(
     monkeypatch.setattr(
         loader, "describe_function_files",
         lambda: calls.append("describe") or dict(descriptions))
+    monkeypatch.setattr(
+        loader, "describe_plugin_dependencies",
+        lambda files=None: calls.append("dependencies") or {})
     panel = FunctionPanel(None, settings={"enabled_functions": ["basic"]})
     panel.activate()
     catalog[:] = [("solve", "solve.py")]
@@ -94,7 +173,7 @@ def test_function_panel_only_rescans_plugins_after_explicit_shift_enter(
 
     panel.update(None, (3, 3, True))
 
-    assert calls == ["list", "describe", "list", "describe"]
+    assert calls == ["list", "list", "describe", "dependencies"]
     assert panel._items[-1] == ("plugin:solve", False, False)
 
     panel.menu.cursor_pos = len(panel._items) - 1
@@ -145,6 +224,21 @@ def test_main_reloads_functions_from_the_shared_in_memory_settings():
     start = source.index('elif result == "FUNC_PANEL_DONE":')
     end = source.index('elif result in ("FUNC_PICKER_DONE"', start)
     handler = source[start:end]
+    helper_start = source.index("def _reload_functions_after_reclaim(")
+    helper_end = source.index("def _draw_crash", helper_start)
+    helper = source[helper_start:helper_end]
+    panel_start = source.index("func_panel = FunctionPanel(")
+    panel_end = source.index("func_panel.set_load_errors", panel_start)
+    panel_init = source[panel_start:panel_end]
 
-    assert "_reload_functions(settings, registry)" in handler
+    assert "nav.go_back()" in handler
+    assert "_function_reload_pending = True" in handler
+    idle = source[source.index("if not active and not had_event"):
+                  source.index("# Leave enough scheduler headroom")]
+    assert "_reload_functions_after_reclaim(" in idle
+    assert "nav, nav.current, settings, registry" in idle
+    assert "func_panel.set_plugin_catalog(" in idle
+    assert "return _reload_functions(settings, registry)" in helper
+    assert "plugin_functions=registry.plugin_functions" in panel_init
+    assert "plugin_dependencies=registry.plugin_dependencies" in panel_init
     assert "load_settings()" not in handler

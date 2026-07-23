@@ -14,12 +14,21 @@ class Cursor(UIElement):
     def set_visible(self, v):
         self.is_visible = v
 
-    def change_target(self, new_x, new_y, duration=CONTROL_MOTION_MS, delay=0):
-        """Animate cursor to a new position."""
+    def change_target(self, new_x, new_y, duration=CONTROL_MOTION_MS, delay=0,
+                      width=None, height=None):
+        """Animate cursor position and optional dimensions to a new target."""
         self.target_x = new_x
         self.target_y = new_y
         insert_animation(self, 'x', self.x, new_x, duration, MOTION_EASING, delay)
         insert_animation(self, 'y', self.y, new_y, duration, MOTION_EASING, delay)
+        if width is not None:
+            self.target_w = width
+            insert_animation(self, 'width', self.width, width,
+                             duration, MOTION_EASING, delay)
+        if height is not None:
+            self.target_h = height
+            insert_animation(self, 'height', self.height, height,
+                             duration, MOTION_EASING, delay)
 
     def draw(self, display):
         if not self.is_visible:

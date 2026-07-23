@@ -10,16 +10,25 @@ from input.keyboard import get_key_label
 from ui.theme import draw_footer
 from ui.error_popup import ErrorPopup
 from ui.motion import PANEL_SLIDE_MS, MOTION_EASING
+from ui.residency import SETTLE_REDRAW
 
 
 # Layout constants
 OVERLAY_H = 14
 HINT_H = 10
 GRAPH_PAD_X = 2
+ROBUST_SAMPLE_LIMIT = 24
+# The curve renderer joins adjacent points, so evaluating every second pixel
+# preserves the visible horizontal resolution while halving evaluator work.
+CURVE_SAMPLE_STEP = 2
 
 
 class PlotScreen(UIElement):
-    def __init__(self, font, small_font=None, registry=None):
+    swap_key = "plot"
+    transition_title = "Plot"
+    requires_plot_workspace = True
+
+    def __init__(self, font, small_font=None, registry=None, memory=None):
         super().__init__(0, 0, 210, 64)
         self.font = font
         self.small_font = small_font or font
@@ -40,12 +49,14 @@ class PlotScreen(UIElement):
         self._overlay_y = -OVERLAY_H
         self.mode = 0
         self.registry = registry
+        self.memory = memory
         self._program = None
         self._program_cache = {}
         self._program_cache_order = []
         self._program_cache_revision = None
         self._eval_vars = {"x": 0.0}
         self._eval_context = EvalContext(self._eval_vars, registry)
+        self._needs_curve_restore = False
 
     def activate(self):
         self.mode = 0
@@ -53,9 +64,96 @@ class PlotScreen(UIElement):
         self.input_box.activate()
         if not self.input_box.get_str() and self.expr:
             self.input_box.set_str(self.expr)
+        if self.expr and self._curve_fb is None:
+            self._render_curve()
 
     def animation_children(self):
-        return (self.input_box,)
+        return (self.input_box, self.error_popup)
+
+    def release_memory(self):
+        """Drop graph/cache objects before Nav returns its workspace to RAM."""
+        released = bool(self._curve_fb or self._program
+                        or self._program_cache or self._program_cache_order)
+        self._curve_fb = None
+        self._curve_buf = None
+        self._program = None
+        self._program_cache.clear()
+        self._program_cache_order = []
+        self._program_cache_revision = None
+        self.error_popup.dismiss()
+        self.input_box.release_memory()
+        return released
+
+    def snapshot_state(self):
+        return {
+            "expr": self.expr,
+            "x_min": self.x_min,
+            "x_max": self.x_max,
+            "y_min": self._y_min,
+            "y_max": self._y_max,
+            "mode": self.mode if self.mode in (0, 1) else 0,
+            "input": self.input_box.get_str(),
+            "input_cursor": self.input_box.cursor_pos,
+        }
+
+    def reset_state(self):
+        self.expr = ""
+        self.x_min = -10.0
+        self.x_max = 10.0
+        self._y_min = -5.0
+        self._y_max = 5.0
+        self.mode = 0
+        self._overlay_y = -OVERLAY_H
+        self._edit_original = ""
+        self.input_box.str = ""
+        self.input_box.cursor_pos = 0
+        self.input_box.view_offset = 0
+        self.input_box._layout_dirty = True
+        self.input_box.cursor.is_visible = False
+        self._needs_curve_restore = False
+        self.error_popup.dismiss()
+
+    def activate_default(self):
+        self.mode = 0
+        self._overlay_y = -OVERLAY_H
+        self.input_box.cursor.is_visible = False
+
+    def restore_state(self, state):
+        expr = state.get("expr", "")
+        input_text = state.get("input", expr)
+        if not isinstance(expr, str) or not isinstance(input_text, str):
+            raise ValueError("Invalid plot snapshot")
+        self.expr = expr
+        self.x_min = float(state.get("x_min", -10.0))
+        self.x_max = float(state.get("x_max", 10.0))
+        self._y_min = float(state.get("y_min", -5.0))
+        self._y_max = float(state.get("y_max", 5.0))
+        if self.x_min >= self.x_max or self._y_min >= self._y_max:
+            raise ValueError("Invalid plot viewport snapshot")
+        self.mode = int(state.get("mode", 0))
+        self.input_box.set_str(input_text)
+        self.input_box.cursor_pos = max(0, min(
+            int(state.get("input_cursor", len(input_text))), len(input_text)))
+        self._overlay_y = 0 if self.mode == 1 else -OVERLAY_H
+        self.input_box.cursor.is_visible = (self.mode == 1)
+        self._needs_curve_restore = bool(self.expr)
+
+    def settle_step(self):
+        if not self._needs_curve_restore:
+            return 0
+        self._needs_curve_restore = False
+        self._render_curve(auto_scale=False)
+        return SETTLE_REDRAW
+
+    def draw_transition_default(self, display):
+        graph_h = self.height - HINT_H
+        display.draw_rectangle(GRAPH_PAD_X - 1, 0,
+                               self.width - GRAPH_PAD_X * 2 + 2,
+                               graph_h, 8)
+        display.draw_hline(GRAPH_PAD_X, graph_h // 2,
+                           self.width - GRAPH_PAD_X * 2, 5)
+        display.draw_vline(self.width // 2, 1, graph_h - 2, 5)
+        display.draw_text8x8(3, self.height - 9, "Loading graph...", gs=8)
 
     # ── zoom / pan ───────────────────────────────────────────────
 
@@ -142,10 +240,29 @@ class PlotScreen(UIElement):
             return 0.0, False, str(e)
 
     def _render_curve(self, auto_scale=True):
-        """Compile and render; optionally derive a fresh visible Y range."""
+        """Render once, reclaiming inactive caches before one retry on pressure."""
+        if (self.memory is not None
+                and self.memory.get_buffer("plot_curve") is None):
+            self.memory.reserve_plot_workspace(self.height)
+        try:
+            return self._render_curve_once(auto_scale)
+        except MemoryError:
+            if self.memory is not None and self.memory.reclaim_for(
+                    self, aggressive=True):
+                try:
+                    return self._render_curve_once(auto_scale)
+                except MemoryError:
+                    pass
+            self._curve_fb = None
+            self.error_popup.show(self.expr, "Graph memory is busy")
+            self.mode = 2
+            return False
+
+    def _render_curve_once(self, auto_scale=True):
+        """Compile and render without retaining a full screen of sample values."""
         if not self.expr.strip():
             self._curve_fb = None
-            return
+            return False
 
         try:
             self._compile_program()
@@ -153,7 +270,7 @@ class PlotScreen(UIElement):
             self._curve_fb = None
             self.error_popup.show(self.expr, error, error.pos)
             self.mode = 2
-            return
+            return False
 
         graph_w = self.width - GRAPH_PAD_X * 2
         graph_left = GRAPH_PAD_X
@@ -161,43 +278,55 @@ class PlotScreen(UIElement):
         graph_h = self.height - HINT_H
         n = graph_right - graph_left + 1
 
-        # ── Pass 1: sample once and derive a robust visible range ──
-        samples = [None] * n
-        valid_values = []
-        first_err = ""
-
-        for px in range(graph_left, graph_right + 1):
-            x_val = self.x_min + (px - graph_left) / graph_w * (self.x_max - self.x_min)
-            y_val, ok, err = self._eval(x_val)
-            if ok and abs(y_val) < 1e6:
-                sample_index = px - graph_left
-                samples[sample_index] = y_val
-                valid_values.append(y_val)
-            elif err and not first_err:
-                first_err = err
-
-        if not valid_values:
-            self._y_min = -1.0
-            self._y_max = 1.0
-            self._curve_fb = None
-            self.error_popup.show(self.expr, first_err or "Cannot evaluate expression")
-            self.mode = 2
-            return
-
         if auto_scale:
-            valid_values.sort()
-            y_min = valid_values[0]
-            y_max = valid_values[-1]
+            # The old implementation retained one Python value per horizontal
+            # pixel, then sorted a second list.  That late 1 KiB+ allocation
+            # is exactly what fragments a full device heap.  Keep only a
+            # bounded evenly-spaced sample for outlier detection, then draw
+            # from a second evaluation pass below.
+            valid_count = 0
+            y_min = y_max = 0.0
+            robust_values = []
+            sample_stride = max(1, n // ROBUST_SAMPLE_LIMIT)
+            first_err = ""
+
+            for index in range(0, n, CURVE_SAMPLE_STEP):
+                x_val = (self.x_min + index / graph_w
+                         * (self.x_max - self.x_min))
+                y_val, ok, err = self._eval(x_val)
+                if ok and abs(y_val) < 1e6:
+                    if valid_count == 0:
+                        y_min = y_val
+                        y_max = y_val
+                    else:
+                        y_min = min(y_min, y_val)
+                        y_max = max(y_max, y_val)
+                    valid_count += 1
+                    if (index % sample_stride == 0
+                            and len(robust_values) < ROBUST_SAMPLE_LIMIT):
+                        robust_values.append(y_val)
+                elif err and not first_err:
+                    first_err = err
+
+            if valid_count == 0:
+                self._y_min = -1.0
+                self._y_max = 1.0
+                self._curve_fb = None
+                self.error_popup.show(
+                    self.expr, first_err or "Cannot evaluate expression")
+                self.mode = 2
+                return False
+
             y_range = y_max - y_min
 
-            # Compare the full extent with the central 90%.  Smooth curves
-            # retain their true extrema, while a few samples next to a pole
-            # cannot flatten everything else on screen.  Trimming needs at
-            # least three samples, otherwise indices fall outside the list.
-            if len(valid_values) > 2:
-                trim = max(1, len(valid_values) // 20)
-                robust_min = valid_values[trim]
-                robust_max = valid_values[-trim - 1]
+            # Compare the full extent with a bounded central sample. Smooth
+            # curves retain their true extrema, while a few samples next to a
+            # pole cannot flatten everything else on screen.
+            if len(robust_values) > 2:
+                robust_values.sort()
+                trim = max(1, len(robust_values) // 10)
+                robust_min = robust_values[trim]
+                robust_max = robust_values[-trim - 1]
                 robust_range = robust_max - robust_min
                 if (robust_range > 1e-10
                         and y_range > robust_range * 4.0):
@@ -211,26 +340,37 @@ class PlotScreen(UIElement):
             self._y_min = y_min - pad
             self._y_max = y_max + pad
 
-        # ── Allocate / reuse curve buffer ──
+        # ── Acquire / reuse the fixed curve workspace ──
         buf_size = ((n + 7) // 8) * graph_h  # MONO_HMSB: 1 bit per pixel
-        if self._curve_buf is None or len(self._curve_buf) < buf_size:
-            self._curve_buf = bytearray(buf_size)
+        if self.memory is not None:
+            curve_buf = self.memory.get_buffer("plot_curve", buf_size)
+            if curve_buf is None:
+                raise MemoryError("Plot workspace was not reserved")
         else:
-            # Zero existing buffer
-            for i in range(buf_size):
-                self._curve_buf[i] = 0
-        self._curve_fb = FrameBuffer(self._curve_buf, n, graph_h, MONO_HMSB)
+            curve_buf = self._curve_buf
+            if curve_buf is None or len(curve_buf) < buf_size:
+                curve_buf = bytearray(buf_size)
 
-        # ── Pass 2: draw the cached samples to the mono buffer ──
+        # A pooled buffer can contain a prior graph after the page released
+        # its FrameBuffer wrapper. Clear it before either reusing or wrapping.
+        for i in range(buf_size):
+            curve_buf[i] = 0
+        if self._curve_buf is not curve_buf or self._curve_fb is None:
+            self._curve_buf = curve_buf
+            self._curve_fb = FrameBuffer(self._curve_buf, n, graph_h, MONO_HMSB)
+
+        # ── Pass 2: evaluate directly into the planned mono buffer ──
         y_range = self._y_max - self._y_min
         prev_px = prev_py = None
-        step = 2  # every 2nd pixel, line segments fill the gap
+        step = CURVE_SAMPLE_STEP  # line segments fill the skipped pixels
 
         for i in range(0, n, step):
-            y_val = samples[i]
+            x_val = (self.x_min + i / graph_w
+                     * (self.x_max - self.x_min))
+            y_val, ok, _ = self._eval(x_val)
             # Values beyond the robust viewport belong to an off-screen
             # branch.  Breaking here also prevents false vertical asymptotes.
-            if (y_val is not None and y_range > 0
+            if (ok and abs(y_val) < 1e6 and y_range > 0
                     and self._y_min <= y_val <= self._y_max):
                 ratio = (y_val - self._y_min) / y_range
                 py = graph_h - 1 - int(ratio * (graph_h - 1))
@@ -244,6 +384,7 @@ class PlotScreen(UIElement):
                 prev_px, prev_py = bx, py
             else:
                 prev_px = prev_py = None
+        return True
 
     # ── drawing ─────────────────────────────────────────────────
 

@@ -1,10 +1,17 @@
 """Consistent, actionable error presentation for calculator screens."""
 import time
 
+from anim.engine import cancel_animations, insert_animation
+from ui.motion import DIALOG_ENTER_MS, MOTION_EASING
 from ui.theme import CONTENT_W, GS_MUTED, fit_text, draw_text
 
 
 ERROR_TIMEOUT_MS = 10_000
+PANEL_X = 5
+PANEL_Y = 4
+PANEL_START_Y = 8
+PANEL_W = CONTENT_W - PANEL_X * 2
+PANEL_H = 56
 
 
 def friendly_error(message):
@@ -56,16 +63,38 @@ class ErrorPopup:
         self.detail = ""
         self.started = 0
         self.active = False
+        self._shade = 0
+        self._panel_y = PANEL_START_Y
 
     def show(self, expr, message, position=None):
+        cancel_animations(self)
         self.expr = str(expr or "")
         self.position = -1 if position is None else max(0, int(position))
         self.title, self.detail = friendly_error(message)
         self.started = time.ticks_ms()
         self.active = True
+        self._shade = 0
+        self._panel_y = PANEL_START_Y
+        insert_animation(self, "_shade", 0, 15,
+                         DIALOG_ENTER_MS, MOTION_EASING)
+        insert_animation(self, "_panel_y", PANEL_START_Y, PANEL_Y,
+                         DIALOG_ENTER_MS, MOTION_EASING)
 
     def dismiss(self):
+        cancel_animations(self)
         self.active = False
+        self._shade = 0
+        self._panel_y = PANEL_START_Y
+
+    def release_memory(self):
+        """Drop retained error strings once the owning page is inactive."""
+        released = bool(self.expr or self.title or self.detail or self.active)
+        self.dismiss()
+        self.expr = ""
+        self.title = ""
+        self.detail = ""
+        self.position = 0
+        return released
 
     def expired(self, now=None):
         if not self.active:
@@ -75,12 +104,16 @@ class ErrorPopup:
         return time.ticks_diff(now, self.started) >= ERROR_TIMEOUT_MS
 
     def draw(self, display):
-        display.fill_rectangle(0, 0, CONTENT_W, 64, 3)
-        display.fill_rectangle(5, 4, CONTENT_W - 10, 56, 0)
-        display.draw_rectangle(5, 4, CONTENT_W - 10, 56, 15)
+        shade = max(0, min(15, int(self._shade)))
+        muted = max(1, shade - 5)
+        panel_y = int(self._panel_y)
+        display.fill_rectangle(0, 0, CONTENT_W, 64, max(1, (shade + 4) // 5))
+        display.fill_rectangle(PANEL_X, panel_y, PANEL_W, PANEL_H, 0)
+        display.draw_rectangle(PANEL_X, panel_y, PANEL_W, PANEL_H,
+                               max(1, shade))
 
         expression = fit_text(self.expr, CONTENT_W - 20, self.font)
-        draw_text(display, 10, 8, expression, self.font)
+        draw_text(display, 10, panel_y + 4, expression, self.font, shade)
         if self.position >= 0:
             prefix = self.expr[:self.position]
             if self.font:
@@ -88,12 +121,14 @@ class ErrorPopup:
             else:
                 caret_x = 10 + len(prefix) * 8
             if caret_x < CONTENT_W - 12:
-                draw_text(display, caret_x, 18, "^", self.font)
+                draw_text(display, caret_x, panel_y + 14, "^", self.font,
+                          shade)
 
-        draw_text(display, 10, 29,
+        draw_text(display, 10, panel_y + 25,
                   fit_text(self.title, CONTENT_W - 20, self.small_font),
-                  self.small_font)
-        draw_text(display, 10, 39,
+                  self.small_font, shade)
+        draw_text(display, 10, panel_y + 35,
                   fit_text(self.detail, CONTENT_W - 20, self.small_font),
-                  self.small_font, GS_MUTED)
-        draw_text(display, 10, 50, "Any key: dismiss", self.small_font, GS_MUTED)
+                  self.small_font, min(GS_MUTED, muted))
+        draw_text(display, 10, panel_y + 46, "Any key: dismiss",
+                  self.small_font, min(GS_MUTED, muted))

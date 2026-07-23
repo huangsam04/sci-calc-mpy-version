@@ -1,6 +1,7 @@
 import pytest
 from pathlib import Path
 
+import main
 from calc import loader
 from calc.functions import EvalContext, FunctionRegistry, build_registry
 from calc.loader import load_function_files
@@ -73,6 +74,33 @@ def test_registry_hot_reload_keeps_plugin_errors_for_ui():
     live.replace(replacement)
 
     assert live.plugin_errors == [("broken", "boom")]
+
+
+def test_reload_releases_live_plugin_callbacks_before_loading_replacements(
+        monkeypatch):
+    live = build_registry(["basic"])
+    live.prefix("old_plugin", lambda value, context: value)
+    live.angle_mode = 1
+    observations = []
+
+    class Report:
+        errors = []
+
+    def load_replacement(registry, enabled_files):
+        observations.append((registry is live, "old_plugin" in registry,
+                             list(enabled_files)))
+        registry.prefix("fresh_plugin", lambda value, context: value)
+        return Report()
+
+    monkeypatch.setattr(loader, "load_function_files", load_replacement)
+
+    assert main._reload_functions(
+        {"enabled_functions": ["basic", "plugin:fresh"]}, live) is live
+
+    assert observations == [(True, False, ["fresh"])]
+    assert "old_plugin" not in live
+    assert "fresh_plugin" in live
+    assert live.angle_mode == 1
 
 
 def test_package_initializers_are_not_listed_as_plugins(tmp_path):

@@ -19,13 +19,25 @@ def _collect(metrics):
 
 
 def _drive_transition(nav, metrics, frame_pace_ms, record=True):
+    rendered = False
     while nav.is_transitioning():
         started = time.ticks_us()
         nav.draw_transition(time.ticks_ms())
+        rendered = True
         if record:
             metrics.record_frame(time.ticks_diff(time.ticks_us(), started))
         if nav.is_transitioning() and frame_pace_ms:
             time.sleep_ms(frame_pace_ms)
+    if not rendered:
+        # Direct fallback is a real navigation path too.  Present it before
+        # asking for optional layers, exactly as the main loop does.
+        started = time.ticks_us()
+        nav.present_current()
+        if record:
+            metrics.record_frame(time.ticks_diff(time.ticks_us(), started))
+    # Plot/function-panel exits release resources intentionally.  Model the
+    # next quiet-loop turn so a later normal page can regain animation.
+    nav.restore_optional_resources()
 
 
 def _emit_report(report, emit):
@@ -73,6 +85,11 @@ def _build_runtime(metrics):
     registry.angle_mode = settings.get("angle_mode", 0)
     metrics.mark_boot("functions")
 
+    # The optional reveal strip is deliberately deferred until a real core frame
+    # exists.  The benchmark mirrors this lifecycle so it cannot hide a boot
+    # regression by reserving large buffers before page construction.
+    nav = Nav(display, font_small, registry)
+
     from screens.about import AboutScreen
     from screens.calculator import CalculatorScreen
     from screens.function_panel import FunctionPanel
@@ -93,18 +110,28 @@ def _build_runtime(metrics):
         on_display_digits_change=calc_screen.set_display_digits)
     func_panel = FunctionPanel(
         font_main, request_settings=persistence.request_settings,
-        settings=settings)
+        settings=settings,
+        plugin_functions=registry.plugin_functions,
+        plugin_dependencies=registry.plugin_dependencies)
     func_panel.set_load_errors(registry.plugin_errors)
     stopwatch = StopwatchScreen(font_main)
-    plot_screen = PlotScreen(font_main, font_small, registry)
+    plot_screen = PlotScreen(font_main, font_small, registry,
+                             memory=nav.memory)
     main_menu = MainMenu(font_main)
     main_menu.add_screen("Calculator", calc_screen)
     main_menu.add_screen("Plot", plot_screen)
     main_menu.add_screen("Function Panel", func_panel)
     main_menu.add_screen("Stopwatch", stopwatch)
     main_menu.add_screen("Settings", settings_screen)
-    nav = Nav(display, font_small, registry)
+    nav.memory.register_fonts((font_main, font_small))
+    nav.register_screens((main_menu, calc_screen, plot_screen, func_panel,
+                          stopwatch, settings_screen, about))
     nav.boot(main_menu)
+    nav.present_current()
+    nav.mark_first_frame_presented()
+    nav.restore_optional_resources()
+    metrics.mark_boot("first_frame")
+    metrics.mark_boot("optional_resources")
     metrics.bind_runtime(
         nav, main_menu,
         (calc_screen, plot_screen, func_panel, stopwatch, settings_screen))

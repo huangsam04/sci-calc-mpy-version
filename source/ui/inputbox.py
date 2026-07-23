@@ -6,6 +6,10 @@ from ui.motion import TEXT_CURSOR_MS
 from input.keyboard import get_key_label
 
 
+UPPER_CONTINUATION_CUE = "^"
+LOWER_CONTINUATION_CUE = "v"
+
+
 class InputBox(UIElement):
     """Editable expression field with a cursor-following text viewport.
 
@@ -52,6 +56,13 @@ class InputBox(UIElement):
 
     def animation_children(self):
         return (self.cursor,)
+
+    def release_memory(self):
+        """Forget only the derived line-layout cache, never the input text."""
+        released = len(self._line_ranges_cache) > 1
+        self._line_ranges_cache = ()
+        self._layout_dirty = True
+        return released
 
     def get_str(self):
         return self.str
@@ -272,11 +283,13 @@ class InputBox(UIElement):
             view_line = self._view_line_index(ranges)
             cue_x = self.x + self.width - 6
             if view_line > 0:
-                display.draw_text(cue_x, self._text_y(0), "^", self.font,
+                display.draw_text(cue_x, self._text_y(0),
+                                  UPPER_CONTINUATION_CUE, self.font,
                                   gs=self.gs, raw=True)
             if view_line + len(visible_ranges) < len(ranges):
                 cue_row = len(visible_ranges) - 1
-                display.draw_text(cue_x, self._text_y(cue_row), "v", self.font,
+                display.draw_text(cue_x, self._text_y(cue_row),
+                                  LOWER_CONTINUATION_CUE, self.font,
                                   gs=self.gs, raw=True)
         self.cursor.draw(display)
 

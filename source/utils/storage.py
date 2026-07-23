@@ -222,15 +222,6 @@ def save_vars(variables):
                               _encode_numbers(variables))
 
 
-def _snapshot(value):
-    """Copy mutable JSON-shaped data before it waits for an idle write slot."""
-    if isinstance(value, dict):
-        return {key: _snapshot(item) for key, item in value.items()}
-    if isinstance(value, list):
-        return [_snapshot(item) for item in value]
-    return value
-
-
 class DeferredStorage:
     """Coalesce persistence requests and commit them only from an idle loop."""
 
@@ -245,11 +236,14 @@ class DeferredStorage:
         self._vars_due = None
 
     def request_settings(self, settings, callback=None):
-        self._settings_pending = (_snapshot(settings), callback)
+        # The single-threaded loop coalesces to the latest live object.  Copying
+        # a nested settings tree here used to compete with the animation that
+        # the same key press had just started; encoding now happens at flush.
+        self._settings_pending = (settings, callback)
         self._settings_due = None
 
     def request_vars(self, variables, callback=None):
-        self._vars_pending = (_snapshot(variables), callback)
+        self._vars_pending = (variables, callback)
         self._vars_due = None
 
     def _flush_pending(self, kind, writer, now):

@@ -206,9 +206,9 @@ cancel_animations(root):
 
 ### 4.2 `Nav` 栈和输入锁
 
-`Nav` 维护页面栈。`go_to(screen)` 先停用旧页、压入新页；`go_back()` 弹出旧页。两者均调用
-`_start_transition(old, new, forward)`：取消旧页动画，激活新页，捕获两层画面，记下起始时刻并
-设置 `_input_locked`。
+`Nav` 维护页面栈，并把页面状态生命周期委托给 `PageResidency` 的 `leave/prepare/settle` 三个
+接口。离页时旧像素继续留在 OLED 显示 RAM，页面核心状态被编码成有界待写记录，派生缓存和
+Plot workspace 随即释放；目标页只激活默认空布局。真实状态和重缓存必须等转场结束后恢复。
 
 ```text
 Nav.filter_event(keyboard, event):
@@ -221,49 +221,49 @@ Nav.filter_event(keyboard, event):
 Nav.draw_transition(now):
     if no transition: return false
     t = clamp((now - started) / 190 ms, 0..1)
-    if t == 1:
-        renderer.present(current)       # 立即呈现实时页，不能等 500 ms 保活
-        transition = None
-    else:
+    if reveal strip is available:
         renderer.present_transition(ease_out_quad(t), forward)
+    else:
+        fade OLED current; present default target only at the dark midpoint
+    if t == 1: transition = None        # 当前仍是目标页的默认空布局
     remember SPI present elapsed time
     return true
 ```
 
-锁定机制保证触发 `ENT`/`ESC` 的按键释放前不会落入新页面。`reset(root)` 用于崩溃恢复：清空
+转场完成后的安静循环调用 `settle_current()`，每次最多执行一项 SWAP 写入、读取或页面重建；
+返回的位标志决定是否重绘和是否还有后续工作。锁定机制保证触发 `ENT`/`ESC` 的按键释放前不会
+落入新页面。`reset(root)` 用于崩溃恢复：清空
 所有动画和转场，将栈替换为根页并锁住输入，避免保留损坏页面状态。
 
-### 4.3 Renderer、状态栏和页面滑动
+### 4.3 Renderer、状态栏和低内存页面揭示
 
-`Renderer` 统一了任何帧的合成与一次 `display.present()`。它在堆上固定分配两个内容层：
-210 px x 64 px x 4 bit，即每层 105 字节/行；不随导航增长。
+`Renderer` 不再为页面保存两张 6.7 KiB GS4 图层。旧页已经存在于 SSD1322 自带显示 RAM；
+新页默认布局只需画入应用原有的 8 KiB 主帧缓冲。转场额外内存是4个控制器列 x 2字节/列 x
+64行，即固定512字节条带，并保留7 KiB启动安全线。旧页释放后仍无法取得条带时，导航改用
+SSD1322 master-current 淡出/淡入；中点电流为零时才提交默认目标页，因此不存在可见硬切。
 
 ```text
 Renderer.present(screen):
     display.clear_buffers(black)
     screen.draw(display)                         # 仅画内容区
-    outgoing_layer = copy(content framebuffer)  # 下次导航可复用
     outgoing_screen = screen
     sidebar.draw(display)                        # 先清除 x >= 210，再重画 BAT/DEG|RAD
     timed display.present()
 
 Renderer.capture_transition(outgoing, incoming):
-    if outgoing_screen is not outgoing:
-        render outgoing into existing outgoing layer
-    render incoming into existing incoming layer
+    ensure 512-byte transition strip
+    keep outgoing pixels untouched in SSD1322 RAM
+    render allocation-bounded incoming default layout into the framebuffer
 
 Renderer.present_transition(progress, forward):
-    distance = even(int(210 * progress))
-    if MicroPython + 256x64:
-        Viper routine逐行拼接 packed GS4 bytes
-    else:
-        blit outgoing/incoming layers to their slide positions
-    erase/redraw sidebar; present once
+    newly_revealed = eased controller columns - already_revealed
+    Viper copy only those packed GS4 rows into the 512-byte strip
+    display.present_region(direction, strip)      # OLED 其余 RAM 保持旧页
 ```
 
-Viper 路径按字节而非逐像素合成，以匹配 GS4 的两个像素/字节；偶数像素量化最多带来不可见的
-一像素差异。侧栏每次都会先清除整个非内容区，避免滑动层污染电池边框。它每 500 ms 读取一次
-ADC，显示电压与注册表的 `RAD`/`DEG`。
+SSD1322 一个控制器列包含 4 个 GS4 像素。Viper 按连续字节复制新增区域，`present_region()` 只为
+该窗口设置列/行地址并发送数据；整段 190 ms 动画合计约写一屏内容，而不是每帧写一屏。侧栏不在
+揭示窗口内，仍每 500 ms 读取一次 ADC 并显示电压与注册表的 `RAD`/`DEG`。
 
 ### 4.4 主循环、渲染门控和崩溃恢复
 
@@ -352,9 +352,13 @@ on any failure:
 `configure_storage()` 仅供宿主测试改写目录。`save_settings()` 和 `save_vars()` 在写之前更新
 内存缓存，写失败也不会丢失当前用户状态。
 
-`DeferredStorage` 让按键逻辑不做 SD I/O：请求时深复制 JSON 型数据，合并同类未写请求；主
-循环空闲时一次最多写 settings 或 vars 一项。失败时保留请求，约 2 秒后重试，并调用回调更新
-UI 的“Not saved - check SD”。
+`DeferredStorage` 让按键逻辑不做 SD I/O，也不再在请求时深复制整棵 JSON 数据；它只保留最新
+对象引用并合并同类请求，编码和写入都发生在无动画的空闲阶段。失败时保留请求，约2秒后重试，
+并调用回调更新 UI 的“Not saved - check SD”。
+
+`SessionSwap` 在 `/sd/.sci-calc/swap` 为每页保存独立、最大4 KiB的会话记录，外层包含魔数、
+版本、UTF-8长度和校验值，并通过 `.tmp/.bak` 原子替换。启动时删除旧会话；文件缺失、损坏或
+SD不可用时，`PageResidency` 只作废当前页记录、显示错误并保留长期 settings/variables。
 
 ### 5.2 OLED 休眠
 
@@ -812,10 +816,10 @@ CPython `compileall`、对所有源码使用 `-march=xtensawin` 编译 `.mpy`。
 
 ### 10.2 实现决策
 
-1. `Renderer.present()` 将当前页内容拷贝进既有 outgoing 缓冲并记住页面。导航若仍是该页，
-   直接复用 outgoing，只同步捕获 incoming，因此不增加帧缓冲，也不在触发按键时重绘两页。
-2. 全页滑动继续使用 `xtensawin` Viper 合成。页面滑动几乎改动整个内容区，而 SSD1322 的四像素
-   列对齐会扩大任何局部矩形；脏矩形比较、缓存和额外 SPI 事务反而会更慢并占堆，故保留全帧写。
+1. `Renderer.present()` 记住 OLED RAM 当前对应的页面。导航时旧页留在面板，新页画到已有主缓冲；
+   不再分配 outgoing/incoming 双层，也不在每个动画帧重绘页面。
+2. 512 字节条带由 `xtensawin` Viper 从主缓冲复制新增列，再用 SSD1322 地址窗口增量写入。整段动画
+   合计约一屏 SPI 数据；7 KiB 门禁、捕获异常回退和串行内存页仍保证压力下安全直切。
 3. FunctionPanel 在构造期加载插件目录/描述，`Shift+ENT` 才显式重扫。这保留运行中换卡的能力，
    同时不让任意插件源码回到普通转场路径。
 4. 字体从设备运行期解析 C 源改为构建期 `.xglcd`；部署以 ABI probe 决定 `.mpy` 或 `.py`，每个
@@ -829,21 +833,25 @@ CPython `compileall`、对所有源码使用 `-march=xtensawin` 编译 `.mpy`。
 
 ### 10.3 最终 COM5 验证
 
-2026-07-23，在已部署 COM5 上预热后的 50 次页面往返结果：
+2026-07-23，在已部署 COM5 上对最终 512 字节条带版本做 200 次页面往返，并另做每页 10 次
+往返的细分监控：
 
 | 指标 | 结果 |
 | --- | ---: |
-| 导航首帧 p95 / 最大值 | 115.817 ms / 147.471 ms |
-| 转场帧 p95 / 最大值 | 28.499 ms / 86.327 ms |
-| GC p95 / 最大值 | 23.747 ms / 23.747 ms |
-| GC 后可用堆变化 | +10,256 字节 |
-| 部署运行时资产 SHA-256 | 55 / 55 一致 |
+| 聚合导航首帧 p95 / 最大值 | 275.849 ms / 275.849 ms |
+| 聚合帧 p95 / 最大值（含直切） | 148.466 ms / 148.466 ms |
+| 动画帧平均 / 最大值 | 5.8 ms / 12.304 ms |
+| 直切帧平均 / 最大值 | 78.750–123.640 ms / 166.024 ms |
+| GC p95 / 最大值 | 22.913 ms / 22.913 ms |
+| 200 次往返 GC 后可用堆变化 | -256 字节 |
+| 细分监控最低空闲堆 / 内存错误 | 4,640 字节 / 0 |
+| 部署运行时资产 SHA-256 | 57 / 57 一致 |
 | 运行时诊断 | `SELFTEST PASS failures=0` |
 
-86.327 ms 的最大帧来自完整帧序列，不是截断样本后的值；它应保留为真实后续优化基线，而不是
-被隐藏。主机验证当时 `check.ps1` 通过：90 项 pytest、CPython 编译和 MicroPython
-`xtensawin` `.mpy` 编译均成功；设备接受 ABI 探针并能导入 `main.mpy`。基准与诊断后执行过设备
-复位，恢复正常应用。
+上表是引入页面级 SWAP 前的2026-07-23实机基线；其中148.466 ms来自当时 FunctionPanel 等
+内存密集页面的直切，不代表当前实现。当前版本已用默认页揭示和低内存淡入淡出替代所有正常
+导航直切，部署后应重新运行逐页监控更新本表。此前动画路径最慢帧仍低于16.7 ms，设备接受
+ABI探针并能导入 `main.mpy`；基准与诊断后执行过设备复位，恢复正常应用。
 
 复现命令：
 
@@ -851,7 +859,8 @@ CPython `compileall`、对所有源码使用 `-march=xtensawin` 编译 `.mpy`。
 .\check.ps1
 .\deploy.ps1 -Port COM5 -Reset
 ..\.venv\python.exe -m mpremote connect COM5 exec `
-  "import sys; sys.path.insert(0,'/sd'); import benchmarks; benchmarks.run(cycles=50)"
+  "import sys; sys.path.insert(0,'/sd'); import benchmarks; benchmarks.run(cycles=200)"
+..\.venv\python.exe -m mpremote connect COM5 run tools\device_runtime_monitor.py
 ..\.venv\python.exe -m mpremote connect COM5 exec `
   "import sys; sys.path.insert(0,'/sd'); import diagnostics; diagnostics.run()"
 ..\.venv\python.exe -m mpremote connect COM5 reset
@@ -859,8 +868,8 @@ CPython `compileall`、对所有源码使用 `-march=xtensawin` 编译 `.mpy`。
 
 ### 10.4 仍然成立的性能边界
 
-- 帧 p95 约 28.5 ms，尚未达到 60 FPS 的 16.7 ms 预算。再优化应先从完整统计定位慢帧，不能
-  仅因表面上想减少传输而恢复脏矩形方案。
+- 页面揭示帧已进入 16.7 ms 预算；后续优化应看逐页 animated/direct 拆分，不能用包含直切页的
+  聚合最高桶判断动画速度。
 - FunctionPanel 热态捕获仍高于其他页，因为它绘制多行较长的插件标签；插件源码执行已移出普通
   导航路径。
 - 该基准是只读合成导航。真实物理按键端到端时延还包含扫描和主循环，应以串口诊断或额外仪表
