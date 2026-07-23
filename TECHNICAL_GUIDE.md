@@ -856,6 +856,9 @@ ABI探针并能导入 `main.mpy`；基准与诊断后执行过设备复位，恢
 
 当前 `device_runtime_monitor.py` 默认在所有目标页间分配500次完整往返，并持续驱动
 `settle_current()`，因此会覆盖 SWAP 编码/读写、FunctionPanel 逐行恢复、Plot 分片计算和曲线渐显。
+脚本只在首帧最大值不超过32 ms、所有动画帧不超过16 ms、每次转场至少12帧、直接切换和
+动画期间 SWAP 事务均为零、固定缓冲集合不变、GC 后堆漂移不超过512 B且无 `MemoryError` 时
+输出 `MONITOR_ACCEPTANCE PASS`；任一条件失败都会抛出异常，不能把旧基线当作当前版本通过证据。
 
 复现命令：
 

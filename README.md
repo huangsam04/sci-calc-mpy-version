@@ -355,8 +355,10 @@ UI 会显示保存失败并每两秒重试。
 1. 有卡、无卡、损坏 `/sd/main.py` 各启动一次，确认恢复界面和串口错误。
 2. 计算、赋值、重启，确认变量持久化；开关插件后再次进入函数选择器。
 3. 快速输入、长按 DEL/ESC、Shift+RPN、Shift+Tab，确认没有重复事件。
-4. 连续往返页面 50 次；启用 `settings.json` 的 `diagnostics` 后检查串口堆内存。
+4. 运行 `tools/device_runtime_monitor.py` 完成500次页面往返；必须看到
+   `MONITOR_ACCEPTANCE PASS`，且包含 Plot、FunctionPanel、SWAP 恢复与曲线渐显。
 5. 运行秒表 30 分钟，并检查绘图、缩放、求解和错误弹窗。
 
 诊断模式每五秒输出平均渲染耗时、present 耗时、空闲堆和活动动画数量。执行
-`gc.collect()` 后，50 次页面往返的空闲堆下降应不超过 4 KiB。
+严格监控要求首个动画帧不超过32 ms、动画帧不超过16 ms、每次转场至少12个可见位置、
+动画期间零 SWAP 事务、无直接切换，且最终 `gc.collect()` 后堆漂移不超过512 B。
