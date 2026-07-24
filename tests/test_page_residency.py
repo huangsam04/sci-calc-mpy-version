@@ -452,6 +452,28 @@ def test_one_page_write_failure_does_not_reset_an_unrelated_page(
     assert first.error == "record write failed"
 
 
+def test_unavailable_sd_resets_current_page_without_invalidating_its_snapshot(
+        tmp_path):
+    swap = SessionSwap(str(tmp_path))
+    swap.start_session()
+    assert swap.write("destination", {"value": "saved"}) is True
+    residency = PageResidency(swap=swap)
+    residency._expected.add("destination")
+    residency._persisted.add("destination")
+    destination = Page("destination", "must reset")
+    swap.available = False
+    swap.last_error = "SD unavailable"
+
+    residency.prepare(destination)
+    _settle_all(residency, destination)
+
+    assert destination.value == ""
+    assert destination.error == "SD unavailable"
+    assert "destination" in residency._expected
+    assert "destination" in residency._persisted
+    assert (tmp_path / "destination.swp").exists()
+
+
 def test_settle_step_failure_is_contained_to_the_active_page(tmp_path):
     class BrokenPage(Page):
         def settle_step(self):

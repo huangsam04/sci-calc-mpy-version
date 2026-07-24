@@ -49,3 +49,27 @@ def test_deferred_storage_defers_snapshot_work_until_idle_flush():
     assert writes == []
     assert storage.flush(100) == ("settings", True)
     assert writes == [{"brightness": 90}]
+
+
+def test_deferred_storage_detaches_disposable_page_callback_but_keeps_data():
+    writes = []
+
+    class Page:
+        def __init__(self):
+            self.results = []
+
+        def on_saved(self, success):
+            self.results.append(success)
+
+    page = Page()
+    storage = DeferredStorage(
+        settings_writer=lambda value: writes.append(value) or True,
+        vars_writer=lambda value: True)
+    settings = {"brightness": 70}
+    storage.request_settings(settings, page.on_saved)
+
+    storage.detach_callbacks(page)
+
+    assert storage.flush(100) == ("settings", True)
+    assert writes == [settings]
+    assert page.results == []

@@ -324,9 +324,9 @@ class Nav:
             self._transition_gc_locked = False
 
     def _start_transition(self, old, new, forward):
-        from anim.engine import cancel_animations
+        from anim.engine import cancel_all_animations
         self._transition_cleanup_pending = False
-        cancel_animations(old)
+        cancel_all_animations()
         # The old pixels already live in controller RAM.  Establish that fact
         # before releasing any Python state, then acquire optional reveal RAM
         # only after the outgoing page and plot workspace are gone.

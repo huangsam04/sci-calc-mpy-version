@@ -246,6 +246,16 @@ class DeferredStorage:
         self._vars_pending = (variables, callback)
         self._vars_due = None
 
+    def detach_callbacks(self, owner):
+        """Keep pending data without retaining a disposable page instance."""
+        for name in ("_settings_pending", "_vars_pending"):
+            pending = getattr(self, name)
+            if pending is None:
+                continue
+            value, callback = pending
+            if getattr(callback, "__self__", None) is owner:
+                setattr(self, name, (value, None))
+
     def _flush_pending(self, kind, writer, now):
         pending_name = "_" + kind + "_pending"
         due_name = "_" + kind + "_due"

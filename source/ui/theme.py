@@ -178,10 +178,12 @@ def draw_page_shell(display, kind, font=None):
         return
     if kind == SHELL_FUNCTION_PICKER:
         _draw_shell_header(display, "Functions", b"Functions", font)
+        display.draw_rectangle(0, 13, CONTENT_W, 40, 15)
         _draw_shell_footer(display)
         return
     if kind == SHELL_VARIABLE_PANEL:
         _draw_shell_header(display, "Variables", b"Variables", font)
+        display.draw_rectangle(0, 13, CONTENT_W, 40, 15)
         _draw_shell_footer(display)
         return
     raise ValueError("Unknown page shell")

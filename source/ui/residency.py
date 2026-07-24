@@ -284,7 +284,6 @@ class PageResidency:
         self._current = None
         self._restore_pending = False
         self._restore_finished = False
-        self._unavailable_error = ""
 
     @staticmethod
     def _key(screen):
@@ -425,8 +424,6 @@ class PageResidency:
             self._persisted.discard(key)
             message = self.swap.last_error or "Page snapshot write failed"
             self._errors[key] = message
-            if not self.swap.available:
-                self._unavailable_error = message
         else:
             self._persisted.add(key)
         return True
@@ -434,13 +431,13 @@ class PageResidency:
     def _reset_with_error(self, screen, key, message,
                           discard_snapshot=True):
         if key:
-            self._expected.discard(key)
-            self._persisted.discard(key)
             if self._pending_key == key:
                 self._pending_key = None
                 self._pending_state = None
                 self._pending_payload = None
             if discard_snapshot:
+                self._expected.discard(key)
+                self._persisted.discard(key)
                 self.swap.discard(key)
         resetter = getattr(screen, "reset_state", None)
         if resetter is not None:
@@ -462,10 +459,11 @@ class PageResidency:
         if self._flush_one():
             return SETTLE_MORE
         key = self._key(screen)
-        if self._unavailable_error:
-            message = self._unavailable_error
-            self._unavailable_error = ""
-            self._reset_with_error(screen, key, message)
+        if (not self.swap.available and self.swap.last_error
+                and not self._restore_finished):
+            self._reset_with_error(
+                screen, key, self.swap.last_error or "SD unavailable",
+                discard_snapshot=False)
             self._restore_pending = False
             self._restore_finished = True
             return SETTLE_REDRAW
@@ -545,7 +543,6 @@ class PageResidency:
         self._pending_key = None
         self._pending_state = None
         self._pending_payload = None
-        self._unavailable_error = ""
         self._dirty_screen = None
         self._current = screen
         self._restore_pending = False

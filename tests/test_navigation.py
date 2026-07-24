@@ -582,7 +582,7 @@ def test_idle_work_rechecks_animations_started_by_page_settlement():
     assert "elif not settling and not active" in idle_work
 
 
-def test_device_monitor_runs_full_residency_lifecycle_for_500_round_trips():
+def test_device_monitor_runs_full_residency_lifecycle_for_ten_round_trips():
     source = (Path(__file__).parents[1] / "tools"
               / "device_runtime_monitor.py").read_text(encoding="utf-8")
 
@@ -596,6 +596,7 @@ def test_device_monitor_runs_full_residency_lifecycle_for_500_round_trips():
     assert "MONITOR_SD_DURING_ANIMATION" in source
     assert "buffers_after != buffers_before" in source
     assert "MONITOR_ACCEPTANCE PASS" in source
+    assert 'if __name__ == "__main__":' in source
 
 
 def test_returning_to_main_menu_preserves_selected_item(monkeypatch, tmp_path):

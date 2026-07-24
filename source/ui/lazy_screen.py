@@ -58,6 +58,11 @@ class ScreenFactory:
     def set_letter_input(self, input_box):
         self._letter_input = input_box
 
+    def detach_screen(self, screen):
+        detacher = getattr(self._deps[4], "detach_callbacks", None)
+        if detacher is not None:
+            detacher(screen)
+
     def release_screen(self, kind):
         name = _SCREEN_MODULES[kind]
         module = sys.modules.get("screens")
@@ -168,8 +173,9 @@ class LazyScreen:
         screen = self._instance
         if screen is None:
             return ()
-        children = getattr(screen, "animation_children", None)
-        return children() if children is not None else ()
+        # Let cancel_animations() visit the disposable page itself first. Its
+        # own animation_children() hook will then expose nested widgets.
+        return (screen,)
 
     def snapshot_state(self):
         screen = self._instance
@@ -217,13 +223,16 @@ class LazyScreen:
         releaser = getattr(screen, "release_memory", None)
         if releaser is not None:
             releaser()
-        self._instance = None
-        self._state = None
         factory = self._spec[3]
         factory_key = self._spec[4]
+        detach_screen = getattr(factory, "detach_screen", None)
+        if detach_screen is not None:
+            detach_screen(screen)
         release_screen = getattr(factory, "release_screen", None)
         if factory_key is not None and release_screen is not None:
             release_screen(factory_key)
+        self._instance = None
+        self._state = None
         return True
 
     def reset_state(self):

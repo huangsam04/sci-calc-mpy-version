@@ -334,3 +334,7 @@ def run(runtime=None):
           + " sd_during_animation=" + str(swap_guard["violations"])
           + " heap_delta=" + str(heap_delta)
           + " buffers=" + ",".join(buffers_after))
+
+
+if __name__ == "__main__":
+    run()

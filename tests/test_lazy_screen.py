@@ -3,6 +3,8 @@ import types
 
 import screens
 
+from anim.engine import (cancel_all_animations, cancel_animations,
+                         insert_animation, is_animating)
 from ui.lazy_screen import (
     BUILD_STOPWATCH, DEFAULT_FUNCTION_PANEL, DEFAULT_FUNCTION_PICKER,
     DEFAULT_LIST, DEFAULT_VARIABLE_PANEL, LazyScreen, ScreenFactory)
@@ -26,6 +28,29 @@ class DisplayStub:
         pass
 
 
+def test_canceling_lazy_page_cancels_animation_targeting_loaded_screen():
+    class RealScreen:
+        value = 0
+
+        def activate_default(self):
+            pass
+
+        def animation_children(self):
+            return ()
+
+    screen = LazyScreen(
+        "page", "Page", DEFAULT_LIST, lambda: RealScreen())
+    screen.settle_step()
+    loaded = screen.loaded()
+    insert_animation(loaded, "value", 0, 10, 100)
+
+    try:
+        cancel_animations(screen)
+        assert is_animating(loaded) is False
+    finally:
+        cancel_all_animations()
+
+
 def test_lazy_list_shells_keep_each_real_page_frame_shape():
     factory = lambda: None
     function_panel = LazyScreen(
@@ -43,8 +68,8 @@ def test_lazy_list_shells_keep_each_real_page_frame_shape():
     variable_panel.draw_transition_default(variable_display)
 
     assert panel_display.rectangles == [(0, 13, 210, 40, 15)]
-    assert picker_display.rectangles == []
-    assert variable_display.rectangles == []
+    assert picker_display.rectangles == [(0, 13, 210, 40, 15)]
+    assert variable_display.rectangles == [(0, 13, 210, 40, 15)]
 
 
 def test_default_page_shell_does_not_construct_the_real_screen():
@@ -141,6 +166,9 @@ def test_release_returns_factory_owned_page_code():
             events.append(("construct", key))
             return RealScreen()
 
+        def detach_screen(self, screen):
+            events.append(("detach", screen.__class__.__name__))
+
         def release_screen(self, key):
             events.append(("unload", key))
 
@@ -149,7 +177,11 @@ def test_release_returns_factory_owned_page_code():
     screen.settle_step()
     screen.release_memory()
 
-    assert events == [("construct", 7), ("unload", 7)]
+    assert events == [
+        ("construct", 7),
+        ("detach", "RealScreen"),
+        ("unload", 7),
+    ]
 
 
 def test_failed_page_construction_unloads_its_imported_module():

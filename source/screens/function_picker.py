@@ -135,6 +135,7 @@ class FunctionPicker(UIElement):
 
     def draw(self, display):
         draw_header(display, "Functions", self.font)
+        display.draw_rectangle(0, 13, self.width, 40, 15)
 
         self._clamp()
         n = len(self._names)
@@ -142,7 +143,7 @@ class FunctionPicker(UIElement):
         visible_rows = (VISIBLE if self._needs_names_restore is None
                         else max(0, self._needs_names_restore))
         for row in range(visible_rows):
-            y = 12 + row * ROW_H
+            y = 15 + row * ROW_H
             # Left column
             li = self._offset + row
             if li < n:
