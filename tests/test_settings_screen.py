@@ -50,7 +50,8 @@ def test_about_opens_from_second_row_and_brightness_queues_persistence():
     about = AboutScreen(None, "1.2.3")
     screen = SettingsScreen(
         None, display, settings, about,
-        request_save=lambda value, callback: queued.append((dict(value), callback)))
+        request_save=lambda value, callback, owner:
+            queued.append((dict(value), callback)))
 
     screen.menu.cursor_pos = 1
     assert screen.update(KeyboardStub(), (3, 3, False)) is about
@@ -70,7 +71,8 @@ def test_display_digits_updates_the_live_formatter_and_is_saved():
     queued = []
     screen = SettingsScreen(
         None, display, settings, AboutScreen(None, "1.2.3"),
-        request_save=lambda value, callback: queued.append((dict(value), callback)),
+        request_save=lambda value, callback, owner:
+            queued.append((dict(value), callback)),
         on_display_digits_change=applied.append)
 
     screen.menu.cursor_pos = 3

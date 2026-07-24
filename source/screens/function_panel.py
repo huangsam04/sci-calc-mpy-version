@@ -367,7 +367,7 @@ class FunctionPanel(UIElement):
         if self._request_settings is None:
             self._save_error = "Not saved - check SD"
             return False
-        self._request_settings(settings, self._on_save_result)
+        self._request_settings(settings, self._on_save_result, self)
         self._dirty = False
         self._save_error = ""
         return True

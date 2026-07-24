@@ -235,15 +235,15 @@ class DeferredStorage:
         self._settings_due = None
         self._vars_due = None
 
-    def request_settings(self, settings, callback=None):
+    def request_settings(self, settings, callback=None, owner=None):
         # The single-threaded loop coalesces to the latest live object.  Copying
         # a nested settings tree here used to compete with the animation that
         # the same key press had just started; encoding now happens at flush.
-        self._settings_pending = (settings, callback)
+        self._settings_pending = (settings, callback, owner)
         self._settings_due = None
 
-    def request_vars(self, variables, callback=None):
-        self._vars_pending = (variables, callback)
+    def request_vars(self, variables, callback=None, owner=None):
+        self._vars_pending = (variables, callback, owner)
         self._vars_due = None
 
     def detach_callbacks(self, owner):
@@ -252,9 +252,9 @@ class DeferredStorage:
             pending = getattr(self, name)
             if pending is None:
                 continue
-            value, callback = pending
-            if getattr(callback, "__self__", None) is owner:
-                setattr(self, name, (value, None))
+            value, callback, callback_owner = pending
+            if callback_owner is owner:
+                setattr(self, name, (value, None, None))
 
     def _flush_pending(self, kind, writer, now):
         pending_name = "_" + kind + "_pending"
@@ -266,7 +266,7 @@ class DeferredStorage:
         if due is not None and time.ticks_diff(now, due) < 0:
             return None
 
-        value, callback = pending
+        value, callback, _owner = pending
         try:
             success = bool(writer(value))
         except Exception:

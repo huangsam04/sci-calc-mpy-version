@@ -429,15 +429,18 @@ class PageResidency:
         return True
 
     def _reset_with_error(self, screen, key, message,
-                          discard_snapshot=True):
+                          discard_snapshot=True, invalidate_snapshot=None):
+        if invalidate_snapshot is None:
+            invalidate_snapshot = discard_snapshot
         if key:
             if self._pending_key == key:
                 self._pending_key = None
                 self._pending_state = None
                 self._pending_payload = None
-            if discard_snapshot:
+            if invalidate_snapshot:
                 self._expected.discard(key)
                 self._persisted.discard(key)
+            if discard_snapshot:
                 self.swap.discard(key)
         resetter = getattr(screen, "reset_state", None)
         if resetter is not None:
@@ -463,7 +466,7 @@ class PageResidency:
                 and not self._restore_finished):
             self._reset_with_error(
                 screen, key, self.swap.last_error or "SD unavailable",
-                discard_snapshot=False)
+                discard_snapshot=False, invalidate_snapshot=True)
             self._restore_pending = False
             self._restore_finished = True
             return SETTLE_REDRAW

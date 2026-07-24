@@ -61,7 +61,8 @@ class SettingsScreen(UIElement):
             self._save_pending = False
             self._save_failed = True
         else:
-            self._request_save(self.settings, self._on_save_result)
+            self._request_save(
+                self.settings, self._on_save_result, self)
 
     def _change_brightness(self, delta, wrap=False):
         value = self._brightness() + delta

@@ -215,7 +215,8 @@ def test_function_panel_queues_shared_settings_when_leaving(monkeypatch):
         "screens.function_panel.load_settings", unexpected_load_settings)
     panel = FunctionPanel(
         None,
-        request_settings=lambda value, callback=None: queued.append(dict(value)),
+        request_settings=lambda value, callback=None, owner=None:
+            queued.append(dict(value)),
         settings=settings)
     panel._items = [("basic", True, True), ("trig", False, True)]
     panel._dirty = True

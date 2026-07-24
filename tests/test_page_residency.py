@@ -452,7 +452,7 @@ def test_one_page_write_failure_does_not_reset_an_unrelated_page(
     assert first.error == "record write failed"
 
 
-def test_unavailable_sd_resets_current_page_without_invalidating_its_snapshot(
+def test_unavailable_sd_invalidates_only_current_page_without_file_io(
         tmp_path):
     swap = SessionSwap(str(tmp_path))
     swap.start_session()
@@ -469,8 +469,8 @@ def test_unavailable_sd_resets_current_page_without_invalidating_its_snapshot(
 
     assert destination.value == ""
     assert destination.error == "SD unavailable"
-    assert "destination" in residency._expected
-    assert "destination" in residency._persisted
+    assert "destination" not in residency._expected
+    assert "destination" not in residency._persisted
     assert (tmp_path / "destination.swp").exists()
 
 

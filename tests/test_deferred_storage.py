@@ -66,7 +66,7 @@ def test_deferred_storage_detaches_disposable_page_callback_but_keeps_data():
         settings_writer=lambda value: writes.append(value) or True,
         vars_writer=lambda value: True)
     settings = {"brightness": 70}
-    storage.request_settings(settings, page.on_saved)
+    storage.request_settings(settings, page.on_saved, page)
 
     storage.detach_callbacks(page)
 
