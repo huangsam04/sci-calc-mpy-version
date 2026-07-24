@@ -9,7 +9,8 @@ from calc.number import (DEFAULT_DISPLAY_DIGITS, MAX_DISPLAY_DIGITS,
                          MIN_DISPLAY_DIGITS, Number, format_number)
 from calc.parser import evaluate, ParseError
 from input.keyboard import get_key_label
-from ui.theme import draw_footer, draw_text, fit_text, text_width
+from ui.theme import (SHELL_CALCULATOR, draw_footer, draw_page_shell,
+                      draw_text, fit_text, text_width)
 from ui.error_popup import ErrorPopup
 from ui.residency import SETTLE_MORE, SETTLE_REDRAW
 from utils.storage import _decode_numbers, _encode_numbers
@@ -107,7 +108,7 @@ class CalculatorScreen(UIElement):
         text = state.get("input", "")
         if not isinstance(text, str):
             raise ValueError("Invalid calculator input snapshot")
-        self.input_box.set_str(text)
+        self.input_box.set_str(text, immediate=True)
         self.input_box.cursor_pos = max(
             0, min(int(state.get("input_cursor", len(text))), len(text)))
         self.input_box.view_offset = max(0, int(state.get("input_view", 0)))
@@ -144,10 +145,7 @@ class CalculatorScreen(UIElement):
         return SETTLE_REDRAW
 
     def draw_transition_default(self, display):
-        display.draw_rectangle(0, 0, self.width, INPUT_SINGLE_H, 15)
-        display.draw_hline(0, INPUT_SINGLE_H + INPUT_DIVIDER_GAP,
-                           self.width, 8)
-        display.draw_text8x8(3, self.height - 9, "ENT calc", gs=8)
+        draw_page_shell(display, SHELL_CALCULATOR, self.font)
 
     def _enter(self):
         expr = self.input_box.get_str().strip()

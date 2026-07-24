@@ -15,6 +15,7 @@ from ui.theme import CONTENT_W
 TRANSITION_STRIP_GROUPS = 4
 TRANSITION_ACTIVE_HEADROOM = 7 * 1024
 TRANSITION_TOTAL_GROUPS = (CONTENT_W + 3) // 4
+TRANSITION_PROGRESS_SCALE = 1024
 
 
 try:
@@ -75,7 +76,7 @@ class Renderer:
         """
         return self.enable_transition_buffers()
 
-    def enable_transition_buffers(self):
+    def enable_transition_buffers(self, allow_collect=True):
         """Try to acquire the fixed reveal strip for this memory phase."""
         self._transition_allocation_enabled = True
         self._transitions_available = True
@@ -83,9 +84,9 @@ class Renderer:
             self._transition_allocation_enabled = False
             self._transitions_available = False
             return False
-        return self._ensure_transition_buffers()
+        return self._ensure_transition_buffers(allow_collect)
 
-    def release_transition_buffers(self):
+    def release_transition_buffers(self, collect=True):
         """Free the optional strip before a memory-intensive operation."""
         had_buffer = self._transition_strip is not None
         self._transition_views = None
@@ -95,11 +96,11 @@ class Renderer:
         self._transition_allocation_enabled = False
         self._transitions_available = True
         released = self.memory.release_buffer("transition_strip")
-        if had_buffer or released:
+        if (had_buffer or released) and collect:
             self.memory.collect()
         return had_buffer or released
 
-    def _ensure_transition_buffers(self):
+    def _ensure_transition_buffers(self, allow_collect=True):
         """Allocate the reveal strip only during an explicit optional phase."""
         if self._transition_strip is not None:
             return True
@@ -110,7 +111,8 @@ class Renderer:
         buffer_length = TRANSITION_STRIP_GROUPS * 2 * self.display.height
         try:
             strip = self.memory.reserve_buffer(
-                "transition_strip", buffer_length, bytearray)
+                "transition_strip", buffer_length, bytearray,
+                retry_collect=allow_collect)
             if strip is None:
                 raise MemoryError()
             base_view = memoryview(strip)
@@ -122,7 +124,8 @@ class Renderer:
             views = None
             base_view = None
             strip = None
-            self.memory.collect()
+            if allow_collect:
+                self.memory.collect()
             self._transitions_available = False
             self._transition_allocation_enabled = False
             return False
@@ -139,9 +142,8 @@ class Renderer:
             self._transition_buffer_length() + TRANSITION_ACTIVE_HEADROOM)
 
     def can_start_transition(self):
-        """Return false before a page reveal would consume unsafe headroom."""
-        return (self._transition_strip is not None
-                and self.memory.has_headroom(TRANSITION_ACTIVE_HEADROOM))
+        """Return whether the already-reserved strip can reveal a page."""
+        return self._transition_strip is not None
 
     def capture_outgoing(self, outgoing):
         """Keep the outgoing page in hardware RAM while preparing the wipe."""
@@ -152,8 +154,10 @@ class Renderer:
 
     def hold_outgoing(self, outgoing):
         """Ensure the old page is in OLED RAM without allocating reveal RAM."""
-        if self._outgoing_screen is not outgoing:
-            self.present(outgoing)
+        # Navigation is only accepted after a canonical frame is visible.
+        # Treat controller RAM as authoritative even if an optional-resource
+        # phase cleared the renderer's bookkeeping reference.
+        self._outgoing_screen = outgoing
         return True
 
     def _draw_minimal_default(self, incoming):
@@ -198,18 +202,18 @@ class Renderer:
         """
         if self._transition_strip is None:
             return False
-        self.display.clear_buffers(0)
+        self.display.fill_rectangle(
+            0, 0, CONTENT_W, self.display.height, 0)
         self._draw_incoming(incoming, default)
-        self._draw_sidebar_safe()
         self._chrome_ready = True
         self._transition_groups_presented = 0
         return True
 
     def present_default(self, incoming):
         """Present a target shell at the dark midpoint of a fade fallback."""
-        self.display.clear_buffers(0)
+        self.display.fill_rectangle(
+            0, 0, CONTENT_W, self.display.height, 0)
         self._draw_incoming(incoming, True)
-        self._draw_sidebar_safe()
         self._chrome_ready = True
         started = time.ticks_us()
         self.display.present()
@@ -239,13 +243,15 @@ class Renderer:
         self._present_composed()
         self._outgoing_screen = screen
 
-    def present_transition(self, eased_progress, forward):
+    def present_transition_progress(self, eased_progress, forward):
         """Reveal only newly exposed controller columns of the incoming UI."""
         target = min(TRANSITION_TOTAL_GROUPS,
-                     int(TRANSITION_TOTAL_GROUPS * eased_progress))
-        if eased_progress >= 1.0:
+                     TRANSITION_TOTAL_GROUPS * eased_progress
+                     // TRANSITION_PROGRESS_SCALE)
+        if eased_progress >= TRANSITION_PROGRESS_SCALE:
             target = TRANSITION_TOTAL_GROUPS
         previous = self._transition_groups_presented
+        target = min(target, previous + TRANSITION_STRIP_GROUPS)
         if target <= previous:
             self.last_present_us = 0
             return
@@ -269,8 +275,15 @@ class Renderer:
             remaining -= groups
         self._transition_groups_presented = target
 
+    def present_transition(self, eased_progress, forward):
+        """Compatibility wrapper for standalone float-based callers."""
+        progress = int(eased_progress * TRANSITION_PROGRESS_SCALE)
+        self.present_transition_progress(progress, forward)
+
     def finish_transition(self, screen, forward):
         """Expose the final columns; the live framebuffer is now canonical."""
-        self.present_transition(1.0, forward)
+        self.present_transition_progress(TRANSITION_PROGRESS_SCALE, forward)
+        if self._transition_groups_presented < TRANSITION_TOTAL_GROUPS:
+            return False
         self._outgoing_screen = screen
         return True

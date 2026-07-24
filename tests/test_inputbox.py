@@ -1,4 +1,5 @@
 from ui.inputbox import InputBox
+from anim import engine
 
 
 class DisplaySpy:
@@ -59,3 +60,12 @@ def test_expression_capacity_is_separate_from_visible_space():
     assert box.insert_str("+") is True
     assert box.insert_str("1") is False
     assert len(box.get_str()) == 96
+
+
+def test_restored_text_can_position_the_cursor_without_animation():
+    engine.cancel_all_animations()
+    box = InputBox(0, 0, 34, 12, 96)
+
+    box.set_str("123", immediate=True)
+
+    assert engine.is_animating(box.cursor) is False

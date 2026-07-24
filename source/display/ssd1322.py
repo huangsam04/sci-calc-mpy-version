@@ -1,9 +1,60 @@
 """MicroPython SSD1322 OLED monochrom display driver."""
+import sys
 from math import cos, sin, pi, radians
+import micropython  # type: ignore
 from micropython import const  # type: ignore
 from framebuf import FrameBuffer, GS8, MONO_HMSB, GS4_HMSB  # type: ignore
 from utime import sleep_ms  # type: ignore
 from display.mono_palette import MonoPalette
+
+
+_HAS_FAST_TEXT_DRAW = sys.implementation.name == "micropython"
+
+
+if _HAS_FAST_TEXT_DRAW:
+    @micropython.viper
+    def _draw_packed_text(target: ptr8, data: ptr8, text: ptr8,
+                          text_length: int, x: int, y: int, stride: int,
+                          shade: int, height: int, byte_height: int,
+                          bytes_per_letter: int, start_letter: int,
+                          end_letter: int, spacing: int) -> int:
+        char_index: int = 0
+        while char_index < text_length:
+            code: int = int(text[char_index])
+            if code < start_letter or code >= end_letter:
+                return 0
+            glyph_offset: int = (code - start_letter) * bytes_per_letter
+            width: int = int(data[glyph_offset])
+            column: int = 0
+            while column < width:
+                chunk: int = 0
+                while chunk < byte_height:
+                    bits: int = int(
+                        data[glyph_offset + 1 + column * byte_height + chunk])
+                    row_base: int = chunk * 8
+                    row_limit: int = height - row_base
+                    if row_limit > 8:
+                        row_limit = 8
+                    row: int = 0
+                    while row < row_limit:
+                        if bits & (1 << row):
+                            pixel_x: int = x + column
+                            output_offset: int = (
+                                (y + row_base + row) * stride
+                                + (pixel_x >> 1))
+                            value: int = int(target[output_offset])
+                            if pixel_x & 1:
+                                target[output_offset] = (
+                                    value & 0xF0) | shade
+                            else:
+                                target[output_offset] = (
+                                    value & 0x0F) | (shade << 4)
+                        row += 1
+                    chunk += 1
+                column += 1
+            x += width + spacing
+            char_index += 1
+        return 1
 
 
 class Display(object):
@@ -627,6 +678,66 @@ class Display(object):
                                         GSMAP[invert])
                 y -= (h + spacing)
 
+    def draw_text_direct(self, x, y, text, font, gs=15, spacing=1):
+        """Draw an XGLCD string directly from its packed source bytes.
+
+        Transition shells use this path while automatic GC is disabled.  It
+        creates neither glyph FrameBuffers nor string-cache entries.
+        """
+        if not text:
+            return
+        data = font.letters
+        target = self.gs4_buf
+        stride = self.byte_width
+        shade = gs & 0x0F
+        height = font.height
+        byte_height = (height + 7) // 8
+        bytes_per_letter = font.bytes_per_letter
+        start_letter = font.start_letter
+        end_letter = start_letter + font.letter_count
+        encoded = isinstance(text, bytes)
+        if encoded and _HAS_FAST_TEXT_DRAW:
+            _draw_packed_text(
+                target, data, text, len(text), x, y, stride, shade, height,
+                byte_height, bytes_per_letter, start_letter, end_letter,
+                spacing)
+            return
+        char_index = 0
+        text_length = len(text)
+        while char_index < text_length:
+            code = text[char_index] if encoded else ord(text[char_index])
+            if code < start_letter or code >= end_letter:
+                return
+            offset = (code - start_letter) * bytes_per_letter
+            width = data[offset]
+            column = 0
+            while column < width:
+                chunk = 0
+                while chunk < byte_height:
+                    bits = data[
+                        offset + 1 + column * byte_height + chunk]
+                    row = 0
+                    row_base = chunk * 8
+                    row_limit = min(8, height - row_base)
+                    while row < row_limit:
+                        if bits & (1 << row):
+                            pixel_x = x + column
+                            offset_out = (
+                                (y + row_base + row) * stride
+                                + (pixel_x >> 1))
+                            value = target[offset_out]
+                            if pixel_x & 1:
+                                target[offset_out] = (
+                                    value & 0xF0) | shade
+                            else:
+                                target[offset_out] = (
+                                    value & 0x0F) | (shade << 4)
+                        row += 1
+                    chunk += 1
+                column += 1
+            x += width + spacing
+            char_index += 1
+
     def draw_text8x8(self, x, y, text, gs=15):
         """Draw text using built-in MicroPython 8x8 bit font.
 
@@ -930,8 +1041,26 @@ class Display(object):
         if column_count <= 0:
             return
         column_end = column_start + column_count - 1
-        self.set_address(column_start, 0, column_end, self.height - 1)
+        offset = 28
+        self._write_cmd2(
+            self.SET_COLUMN_ADDRESS,
+            column_start + offset, column_end + offset)
+        self._write_cmd2(self.SET_ROW_ADDRESS, 0, self.height - 1)
+        self._write_cmd0(self.WRITE_RAM)
         self.write_data(data)
+
+    def _write_cmd0(self, command):
+        self.dc(0)
+        self.cs(0)
+        self._command_byte[0] = command
+        self.spi.write(self._command_byte)
+        self.cs(1)
+
+    def _write_cmd2(self, command, first, second):
+        self._write_cmd0(command)
+        self._command_arg2[0] = first
+        self._command_arg2[1] = second
+        self.write_data(self._command_arg2)
 
     def reset(self):
         """Perform reset."""

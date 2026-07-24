@@ -14,6 +14,10 @@ class SwapError(Exception):
     """A page snapshot is unavailable or cannot be trusted."""
 
 
+class SwapMemoryPressure(Exception):
+    """A valid snapshot could not be decoded with the current free heap."""
+
+
 def _join(directory, filename):
     if directory.endswith("/") or directory.endswith("\\"):
         return directory + filename
@@ -55,8 +59,15 @@ def _payload_metrics(payload):
 
 def _safe_key(key):
     key = str(key)
-    if not key or any(not (char.isalnum() or char in "_-") for char in key):
+    if not key:
         raise ValueError("Invalid page swap key")
+    for char in key:
+        code = ord(char)
+        if not (48 <= code <= 57
+                or 65 <= code <= 90
+                or 97 <= code <= 122
+                or char == "_" or char == "-"):
+            raise ValueError("Invalid page swap key")
     return key
 
 
@@ -217,16 +228,22 @@ class SessionSwap:
         try:
             with open(self._path(key), "r") as source:
                 header = _read_record_header(source)
-                payload = source.read(self.max_snapshot_bytes + 1)
-            parts = header.rstrip("\n").split("|")
-            if (len(parts) != 4
-                    or parts[0] != SWAP_MAGIC
-                    or int(parts[1]) != SWAP_VERSION):
-                raise SwapError("Invalid page snapshot header")
-            expected_size = int(parts[2])
-            expected_checksum = int(parts[3])
+                parts = header.rstrip("\n").split("|")
+                if (len(parts) != 4
+                        or parts[0] != SWAP_MAGIC
+                        or int(parts[1]) != SWAP_VERSION):
+                    raise SwapError("Invalid page snapshot header")
+                expected_size = int(parts[2])
+                expected_checksum = int(parts[3])
+                if (expected_size < 0
+                        or len(header) + expected_size
+                        > self.max_snapshot_bytes):
+                    raise SwapError("Page snapshot is too large")
+                payload = source.read(expected_size)
+                trailing = source.read(1)
             size, checksum = _payload_metrics(payload)
-            if (len(header) + size > self.max_snapshot_bytes
+            if (trailing
+                    or len(header) + size > self.max_snapshot_bytes
                     or size != expected_size
                     or checksum != expected_checksum):
                 raise SwapError("Page snapshot checksum failed")
@@ -235,6 +252,9 @@ class SessionSwap:
                 raise SwapError("Invalid page snapshot payload")
             self.last_error = ""
             return state
+        except MemoryError as error:
+            raise SwapMemoryPressure(
+                str(error) or "Not enough memory to restore page")
         except SwapError:
             self.discard(key)
             raise
@@ -290,15 +310,18 @@ class PageResidency:
         """Pack bounded state and release the outgoing page without file I/O."""
         # A page may be left while its old snapshot is still being restored.
         # Never replace that valid snapshot with the visible default shell.
-        capture_state = not (screen is self._current
-                             and not self._restore_finished)
         key = self._key(screen)
+        capture_state = (
+            not (screen is self._current and not self._restore_finished)
+            and bool(key)
+            and (key not in self._expected
+                 or self._dirty_screen is screen))
         snapshotter = getattr(screen, "snapshot_state", None)
         state = None
         captured = False
         snapshot_error = None
         lifecycle_error = None
-        if capture_state and key and snapshotter is not None:
+        if capture_state and snapshotter is not None:
             try:
                 # Capture logical state before release_memory() drops any
                 # rebuildable objects. Encoding remains bounded and occurs
@@ -314,8 +337,6 @@ class PageResidency:
         except Exception as error:
             released = False
             lifecycle_error = error
-        if released and self.memory is not None:
-            self.memory.collect()
 
         if captured:
             try:
@@ -349,8 +370,15 @@ class PageResidency:
                 if lifecycle_error is None:
                     lifecycle_error = error
         if lifecycle_error is not None and key:
-            self._errors[key] = (
-                str(lifecycle_error) or "Page release failed")
+            self._errors[key] = "Page release failed: " + (
+                str(lifecycle_error) or "unknown error")
+        clearer = getattr(screen, "clear_residency_error", None)
+        if clearer is not None:
+            try:
+                clearer()
+            except Exception:
+                pass
+        return released
 
     def prepare(self, screen):
         """Activate the target in its allocation-bounded default state."""
@@ -366,8 +394,8 @@ class PageResidency:
                 activator()
             except Exception as error:
                 if key:
-                    self._errors[key] = (
-                        str(error) or "Page activation failed")
+                    self._errors[key] = "Page load failed: " + (
+                        str(error) or "activation failed")
                 self._restore_pending = False
 
     def is_restoring(self, screen):
@@ -403,7 +431,8 @@ class PageResidency:
             self._persisted.add(key)
         return True
 
-    def _reset_with_error(self, screen, key, message):
+    def _reset_with_error(self, screen, key, message,
+                          discard_snapshot=True):
         if key:
             self._expected.discard(key)
             self._persisted.discard(key)
@@ -411,7 +440,8 @@ class PageResidency:
                 self._pending_key = None
                 self._pending_state = None
                 self._pending_payload = None
-            self.swap.discard(key)
+            if discard_snapshot:
+                self.swap.discard(key)
         resetter = getattr(screen, "reset_state", None)
         if resetter is not None:
             try:
@@ -470,6 +500,14 @@ class PageResidency:
                 restorer = getattr(screen, "restore_state", None)
                 if restorer is not None:
                     restorer(state)
+            except SwapMemoryPressure as error:
+                self._reset_with_error(
+                    screen, key, "Page load failed: " + (
+                        str(error) or "insufficient memory"),
+                    discard_snapshot=False)
+                self._restore_pending = False
+                self._restore_finished = True
+                return SETTLE_REDRAW
             except Exception as error:
                 self._reset_with_error(screen, key,
                                        str(error) or "Page snapshot read failed")
@@ -493,7 +531,8 @@ class PageResidency:
         except Exception as error:
             self._reset_with_error(
                 screen, self._key(screen),
-                str(error) or "Page restore failed")
+                "Page load failed: " + (
+                    str(error) or "Page restore failed"))
             self._restore_pending = False
             self._restore_finished = True
             return SETTLE_REDRAW

@@ -82,9 +82,12 @@ class UIElement:
     def draw_residency_error(self, display):
         if not self._residency_error:
             return
+        label = ("PAGE ERROR"
+                 if self._residency_error.startswith("Page ")
+                 else "SWAP ERROR")
         display.fill_rectangle(4, 13, max(1, self.width - 8), 38, 0)
         display.draw_rectangle(4, 13, max(1, self.width - 8), 38, 15)
-        display.draw_text8x8(10, 18, "SWAP ERROR", gs=15)
+        display.draw_text8x8(10, 18, label, gs=15)
         display.draw_text8x8(10, 29, self._residency_error[:23], gs=10)
         display.draw_text8x8(10, 40, "Page reset - any key", gs=8)
 

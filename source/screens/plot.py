@@ -8,7 +8,7 @@ from calc.functions import EvalContext
 from calc.number import Number, coerce
 from anim.engine import insert_animation
 from input.keyboard import get_key_label
-from ui.theme import draw_footer
+from ui.theme import SHELL_PLOT, draw_footer, draw_page_shell
 from ui.error_popup import ErrorPopup
 from ui.motion import PANEL_SLIDE_MS, MOTION_EASING
 from ui.residency import SETTLE_MORE, SETTLE_REDRAW
@@ -142,7 +142,7 @@ class PlotScreen(UIElement):
         if self.x_min >= self.x_max or self._y_min >= self._y_max:
             raise ValueError("Invalid plot viewport snapshot")
         self.mode = int(state.get("mode", 0))
-        self.input_box.set_str(input_text)
+        self.input_box.set_str(input_text, immediate=True)
         self.input_box.cursor_pos = max(0, min(
             int(state.get("input_cursor", len(input_text))), len(input_text)))
         self._overlay_y = 0 if self.mode == 1 else -OVERLAY_H
@@ -178,14 +178,7 @@ class PlotScreen(UIElement):
         return SETTLE_REDRAW | SETTLE_MORE
 
     def draw_transition_default(self, display):
-        graph_h = self.height - HINT_H
-        display.draw_rectangle(GRAPH_PAD_X - 1, 0,
-                               self.width - GRAPH_PAD_X * 2 + 2,
-                               graph_h, 8)
-        display.draw_hline(GRAPH_PAD_X, graph_h // 2,
-                           self.width - GRAPH_PAD_X * 2, 5)
-        display.draw_vline(self.width // 2, 1, graph_h - 2, 5)
-        display.draw_text8x8(3, self.height - 9, "Loading graph...", gs=8)
+        draw_page_shell(display, SHELL_PLOT, self.font)
 
     # ── zoom / pan ───────────────────────────────────────────────
 

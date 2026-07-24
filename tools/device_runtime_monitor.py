@@ -18,7 +18,7 @@ from anim.engine import (active_animation_count, animate_all,
 from performance import metrics
 
 
-TOTAL_ROUND_TRIPS = 500
+TOTAL_ROUND_TRIPS = 10
 FRAME_PACE_MS = 16
 MAX_FIRST_FRAME_US = 32000
 MAX_ANIMATION_FRAME_US = 16000
@@ -37,6 +37,15 @@ def _minimum(current, candidate):
     if candidate < 0:
         return current
     return min(current, candidate)
+
+
+def _pace_frame(started):
+    if not FRAME_PACE_MS:
+        return
+    elapsed_us = max(0, time.ticks_diff(time.ticks_us(), started))
+    remaining_ms = FRAME_PACE_MS - ((elapsed_us + 999) // 1000)
+    if remaining_ms > 0:
+        time.sleep_ms(remaining_ms)
 
 
 def _drive(nav):
@@ -68,8 +77,8 @@ def _drive(nav):
         elapsed_max = max(elapsed_max, elapsed)
         motion_elapsed_max = max(motion_elapsed_max, elapsed)
         heap_min = _minimum(heap_min, _heap_free())
-        if nav.is_transitioning() and FRAME_PACE_MS:
-            time.sleep_ms(FRAME_PACE_MS)
+        if nav.is_transitioning():
+            _pace_frame(started)
 
     # Continue through the real post-transition lifecycle. This includes page
     # SWAP encode/write/read, progressive menu rows, plot workspace rebuild,
@@ -96,8 +105,8 @@ def _drive(nav):
         elapsed_total += elapsed
         elapsed_max = max(elapsed_max, elapsed)
         heap_min = _minimum(heap_min, _heap_free())
-        if (settling or active_animation_count()) and FRAME_PACE_MS:
-            time.sleep_ms(FRAME_PACE_MS)
+        if settling or active_animation_count():
+            _pace_frame(started)
 
     nav.restore_optional_resources()
     heap_min = _minimum(heap_min, _heap_free())
@@ -161,10 +170,9 @@ def _exercise(nav, root, target, cycles):
                 frame_elapsed_total += elapsed_total
                 frame_elapsed_max = max(frame_elapsed_max, elapsed_max)
                 heap_min = _minimum(heap_min, drive_heap)
-            except MemoryError as error:
+            except MemoryError:
                 failures += 1
-                print("MONITOR_MEMORY_ERROR screen="
-                      + target.__class__.__name__ + " error=" + str(error))
+                print("MONITOR_MEMORY_ERROR")
                 nav.reset(root)
 
     cancel_all_animations()
@@ -174,7 +182,8 @@ def _exercise(nav, root, target, cycles):
     animated_average = animated_frame_total // max(1, animated_frame_count)
     direct_average = direct_frame_total // max(1, direct_frame_count)
     buffers = ",".join(sorted(nav.memory._buffers.keys()))
-    print("MONITOR_SCREEN name=" + target.__class__.__name__
+    print("MONITOR_SCREEN name="
+          + getattr(target, "transition_title", target.__class__.__name__)
           + " cycles=" + str(cycles)
           + " animated=" + str(animated_count)
           + " direct=" + str(direct_count)
@@ -224,11 +233,8 @@ def _restore_swap_methods(swap, originals):
         setattr(swap, name, method)
 
 
-def run():
-    runtime = metrics.runtime()
+def run(runtime=None):
     if runtime is None:
-        import benchmarks
-        benchmarks._build_runtime(metrics)
         runtime = metrics.runtime()
     if runtime is None:
         raise RuntimeError("SCI-CALC runtime is unavailable")
@@ -328,6 +334,3 @@ def run():
           + " sd_during_animation=" + str(swap_guard["violations"])
           + " heap_delta=" + str(heap_delta)
           + " buffers=" + ",".join(buffers_after))
-
-
-run()

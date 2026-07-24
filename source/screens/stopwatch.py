@@ -2,7 +2,8 @@
 import time
 from ui.element import UIElement
 from input.keyboard import get_key_label
-from ui.theme import draw_footer
+from ui.residency import SETTLE_MORE, SETTLE_REDRAW
+from ui.theme import SHELL_STOPWATCH, draw_footer, draw_page_shell
 
 LAP_H = 9        # row height for lap entries
 LAP_COUNT = 4    # visible lap rows
@@ -26,6 +27,7 @@ class StopwatchScreen(UIElement):
         self._last_action = 0
         self._last_key = ""
         self._next_lap_num = 1   # next lap number to assign
+        self._lap_restore = None
 
     def activate(self):
         self._last_action = 0
@@ -57,11 +59,6 @@ class StopwatchScreen(UIElement):
         laps = state.get("laps", [])
         if not isinstance(laps, list) or len(laps) > LAP_MAX:
             raise ValueError("Invalid stopwatch snapshot")
-        restored = []
-        for row in laps:
-            if not isinstance(row, list) or len(row) != 2:
-                raise ValueError("Invalid stopwatch lap")
-            restored.append((int(row[0]), int(row[1])))
         elapsed = max(0, int(state.get("elapsed", 0)))
         self._elapsed = elapsed
         self._running = bool(state.get("running", False))
@@ -77,15 +74,31 @@ class StopwatchScreen(UIElement):
             self._start_time = time.ticks_add(now, -live_elapsed)
         else:
             self._start_time = 0
-        self._laps = restored
+        self._laps = []
+        self._lap_restore = laps
         self._lap_cursor = max(0, int(state.get("cursor", 0)))
         self._view_offset = max(0, int(state.get("view", 0)))
         self._next_lap_num = max(1, int(state.get("next_lap", 1)))
 
+    def settle_step(self):
+        rows = self._lap_restore
+        if rows is None:
+            return 0
+        index = len(self._laps)
+        if index >= len(rows):
+            self._lap_restore = None
+            return 0
+        row = rows[index]
+        if not isinstance(row, list) or len(row) != 2:
+            raise ValueError("Invalid stopwatch lap")
+        self._laps.append((int(row[0]), int(row[1])))
+        if len(self._laps) < len(rows):
+            return SETTLE_REDRAW | SETTLE_MORE
+        self._lap_restore = None
+        return SETTLE_REDRAW
+
     def draw_transition_default(self, display):
-        display.draw_text8x8(62, 2, "00:00:00", gs=15)
-        display.draw_hline(0, 12, self.width, 15)
-        display.draw_text8x8(3, self.height - 9, "ENT start", gs=8)
+        draw_page_shell(display, SHELL_STOPWATCH, self.font)
 
     # ── timer logic ─────────────────────────────────────────────
 
@@ -111,6 +124,7 @@ class StopwatchScreen(UIElement):
         self._lap_cursor = 0
         self._view_offset = 0
         self._next_lap_num = 1
+        self._lap_restore = None
 
     def _lap(self):
         if self._running:

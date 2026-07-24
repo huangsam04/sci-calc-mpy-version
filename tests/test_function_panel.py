@@ -21,6 +21,22 @@ class DisplayStub:
         pass
 
 
+def test_function_panel_defers_menu_allocation_until_post_animation_settle(
+        monkeypatch):
+    monkeypatch.setattr(loader, "list_function_files", lambda: [])
+    panel = FunctionPanel(
+        None, settings={"enabled_functions": ["basic", "trig"]})
+
+    assert panel._menu is None
+    assert panel._items == []
+
+    panel.activate_default()
+    assert panel._menu is None
+
+    assert panel.settle_step() & 1
+    assert panel._menu is not None
+
+
 def test_plugin_load_error_is_visible_in_function_panel():
     panel = FunctionPanel(
         None,
@@ -131,7 +147,7 @@ def test_function_panel_uses_preloaded_plugin_catalog_during_activation(
     assert panel._items[-1] == ("plugin:basic", False, False)
 
 
-def test_function_panel_reuses_unchanged_prebuilt_menu_on_activation(
+def test_function_panel_builds_deferred_menu_on_direct_activation(
         monkeypatch):
     panel = FunctionPanel(None, settings={"enabled_functions": ["basic"]})
     refreshes = []
@@ -139,7 +155,7 @@ def test_function_panel_reuses_unchanged_prebuilt_menu_on_activation(
 
     panel.activate()
 
-    assert refreshes == []
+    assert refreshes == [True]
 
 
 def test_function_panel_cancels_unchanged_exit(monkeypatch):
@@ -231,9 +247,12 @@ def test_main_reloads_functions_from_the_shared_in_memory_settings():
     helper_start = source.index("def _reload_functions_after_reclaim(")
     helper_end = source.index("def _draw_crash", helper_start)
     helper = source[helper_start:helper_end]
-    panel_start = source.index("func_panel = FunctionPanel(")
-    panel_end = source.index("func_panel.set_load_errors", panel_start)
-    panel_init = source[panel_start:panel_end]
+    factory_source = (
+        Path(__file__).parents[1] / "source" / "ui" / "lazy_screen.py"
+    ).read_text(encoding="utf-8")
+    panel_start = factory_source.index("if kind == BUILD_FUNCTION_PANEL:")
+    panel_end = factory_source.index("if kind == BUILD_STOPWATCH:", panel_start)
+    panel_init = factory_source[panel_start:panel_end]
 
     assert "nav.go_back()" in handler
     assert "_function_reload_pending = True" in handler
@@ -241,8 +260,10 @@ def test_main_reloads_functions_from_the_shared_in_memory_settings():
                   source.index("# Leave enough scheduler headroom")]
     assert "_reload_functions_after_reclaim(" in idle
     assert "nav, nav.current, settings, registry" in idle
-    assert "func_panel.set_plugin_catalog(" in idle
+    assert "loaded_panel.set_plugin_catalog(" in idle
+    assert "loaded_panel = func_panel.loaded()" in idle
     assert "return _reload_functions(settings, registry)" in helper
     assert "plugin_functions=registry.plugin_functions" in panel_init
     assert "plugin_dependencies=registry.plugin_dependencies" in panel_init
+    assert "FunctionPanel(\n                None," in panel_init
     assert "load_settings()" not in handler

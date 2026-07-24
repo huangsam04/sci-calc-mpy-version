@@ -59,7 +59,7 @@ def test_released_optional_buffer_can_be_retried_after_a_previous_failure():
     assert len(memory.reserve_buffer("optional", 32, allocator)) == 32
 
 
-def test_navigation_captures_old_page_then_reclaims_before_new_activation(
+def test_navigation_defers_collection_until_after_the_visible_transition(
         monkeypatch):
     events = []
     collector = CollectSpy()
@@ -68,23 +68,35 @@ def test_navigation_captures_old_page_then_reclaims_before_new_activation(
     nav = main.Nav(object(), None, registry, memory=memory)
     old = Screen("old", events, releases=True)
     new = Screen("new", events)
+    inactive = Screen("inactive", events, releases=True)
     nav.renderer.hold_outgoing = lambda screen: (
         events.append("capture." + screen.name) or True)
     nav.renderer.capture_incoming = lambda screen, default=False: (
         events.append("capture." + screen.name) or True)
     nav.renderer.can_start_transition = lambda: True
+    nav.renderer.finish_transition = lambda screen, forward: True
+    font = type("Font", (), {"_cache": {"old": bytearray(8)}})()
+    memory.register_fonts((font,))
 
     nav.boot(old)
-    nav.register_screens((old, new))
+    nav.register_screens((old, new, inactive))
     events[:] = []
 
     nav.go_to(new)
 
     assert events == [
-        "capture.old", "old.release", "old.deactivate", "new.activate",
-        "capture.new",
+        "capture.old", "old.release", "old.deactivate",
+        "inactive.release", "new.activate", "capture.new",
     ]
+    assert collector.collects == 0
+    assert font._cache
+
+    started = nav._transition[0]
+    nav.draw_transition(main.time.ticks_add(started, main.TRANSITION_MS))
+    nav.settle_current()
+
     assert collector.collects == 1
+    assert font._cache == {}
 
 
 def test_function_reload_reclaims_inactive_pages_before_plugin_compilation(
@@ -146,6 +158,37 @@ def test_plot_navigation_releases_old_page_and_defers_workspace_until_settle(
     assert "plot.workspace" not in events
     assert events.index("old.release") < events.index("plot.activate")
     assert events.index("plot.activate") < events.index("plot.default")
+
+
+def test_plot_settle_releases_reveal_strip_before_workspace_restore(
+        monkeypatch):
+    events = []
+    memory = MemoryManager()
+    registry = type("Registry", (), {"angle_mode": 0})()
+    nav = main.Nav(type("Display", (), {"height": 64})(), None, registry,
+                   memory=memory)
+    old = Screen("old", events)
+    plot = Screen("plot", events)
+    plot.requires_plot_workspace = True
+    nav.boot(old)
+    nav.register_screens((old, plot))
+    nav.renderer.hold_outgoing = lambda screen: True
+    nav.renderer.can_start_transition = lambda: True
+    nav.renderer.capture_incoming = lambda screen, default=False: True
+    nav.renderer.finish_transition = lambda screen, forward: True
+    nav.renderer.release_transition_buffers = lambda: (
+        events.append("transition.release") or True)
+    monkeypatch.setattr(
+        nav.residency, "settle",
+        lambda screen: events.append("page.settle") or 0)
+
+    nav.go_to(plot)
+    started = nav._transition[0]
+    nav.draw_transition(main.time.ticks_add(started, main.TRANSITION_MS))
+    nav.settle_current()
+
+    assert events.index("transition.release") < events.index("page.settle")
+    assert events[-1] == "page.settle"
 
 
 def test_memory_intensive_operation_releases_layers_before_reclaim(monkeypatch):

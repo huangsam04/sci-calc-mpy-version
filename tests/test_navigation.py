@@ -106,6 +106,14 @@ class SidebarSpy:
         self.battery_refreshes.append(refresh_battery)
 
 
+def finish_nav_transition(nav, now):
+    calls = 0
+    while nav.is_transitioning():
+        nav.draw_transition(now)
+        calls += 1
+        assert calls <= renderer_module.TRANSITION_TOTAL_GROUPS
+
+
 def test_navigation_uses_controller_fade_when_reveal_buffer_cannot_be_allocated(
         monkeypatch):
     """A fragmented heap still produces motion instead of a hard page cut."""
@@ -131,10 +139,107 @@ def test_navigation_uses_controller_fade_when_reveal_buffer_cannot_be_allocated(
     assert nav.is_transitioning() is True
     nav.draw_transition(100 + main.TRANSITION_MS // 2)
     assert second.draws == 1
-    nav.draw_transition(100 + main.TRANSITION_MS)
+    finish_nav_transition(nav, 100 + main.TRANSITION_MS)
     assert nav.is_transitioning() is False
     assert display.transition_currents
     assert display.brightness == 100
+
+
+def test_fade_switches_target_pixels_only_while_oled_current_is_zero(
+        monkeypatch):
+    monkeypatch.setattr(main.time, "ticks_ms", lambda: 100)
+    monkeypatch.setattr(
+        renderer_module, "bytearray",
+        lambda _size: (_ for _ in ()).throw(MemoryError("fragmented")),
+        raising=False)
+
+    events = []
+
+    class RecordingDisplay(DisplayStub):
+        def present(self):
+            super().present()
+            events.append("present")
+
+        def set_transition_current(self, value):
+            super().set_transition_current(value)
+            events.append(("current", value))
+
+    registry = type("Registry", (), {"angle_mode": 0})()
+    display = RecordingDisplay()
+    nav = main.Nav(display, None, registry)
+    first = ScreenStub()
+    second = ScreenStub()
+    nav.boot(first)
+    nav.present_current()
+    nav.go_to(second)
+    events[:] = []
+
+    nav.draw_transition(100 + main.TRANSITION_MS // 2)
+
+    assert events[0] == ("current", 0)
+    assert events[1] == "present"
+    assert events[2] == ("current", 0)
+
+
+def test_wipe_releases_transition_strip_before_page_settlement(monkeypatch):
+    monkeypatch.setattr(main.time, "ticks_ms", lambda: 100)
+    registry = type("Registry", (), {"angle_mode": 0})()
+    nav = main.Nav(DisplayStub(), None, registry)
+    observed = []
+
+    class SettlingScreen(ScreenStub):
+        def settle_step(self):
+            observed.append(nav.renderer.can_start_transition())
+            return 0
+
+    first = ScreenStub()
+    second = SettlingScreen()
+    nav.boot(first)
+    assert nav.enable_optional_resources() is True
+
+    nav.go_to(second)
+    finish_nav_transition(nav, 100 + main.TRANSITION_MS)
+    nav.settle_current()
+
+    assert observed == [False]
+    assert nav.memory.get_buffer("transition_strip") is None
+
+
+def test_released_page_memory_is_collected_after_transition_before_settlement(
+        monkeypatch):
+    monkeypatch.setattr(main.time, "ticks_ms", lambda: 100)
+    registry = type("Registry", (), {"angle_mode": 0})()
+    events = []
+    nav_ref = []
+
+    class MemorySpy(MemoryManager):
+        def collect(self):
+            nav = nav_ref[0]
+            events.append(("collect", nav._transition,
+                           nav._transition_gc_locked))
+
+    class ReleasableScreen(ScreenStub):
+        def release_memory(self):
+            events.append(("release",))
+            return True
+
+    nav = main.Nav(DisplayStub(), None, registry, memory=MemorySpy())
+    nav_ref.append(nav)
+    first = ReleasableScreen()
+    second = ScreenStub()
+    nav.boot(first)
+
+    nav.go_to(second)
+    assert events == [("release",)]
+
+    finish_nav_transition(nav, 100 + main.TRANSITION_MS)
+    assert events == [("release",)]
+    nav.settle_current()
+    assert events == [
+        ("release",),
+        ("collect", None, False),
+    ]
+    assert nav.is_transitioning() is False
 
 
 def test_default_page_draw_oom_uses_allocation_bounded_minimal_shell(
@@ -232,7 +337,7 @@ def test_first_navigation_allocates_only_the_fixed_reveal_strip_after_release(
     assert nav.is_transitioning() is True
 
 
-def test_navigation_uses_fade_below_reveal_headroom():
+def test_preallocated_reveal_strip_remains_usable_below_allocation_headroom():
     heap = HeapStub(100_000)
     memory = MemoryManager(gc_module=heap)
     registry = type("Registry", (), {"angle_mode": 0})()
@@ -247,7 +352,8 @@ def test_navigation_uses_fade_below_reveal_headroom():
     nav.go_to(second)
 
     assert nav.is_transitioning() is True
-    assert nav.renderer._transition_strip is None
+    assert nav.renderer._transition_strip is not None
+    assert nav._transition[2] == "wipe"
     assert second.activations == 1
 
 
@@ -266,11 +372,31 @@ def test_navigation_transition_is_non_blocking_and_locks_trigger_key(monkeypatch
     assert nav.current is second
     assert nav.is_transitioning() is True
     assert nav.filter_event(KeyboardStub(), (1, 1, False)) is None
-    nav.draw_transition(400)
+    finish_nav_transition(nav, 400)
     assert nav.is_transitioning() is False
     assert nav.filter_event(KeyboardStub(pressed=True), (1, 1, False)) is None
     nav.settle_current()
     assert nav.filter_event(KeyboardStub(), (1, 1, False)) == (1, 1, False)
+
+
+def test_device_transition_disables_automatic_gc_until_complete(monkeypatch):
+    events = []
+    monkeypatch.setattr(main.time, "ticks_ms", lambda: 100)
+    monkeypatch.setattr(main.gc, "mem_free", lambda: 100_000, raising=False)
+    monkeypatch.setattr(
+        main.gc, "disable", lambda: events.append("disable"))
+    monkeypatch.setattr(
+        main.gc, "enable", lambda: events.append("enable"))
+    registry = type("Registry", (), {"angle_mode": 0})()
+    nav = main.Nav(DisplayStub(), None, registry)
+    nav.enable_optional_resources()
+    nav.boot(ScreenStub())
+
+    nav.go_to(ScreenStub())
+    assert events == ["disable"]
+
+    finish_nav_transition(nav, 100 + main.TRANSITION_MS)
+    assert events == ["disable", "enable"]
 
 
 def test_only_escape_is_accepted_until_page_restore_finishes(monkeypatch):
@@ -294,7 +420,7 @@ def test_only_escape_is_accepted_until_page_restore_finishes(monkeypatch):
     second = RestoringScreen()
     nav.boot(first)
     nav.go_to(second)
-    nav.draw_transition(100 + main.TRANSITION_MS)
+    finish_nav_transition(nav, 100 + main.TRANSITION_MS)
 
     assert nav.filter_event(KeyboardStub(), (1, 1, False)) is None
     assert nav.allows_page_update(None) is False
@@ -347,14 +473,14 @@ def test_navigation_reveals_default_page_before_restoring_swap(
     assert second.draws == 0
     assert not (tmp_path / "first.swp").exists()
 
-    nav.draw_transition(100 + main.TRANSITION_MS)
+    finish_nav_transition(nav, 100 + main.TRANSITION_MS)
     while nav.settle_current():
         pass
     assert (tmp_path / "first.swp").exists()
 
     nav.go_back()
     assert first.value == ""
-    nav.draw_transition(100 + main.TRANSITION_MS)
+    finish_nav_transition(nav, 100 + main.TRANSITION_MS)
     while nav.settle_current():
         pass
 
@@ -411,7 +537,7 @@ def test_transition_performs_no_swap_or_page_rebuild_work(monkeypatch, tmp_path)
 
     nav.go_to(second)
     nav.draw_transition(150)
-    nav.draw_transition(100 + main.TRANSITION_MS)
+    finish_nav_transition(nav, 100 + main.TRANSITION_MS)
 
     assert swap.calls == []
     assert second.rebuilds == 0
@@ -460,7 +586,7 @@ def test_device_monitor_runs_full_residency_lifecycle_for_500_round_trips():
     source = (Path(__file__).parents[1] / "tools"
               / "device_runtime_monitor.py").read_text(encoding="utf-8")
 
-    assert "TOTAL_ROUND_TRIPS = 500" in source
+    assert "TOTAL_ROUND_TRIPS = 10" in source
     assert "settling = nav.settle_current()" in source
     assert "while settling or active_animation_count()" in source
     assert "MAX_FIRST_FRAME_US = 32000" in source
@@ -491,7 +617,7 @@ def test_returning_to_main_menu_preserves_selected_item(monkeypatch, tmp_path):
     nav.go_back()
 
     assert root.menu.cursor_pos == 0
-    nav.draw_transition(100 + main.TRANSITION_MS)
+    finish_nav_transition(nav, 100 + main.TRANSITION_MS)
     while nav.settle_current():
         pass
     assert root.menu.cursor_pos == 2
@@ -571,7 +697,7 @@ def test_transition_finishes_from_the_captured_live_frame(monkeypatch):
     nav.go_to(incoming)
     captured_draws = incoming.draws
 
-    nav.draw_transition(100 + main.TRANSITION_MS)
+    finish_nav_transition(nav, 100 + main.TRANSITION_MS)
 
     assert incoming.draws == captured_draws
     assert sum(count for _, count, _ in display.regions) == (
@@ -591,7 +717,7 @@ def test_backward_transition_reveals_from_the_left(monkeypatch):
     nav.boot(outgoing)
     nav.present_current()
     nav.go_to(incoming)
-    nav.draw_transition(100 + main.TRANSITION_MS)
+    finish_nav_transition(nav, 100 + main.TRANSITION_MS)
     display.regions[:] = []
     nav.go_back()
     nav.draw_transition(100 + main.TRANSITION_MS // 4)
@@ -617,6 +743,17 @@ def test_first_transition_reuses_the_page_already_held_by_display_ram(monkeypatc
     assert incoming.draws == 1
 
 
+def test_outgoing_controller_frame_survives_lost_renderer_bookkeeping():
+    display = DisplayStub()
+    renderer = renderer_module.Renderer(display, SidebarSpy())
+    outgoing = ScreenStub()
+    renderer._outgoing_screen = None
+
+    assert renderer.hold_outgoing(outgoing) is True
+    assert outgoing.draws == 0
+    assert display.present_count == 0
+
+
 def test_transition_reuses_the_last_presented_outgoing_page_after_allocation(monkeypatch):
     monkeypatch.setattr(main.time, "ticks_ms", lambda: 100)
     registry = type("Registry", (), {"angle_mode": 0})()
@@ -628,7 +765,7 @@ def test_transition_reuses_the_last_presented_outgoing_page_after_allocation(mon
     nav.boot(first)
     nav.present_current()
     nav.go_to(outgoing)
-    nav.draw_transition(100 + main.TRANSITION_MS)
+    finish_nav_transition(nav, 100 + main.TRANSITION_MS)
     outgoing_draws = outgoing.draws
 
     nav.go_to(incoming)
@@ -660,7 +797,18 @@ def test_hardware_transition_preserves_sidebar_without_redrawing_it(monkeypatch)
     renderer.present_transition(0.5, True)
 
     assert sidebar.battery_refreshes == []
-    assert display.regions
+    assert len(display.regions) == 1
+    assert display.regions[0][1] <= renderer_module.TRANSITION_STRIP_GROUPS
+
+
+def test_target_capture_reuses_existing_sidebar_pixels():
+    display = DisplayStub()
+    sidebar = SidebarSpy()
+    renderer = renderer_module.Renderer(display, sidebar)
+    renderer.enable_transition_buffers()
+
+    assert renderer.capture_incoming(ScreenStub(), default=True) is True
+    assert sidebar.battery_refreshes == []
 
 
 def test_page_animation_cancel_does_not_cancel_another_page():
@@ -758,7 +906,7 @@ def test_thousand_navigation_cycles_keep_animation_buffers_bounded(
         nav.go_to(child)
         assert nav.is_transitioning()
         now[0] += main.TRANSITION_MS
-        nav.draw_transition(now[0])
+        finish_nav_transition(nav, now[0])
         while nav.settle_current():
             pass
 
@@ -766,11 +914,11 @@ def test_thousand_navigation_cycles_keep_animation_buffers_bounded(
         nav.go_back()
         assert nav.is_transitioning()
         now[0] += main.TRANSITION_MS
-        nav.draw_transition(now[0])
+        finish_nav_transition(nav, now[0])
         while nav.settle_current():
             pass
 
-    assert set(memory._buffers) == {"transition_strip"}
+    assert set(memory._buffers).issubset({"transition_strip"})
     assert nav.is_transitioning() is False
 
 

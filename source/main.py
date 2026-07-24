@@ -21,6 +21,7 @@ SPI_CS = 5
 SPI_DC = 16
 SPI_RESET = 17
 TRANSITION_MS = PAGE_TRANSITION_MS
+TRANSITION_PROGRESS_SCALE = 1024
 BOOT_PROGRESS_FRAMES = 1
 BOOT_FINAL_HOLD_MS = 40
 
@@ -237,13 +238,14 @@ class Nav:
         self.residency = residency or PageResidency(memory=self.memory)
         self.stack = []
         self._transition = None
+        self._transition_cleanup_pending = False
+        self._post_transition_collect = False
+        self._transition_gc_locked = False
         self._fade_switched = False
         self._fade_brightness = 100
         self._input_locked = False
         self._optional_resources_pending = False
         self.last_present_us = 0
-        from anim.engine import easing_out_quad
-        self._transition_easing = easing_out_quad
 
     def boot(self, screen):
         """Set root screen (no transition)."""
@@ -309,8 +311,21 @@ class Nav:
     def _requires_plot_workspace(self, screen):
         return bool(getattr(screen, "requires_plot_workspace", False))
 
+    def _lock_transition_gc(self):
+        if (hasattr(gc, "mem_free")
+                and hasattr(gc, "disable")
+                and not self._transition_gc_locked):
+            gc.disable()
+            self._transition_gc_locked = True
+
+    def _unlock_transition_gc(self):
+        if self._transition_gc_locked:
+            gc.enable()
+            self._transition_gc_locked = False
+
     def _start_transition(self, old, new, forward):
         from anim.engine import cancel_animations
+        self._transition_cleanup_pending = False
         cancel_animations(old)
         # The old pixels already live in controller RAM.  Establish that fact
         # before releasing any Python state, then acquire optional reveal RAM
@@ -321,15 +336,21 @@ class Nav:
             # The last presented page is still a valid outgoing visual.
             pass
 
-        self.residency.leave(old)
-        self.memory.reclaim_for(new, exclude=(old,))
+        released = self.residency.leave(old)
+        released = (self.memory.reclaim_for(
+            new, exclude=(old,), collect=False) or released)
         if self._requires_plot_workspace(old):
             if self.memory.release_plot_workspace():
-                self.memory.collect()
+                released = True
+        # Integer-only transition frames stay within the live heap until the
+        # wipe completes. Reclaim released page/module objects immediately
+        # afterward, before SWAP restore or target-page construction.
+        self._post_transition_collect = True
+        self._lock_transition_gc()
         self.residency.prepare(new)
 
         if not self.renderer.can_start_transition():
-            self.renderer.enable_transition_buffers()
+            self.renderer.enable_transition_buffers(allow_collect=False)
 
         captured = False
         if self.renderer.can_start_transition():
@@ -341,7 +362,7 @@ class Nav:
         self._input_locked = True
         started = time.ticks_ms()
         if not captured:
-            self.renderer.release_transition_buffers()
+            self.renderer.release_transition_buffers(collect=False)
             self._optional_resources_pending = True
             self._fade_switched = False
             self._fade_brightness = getattr(
@@ -382,40 +403,51 @@ class Nav:
             return False
         started, forward, kind = self._transition
         elapsed = max(0, time.ticks_diff(now, started))
-        t = min(1.0, elapsed / TRANSITION_MS)
+        progress = min(
+            TRANSITION_PROGRESS_SCALE,
+            elapsed * TRANSITION_PROGRESS_SCALE // TRANSITION_MS)
         if kind == "fade":
-            half = 0.5
+            half = TRANSITION_PROGRESS_SCALE // 2
             maximum = max(1, min(15,
                 (int(self._fade_brightness) * 15 + 50) // 100))
-            if t < half:
-                level = int(maximum * (1.0 - t / half))
+            setter = getattr(self.renderer.display,
+                             "set_transition_current", None)
+            if progress < half:
+                level = maximum * (half - progress) // half
             else:
                 if not self._fade_switched:
+                    if setter is not None:
+                        setter(0)
                     self.renderer.present_default(self.current)
                     self._fade_switched = True
                     self.last_present_us = self.renderer.last_present_us
-                level = int(maximum * ((t - half) / half))
-            setter = getattr(self.renderer.display,
-                             "set_transition_current", None)
+                level = maximum * (progress - half) // half
             if setter is not None:
                 setter(level)
-            if t >= 1.0:
+            if progress >= TRANSITION_PROGRESS_SCALE:
                 restore = getattr(self.renderer.display, "set_brightness", None)
                 if restore is not None:
                     restore(self._fade_brightness)
+                self._transition_cleanup_pending = False
                 self._transition = None
+                self._unlock_transition_gc()
             return True
-        if t >= 1.0:
-            # Finish on the same canonical composition used by an idle frame.
-            # This prevents a stale captured page/chrome frame from lingering
-            # until the 500 ms keepalive refresh.
+        if progress >= TRANSITION_PROGRESS_SCALE:
+            # A delayed loop never catches up by issuing several OLED writes
+            # in one frame. Keep the transition live until one fixed strip per
+            # frame has exposed the complete default page.
             if not self.renderer.finish_transition(self.current, forward):
-                self.renderer.present(self.current)
+                self.last_present_us = self.renderer.last_present_us
+                return True
             self.last_present_us = self.renderer.last_present_us
+            self._transition_cleanup_pending = True
             self._transition = None
+            self._unlock_transition_gc()
             return True
-        eased = self._transition_easing(t)
-        self.renderer.present_transition(eased, forward)
+        remaining = TRANSITION_PROGRESS_SCALE - progress
+        eased = (TRANSITION_PROGRESS_SCALE
+                 - remaining * remaining // TRANSITION_PROGRESS_SCALE)
+        self.renderer.present_transition_progress(eased, forward)
         self.last_present_us = self.renderer.last_present_us
         return True
 
@@ -428,6 +460,16 @@ class Nav:
         from ui.residency import SETTLE_MORE, SETTLE_REDRAW
         if self._transition is not None:
             return False
+        if self._transition_cleanup_pending:
+            self._transition_cleanup_pending = False
+            self.memory.release_font_caches()
+            if not self.renderer.release_transition_buffers():
+                self.memory.collect()
+            self._post_transition_collect = False
+        elif self._post_transition_collect:
+            self._post_transition_collect = False
+            self.memory.release_font_caches()
+            self.memory.collect()
         flags = self.residency.settle(self.current)
         if flags & SETTLE_REDRAW:
             self.present_current()
@@ -437,7 +479,10 @@ class Nav:
         """Recover to one root page without retaining failed UI state."""
         from anim.engine import cancel_all_animations
         cancel_all_animations()
+        self._unlock_transition_gc()
         self._transition = None
+        self._transition_cleanup_pending = False
+        self._post_transition_collect = False
         self._input_locked = True
         self._optional_resources_pending = False
         self.renderer.release_transition_buffers()
@@ -539,14 +584,14 @@ def main():
     try:
         from screens.main_menu import MainMenu
         from screens.calculator import CalculatorScreen
-        from screens.function_panel import FunctionPanel
-        from screens.stopwatch import StopwatchScreen
-        from screens.about import AboutScreen
-        from screens.settings import SettingsScreen
-        from screens.letter_panel import LetterPanel
-        from screens.function_picker import FunctionPicker
-        from screens.variable_panel import VariablePanel
-        from screens.plot import PlotScreen
+        from ui.lazy_screen import (
+            BUILD_ABOUT, BUILD_FUNCTION_PANEL, BUILD_FUNCTION_PICKER,
+            BUILD_LETTERS, BUILD_PLOT, BUILD_SETTINGS, BUILD_STOPWATCH,
+            BUILD_VARIABLE_PANEL,
+            DEFAULT_ABOUT, DEFAULT_FUNCTION_PANEL, DEFAULT_FUNCTION_PICKER,
+            DEFAULT_LETTERS, DEFAULT_PLOT, DEFAULT_SETTINGS,
+            DEFAULT_STOPWATCH, DEFAULT_VARIABLE_PANEL, LazyScreen,
+            ScreenFactory)
         _boot_progress(display, 7, 8, "Building interface...")
     except Exception as e:
         _boot_fail(display, 7, 8, "Screens", e)
@@ -557,26 +602,41 @@ def main():
     try:
         from utils.storage import DeferredStorage
         persistence = DeferredStorage()
-        about = AboutScreen(font_main, VERSION)
         calc_screen = CalculatorScreen(
             font_main, font_small, registry, vars_dict,
             display_digits=settings.get("display_digits", 4))
-        settings_screen = SettingsScreen(
-            font_main, display, settings, about,
-            request_save=persistence.request_settings,
-            on_display_digits_change=calc_screen.set_display_digits)
-        func_panel = FunctionPanel(
-            font_main, request_settings=persistence.request_settings,
-            settings=settings,
-            plugin_functions=registry.plugin_functions,
-            plugin_dependencies=registry.plugin_dependencies)
-        func_panel.set_load_errors(registry.plugin_errors)
-        stopwatch = StopwatchScreen(font_main)
-        letter_panel = LetterPanel(font_main, calc_screen.input_box)
-        func_picker = FunctionPicker(font_main, calc_screen)
-        var_panel = VariablePanel(font_main, calc_screen)
-        plot_screen = PlotScreen(font_main, font_small, registry,
-                                 memory=nav.memory)
+        screen_factory = ScreenFactory(
+            font_main, font_small, display, settings, persistence,
+            calc_screen, registry, nav.memory)
+
+        about = LazyScreen(
+            "about", "About", DEFAULT_ABOUT,
+            screen_factory, BUILD_ABOUT, font=font_main)
+        screen_factory.set_about(about)
+        settings_screen = LazyScreen(
+            "settings", "Settings", DEFAULT_SETTINGS,
+            screen_factory, BUILD_SETTINGS, font=font_main)
+
+        func_panel = LazyScreen(
+            "function_panel", "Functions", DEFAULT_FUNCTION_PANEL,
+            screen_factory, BUILD_FUNCTION_PANEL)
+        stopwatch = LazyScreen(
+            "stopwatch", "Stopwatch", DEFAULT_STOPWATCH,
+            screen_factory, BUILD_STOPWATCH, font=font_main)
+        letter_panel = LazyScreen(
+            "letter_panel", "Letters", DEFAULT_LETTERS,
+            screen_factory, BUILD_LETTERS, font=font_main)
+        func_picker = LazyScreen(
+            "function_picker", "Functions", DEFAULT_FUNCTION_PICKER,
+            screen_factory, BUILD_FUNCTION_PICKER, font=font_main)
+        var_panel = LazyScreen(
+            "variable_panel", "Variables", DEFAULT_VARIABLE_PANEL,
+            screen_factory, BUILD_VARIABLE_PANEL, font=font_main)
+        plot_screen = LazyScreen(
+            "plot", "Plot", DEFAULT_PLOT,
+            screen_factory, BUILD_PLOT,
+            requires_plot_workspace=True,
+            font=font_main)
 
         main_menu = MainMenu(font_main)
         main_menu.add_screen("Calculator", calc_screen)
@@ -665,11 +725,16 @@ def main():
                       + " key=" + get_key_label(event[0], event[1], event[2]))
             if not nav.is_transitioning() and event is not None:
                 erow, ecol, eshift = event
-                if (erow, ecol) == (3, 5) and eshift and cur in (calc_screen, plot_screen):
-                    letter_panel.input_box = cur.input_box
-                    nav.go_to(letter_panel)
-                    cur = nav.current
-                    event = None
+                if ((erow, ecol) == (3, 5) and eshift
+                        and (cur is calc_screen or cur is plot_screen)):
+                    input_box = (calc_screen.input_box
+                                 if cur is calc_screen
+                                 else plot_screen.get_loaded_attr("input_box"))
+                    if input_box is not None:
+                        screen_factory.set_letter_input(input_box)
+                        nav.go_to(letter_panel)
+                        cur = nav.current
+                        event = None
                 elif (erow, ecol) == (4, 4):
                     registry.angle_mode = 1 - registry.angle_mode
                     settings["angle_mode"] = registry.angle_mode
@@ -679,7 +744,14 @@ def main():
                     and nav.allows_page_update(event)
                     and (event is not None or kb.is_pressed(0, 0) or kb.is_pressed(4, 3))):
                 result = cur.update(kb, event)
-                nav.residency.mark_dirty(cur)
+                navigation_results = (
+                    "BACK", "FUNC_PANEL_DONE", "FUNC_PANEL_CANCEL",
+                    "FUNC_PICKER_DONE", "LETTER_DONE", "VAR_PANEL_DONE",
+                    "FUNC_PICKER", "VARIABLE_PANEL")
+                if (result not in navigation_results
+                        and not isinstance(result, UIElement)
+                        and not isinstance(result, LazyScreen)):
+                    nav.residency.mark_dirty(cur)
                 if diagnostics and result is not None:
                     print("ACTION page=" + cur.__class__.__name__
                           + " result=" + str(result))
@@ -700,7 +772,9 @@ def main():
                 nav.go_to(func_picker)
             elif result == "VARIABLE_PANEL":
                 nav.go_to(var_panel)
-            elif isinstance(result, UIElement) and result is not cur:
+            elif ((isinstance(result, UIElement)
+                   or isinstance(result, LazyScreen))
+                  and result is not cur):
                 nav.go_to(result)
 
             cur = nav.current
@@ -710,7 +784,8 @@ def main():
             active = nav.is_transitioning() or has_active_animations()
             needs_render = _needs_render(
                 now, _last_render, active, _dirty,
-                cur is stopwatch and stopwatch._running,
+                (cur is stopwatch
+                 and stopwatch.get_loaded_attr("_running", False)),
                 had_event or result is not None)
 
             if needs_render:
@@ -761,10 +836,12 @@ def main():
                 if not settling and not active and _function_reload_pending:
                     _reload_functions_after_reclaim(
                         nav, nav.current, settings, registry)
-                    func_panel.set_plugin_catalog(
-                        registry.plugin_functions,
-                        registry.plugin_dependencies)
-                    func_panel.set_load_errors(registry.plugin_errors)
+                    loaded_panel = func_panel.loaded()
+                    if loaded_panel is not None:
+                        loaded_panel.set_plugin_catalog(
+                            registry.plugin_functions,
+                            registry.plugin_dependencies)
+                        loaded_panel.set_load_errors(registry.plugin_errors)
                     _function_reload_pending = False
                     _dirty = True
                 elif not settling and not active:

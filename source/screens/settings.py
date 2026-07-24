@@ -2,7 +2,8 @@
 from input.keyboard import get_key_label
 from ui.element import UIElement
 from ui.menu import Menu
-from ui.theme import draw_footer, draw_header
+from ui.theme import (SHELL_SETTINGS, draw_footer, draw_header,
+                      draw_page_shell)
 from version import VERSION
 from calc.number import (DEFAULT_DISPLAY_DIGITS, MAX_DISPLAY_DIGITS,
                          MIN_DISPLAY_DIGITS)
@@ -129,11 +130,7 @@ class SettingsScreen(UIElement):
         self.menu.activate()
 
     def draw_transition_default(self, display):
-        display.draw_text8x8(4, 2, "Settings", gs=15)
-        display.draw_hline(2, 11, self.width - 4, 8)
-        labels = ("Version", "About", "Brightness", "Display digits")
-        for index, label in enumerate(labels):
-            display.draw_text8x8(6, 15 + index * 10, label, gs=10)
+        draw_page_shell(display, SHELL_SETTINGS, self.font)
 
     def draw(self, display):
         draw_header(display, "Settings", self.font)

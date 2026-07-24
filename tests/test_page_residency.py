@@ -3,9 +3,10 @@ import json
 import pytest
 
 from ui.residency import (PageResidency, SETTLE_MORE, SETTLE_REDRAW,
-                          SessionSwap, SwapError)
+                          SessionSwap, SwapError, SwapMemoryPressure)
 from ui import residency as residency_module
 from calc.functions import build_registry
+from screens.about import AboutScreen
 from screens.calculator import CalculatorScreen
 from screens.plot import PlotScreen
 from screens.settings import SettingsScreen
@@ -33,6 +34,14 @@ def test_session_swap_round_trips_one_page_and_rejects_wrong_checksum(tmp_path):
     with pytest.raises(SwapError):
         swap.read("calculator")
     assert not path.exists()
+
+
+def test_session_swap_keys_are_portable_ascii(tmp_path):
+    swap = SessionSwap(str(tmp_path))
+    swap.start_session()
+
+    assert swap.write("plot_1-x", {"mode": 1}) is True
+    assert swap.write("绘图", {"mode": 1}) is False
 
 
 def test_session_swap_rejects_unknown_version_and_discards_only_that_record(
@@ -63,7 +72,36 @@ def test_session_swap_rejects_truncated_record(tmp_path):
     with pytest.raises(SwapError):
         swap.read("truncated")
 
+
+def test_session_swap_rejects_declared_oversize_before_payload_read(tmp_path):
+    swap = SessionSwap(str(tmp_path), max_snapshot_bytes=256)
+    swap.start_session()
+    path = tmp_path / "oversize.swp"
+    path.write_text(
+        "SCI-CALC-PAGE|1|4097|1\n{}", encoding="utf-8")
+
+    with pytest.raises(SwapError, match="too large"):
+        swap.read("oversize")
     assert not path.exists()
+
+    assert not path.exists()
+
+
+def test_session_swap_memory_pressure_preserves_a_valid_record(
+        monkeypatch, tmp_path):
+    swap = SessionSwap(str(tmp_path))
+    swap.start_session()
+    assert swap.write("plot", {"value": "saved"}) is True
+    path = tmp_path / "plot.swp"
+
+    def fail_decode(_payload):
+        raise MemoryError("decode pressure")
+
+    monkeypatch.setattr(residency_module.json, "loads", fail_decode)
+
+    with pytest.raises(SwapMemoryPressure, match="decode pressure"):
+        swap.read("plot")
+    assert path.exists()
 
 
 def test_start_session_clears_only_page_swap_records(tmp_path):
@@ -171,6 +209,9 @@ class Page:
     def show_residency_error(self, message):
         self.error = message
 
+    def clear_residency_error(self):
+        self.error = ""
+
 
 def _settle_all(residency, page):
     flags = SETTLE_MORE
@@ -206,6 +247,39 @@ def test_page_residency_releases_before_default_view_and_restores_after_settle(
     assert _settle_all(residency, first) is True
     assert first.value == "kept on disk"
     assert first.events[-2:] == ["restore", "settle"]
+
+
+def test_leaving_a_page_clears_only_its_displayed_error(tmp_path):
+    residency = PageResidency(SessionSwap(str(tmp_path)))
+    page = Page("page")
+    page.error = "old error"
+    residency.recover(page)
+
+    residency.leave(page)
+
+    assert page.error == ""
+
+
+def test_restore_memory_pressure_resets_only_the_page_without_deleting_record(
+        monkeypatch, tmp_path):
+    swap = SessionSwap(str(tmp_path))
+    swap.start_session()
+    assert swap.write("page", {"value": "saved"}) is True
+    path = tmp_path / "page.swp"
+    residency = PageResidency(swap=swap)
+    page = Page("page", "stale")
+    residency._expected.add("page")
+
+    def fail_decode(_payload):
+        raise MemoryError("decode pressure")
+
+    monkeypatch.setattr(residency_module.json, "loads", fail_decode)
+    residency.prepare(page)
+
+    assert residency.settle(page) == SETTLE_REDRAW
+    assert page.value == ""
+    assert page.error == "Page load failed: decode pressure"
+    assert path.exists()
 
 
 def test_corrupt_snapshot_resets_only_the_page_being_opened(tmp_path):
@@ -315,6 +389,30 @@ def test_only_one_bounded_packed_write_is_retained_in_ram(tmp_path):
     assert "second" not in residency._expected
 
 
+def test_unchanged_page_reuses_its_existing_snapshot(monkeypatch, tmp_path):
+    swap = SessionSwap(str(tmp_path))
+    swap.start_session()
+    writes = []
+    write_packed = swap.write_packed
+    monkeypatch.setattr(
+        swap, "write_packed",
+        lambda key, payload: (
+            writes.append(key) or write_packed(key, payload)))
+    residency = PageResidency(swap=swap)
+    page = Page("page", "saved")
+    destination = Page("destination")
+
+    residency.leave(page)
+    residency.prepare(destination)
+    _settle_all(residency, destination)
+    residency.prepare(page)
+    _settle_all(residency, page)
+    residency.leave(page)
+
+    assert writes == ["page"]
+    assert residency._pending_key is None
+
+
 def test_immediate_back_keeps_the_outgoing_page_pending_snapshot(tmp_path):
     swap = SessionSwap(str(tmp_path))
     swap.start_session()
@@ -369,7 +467,7 @@ def test_settle_step_failure_is_contained_to_the_active_page(tmp_path):
 
     assert flags == SETTLE_REDRAW
     assert page.value == ""
-    assert page.error == "invalid restored state"
+    assert page.error == "Page load failed: invalid restored state"
 
 
 def test_leave_lifecycle_failure_is_deferred_to_only_that_page(tmp_path):
@@ -393,7 +491,7 @@ def test_leave_lifecycle_failure_is_deferred_to_only_that_page(tmp_path):
 
     residency.prepare(broken)
     _settle_all(residency, broken)
-    assert broken.error == "injected release failure"
+    assert broken.error == "Page release failed: injected release failure"
 
 
 def test_prepare_failure_is_reported_after_default_transition(tmp_path):
@@ -412,7 +510,7 @@ def test_prepare_failure_is_reported_after_default_transition(tmp_path):
 
     assert flags == SETTLE_REDRAW
     assert page.value == ""
-    assert page.error == "injected activation failure"
+    assert page.error == "Page load failed: injected activation failure"
 
 
 def test_dirty_page_snapshot_is_encoded_and_written_only_during_settle(
@@ -457,12 +555,78 @@ def test_running_stopwatch_counts_time_spent_outside_the_page(monkeypatch):
     assert stopwatch._get_elapsed() == 3000
 
 
+def test_stopwatch_restores_laps_one_row_per_settle_step():
+    stopwatch = StopwatchScreen(None)
+    stopwatch.restore_state({
+        "elapsed": 1234,
+        "laps": [[3, 300], [2, 200], [1, 100]],
+        "cursor": 0,
+        "view": 0,
+        "next_lap": 4,
+    })
+
+    assert stopwatch._laps == []
+    assert stopwatch.settle_step() == SETTLE_REDRAW | SETTLE_MORE
+    assert stopwatch._laps == [(3, 300)]
+    assert stopwatch.settle_step() == SETTLE_REDRAW | SETTLE_MORE
+    assert stopwatch._laps == [(3, 300), (2, 200)]
+    assert stopwatch.settle_step() == SETTLE_REDRAW
+    assert stopwatch._laps == [(3, 300), (2, 200), (1, 100)]
+
+
+def test_picker_and_variable_rows_are_revealed_progressively():
+    calculator = CalculatorScreen(None, registry=build_registry(), variables={})
+    picker = FunctionPicker(None, calculator)
+    picker.activate_default()
+    picker.restore_state({"cursor": 0, "offset": 0})
+
+    assert picker.settle_step() == SETTLE_MORE
+    assert picker._needs_names_restore == 0
+    for expected in range(1, 4):
+        assert picker.settle_step() == SETTLE_REDRAW | SETTLE_MORE
+        assert picker._needs_names_restore == expected
+    assert picker.settle_step() == SETTLE_REDRAW
+    assert picker._needs_names_restore is None
+
+    for index in range(8):
+        calculator.vars["v" + str(index)] = index
+    variables = VariablePanel(None, calculator)
+    variables.activate_default()
+    variables.restore_state({"cursor": 0, "offset": 0})
+
+    assert variables.settle_step() == SETTLE_MORE
+    assert variables._needs_names_restore == 0
+    for expected in range(1, 4):
+        assert variables.settle_step() == SETTLE_REDRAW | SETTLE_MORE
+        assert variables._needs_names_restore == expected
+    assert variables.settle_step() == SETTLE_REDRAW
+    assert variables._needs_names_restore is None
+
+
+def test_about_details_are_added_one_line_per_settle_step():
+    about = AboutScreen(None)
+    about.activate_default()
+
+    assert about._visible_lines == 1
+    for expected in range(2, 7):
+        assert about.settle_step() == SETTLE_REDRAW | SETTLE_MORE
+        assert about._visible_lines == expected
+    assert about.settle_step() == SETTLE_REDRAW
+    assert about._visible_lines == 7
+
+
 class DefaultFrameDisplay:
     def __init__(self):
         self.text = []
 
     def draw_text8x8(self, x, y, value, **kwargs):
         self.text.append(value)
+
+    def draw_text(self, x, y, value, font, **kwargs):
+        self.text.append(value)
+
+    def fill_rectangle(self, *args):
+        pass
 
     def draw_rectangle(self, *args):
         pass
@@ -472,6 +636,85 @@ class DefaultFrameDisplay:
 
     def draw_vline(self, *args):
         pass
+
+    def draw_pixel(self, *args):
+        pass
+
+
+class PageStructureDisplay(DefaultFrameDisplay):
+    def __init__(self):
+        super().__init__()
+        self.structure = []
+
+    def draw_rectangle(self, *args):
+        self.structure.append(("rectangle",) + args)
+
+    def draw_hline(self, *args):
+        self.structure.append(("hline",) + args)
+
+    def draw_vline(self, *args):
+        self.structure.append(("vline",) + args)
+
+    def draw_pixel(self, *args):
+        self.structure.append(("pixel",) + args)
+
+
+def _page_structure(page, default):
+    display = PageStructureDisplay()
+    if default:
+        page.draw_transition_default(display)
+    else:
+        page.draw(display)
+    return display.structure
+
+
+def test_transition_shells_match_the_real_default_page_geometry():
+    calculator = CalculatorScreen(None, registry=build_registry(), variables={})
+    plot = PlotScreen(None, registry=build_registry())
+    stopwatch = StopwatchScreen(None)
+    settings = SettingsScreen(
+        None, type("Display", (), {})(), {}, object())
+    function_panel = FunctionPanel(None, settings={"enabled_functions": []})
+    function_picker = FunctionPicker(None, calculator)
+    variable_panel = VariablePanel(None, calculator)
+    letter_panel = LetterPanel(None, calculator.input_box)
+    about = AboutScreen(None)
+    main_menu = MainMenu(None)
+    main_menu.add_screen("Calculator", calculator)
+
+    for page in (
+            calculator, plot, stopwatch, settings, function_panel,
+            function_picker, variable_panel, letter_panel, about, main_menu):
+        assert _page_structure(page, True) == _page_structure(page, False)
+
+
+def test_main_menu_transition_shell_keeps_the_frame_and_hides_items():
+    calculator = CalculatorScreen(None, registry=build_registry(), variables={})
+    main_menu = MainMenu(None)
+    main_menu.add_screen("Calculator", calculator)
+    display = PageStructureDisplay()
+
+    main_menu.draw_transition_default(display)
+
+    assert display.text == ["SCI-CALC"]
+    assert display.structure == [
+        ("hline", 0, 11, 210, 8),
+        ("rectangle", 0, 13, 210, 48, 15),
+    ]
+
+
+def test_settings_shell_keeps_item_names_but_hides_current_values():
+    settings = SettingsScreen(
+        None, type("Display", (), {})(),
+        {"brightness": 70, "display_digits": 9}, object())
+    display = DefaultFrameDisplay()
+
+    settings.draw_transition_default(display)
+
+    assert display.text == [
+        "Settings", "Version", "About", "Brightness", "Display digits"]
+    assert "70" not in " ".join(display.text)
+    assert "9" not in " ".join(display.text)
 
 
 def test_transition_default_frames_never_include_saved_data_or_parameters():

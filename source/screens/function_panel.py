@@ -2,7 +2,8 @@
 from ui.element import UIElement
 from ui.menu import Menu
 from utils.storage import load_settings
-from ui.theme import draw_footer, draw_header
+from ui.theme import (SHELL_FUNCTION_PANEL, draw_footer, draw_header,
+                      draw_page_shell)
 from ui.residency import SETTLE_MORE, SETTLE_REDRAW
 
 
@@ -16,7 +17,7 @@ class FunctionPanel(UIElement):
         self.font = font
         self._request_settings = request_settings
         self._settings = settings
-        self.menu = Menu(0, 13, 210, 4, 10, font)
+        self._menu = None
         self._items = []       # list of (name, is_on, is_group)
         self._toggled = {}     # Unsaved choices retained while rebuilding labels.
         self._dirty = False
@@ -39,12 +40,12 @@ class FunctionPanel(UIElement):
         # metadata comes from the live registry's first load; recompiling
         # add-ons here used to create a second peak that could freeze splash.
         self._load_plugin_catalog()
-        # The production app shares its already-loaded settings object.  Build
-        # its static labels while the startup screen is still visible, so the
-        # first page transition does not do repeated text measurement work.
-        # Keep the no-settings path lazy for standalone diagnostics/tests.
-        if self._settings is not None:
-            self._refresh()
+
+    @property
+    def menu(self):
+        if self._menu is None:
+            self._menu = Menu(0, 13, 210, 4, 10, self.font)
+        return self._menu
 
     def _load_plugin_catalog(self):
         """List add-ons without compiling their source during startup."""
@@ -95,26 +96,27 @@ class FunctionPanel(UIElement):
         self.menu.activate()
 
     def animation_children(self):
-        return (self.menu,)
+        return (self._menu,) if self._menu is not None else ()
 
     def release_memory(self):
         """Discard rebuildable menu labels without rescanning plug-in source."""
         if self._dirty or self._load_error or not self._menu_built:
             return False
-        self.menu.clear_items()
+        self._menu = None
         self._items = []
         self._menu_built = False
         return True
 
     def snapshot_state(self):
+        menu = self._menu
         toggled = {}
         for name, enabled in self._toggled.items():
             if len(toggled) >= 64:
                 break
             toggled[str(name)] = bool(enabled)
         return {
-            "cursor": self.menu.cursor_pos,
-            "view": self.menu.view_offset,
+            "cursor": menu.cursor_pos if menu is not None else 0,
+            "view": menu.view_offset if menu is not None else 0,
             "toggled": toggled,
             "dirty": bool(self._dirty),
             "load_error": self._load_error[:64],
@@ -122,9 +124,7 @@ class FunctionPanel(UIElement):
         }
 
     def reset_state(self):
-        self.menu.clear_items()
-        self.menu.cursor_pos = 0
-        self.menu.view_offset = 0
+        self._menu = None
         self._items = []
         self._toggled = {}
         self._dirty = False
@@ -139,12 +139,9 @@ class FunctionPanel(UIElement):
         self._restore_plugin_index = 0
 
     def activate_default(self):
-        self.menu.clear_items()
+        self._menu = None
         self._items = []
         self._menu_built = False
-        self.menu.cursor_pos = 0
-        self.menu.view_offset = 0
-        self.menu.activate()
         self._needs_menu_restore = True
         self._restore_group_index = 0
         self._restore_plugin_index = 0
@@ -218,10 +215,7 @@ class FunctionPanel(UIElement):
         return False
 
     def draw_transition_default(self, display):
-        display.draw_text8x8(4, 2, "Functions", gs=15)
-        display.draw_hline(2, 11, self.width - 4, 8)
-        display.draw_rectangle(0, 13, self.width, 40, 15)
-        display.draw_text8x8(4, self.height - 9, "Loading functions...", gs=8)
+        draw_page_shell(display, SHELL_FUNCTION_PANEL)
 
     def deactivate(self):
         if self._dirty:
@@ -237,6 +231,8 @@ class FunctionPanel(UIElement):
             self._load_error_detail = ""
 
     def _focus_load_error(self):
+        if self._menu is None:
+            return False
         target = "plugin:" + self._load_error
         for index, item in enumerate(self._items):
             if item[0] == target:
@@ -382,7 +378,10 @@ class FunctionPanel(UIElement):
     def draw(self, display):
         title = "Plugin: " + self._load_error if self._load_error else "Functions"
         draw_header(display, title, self.font)
-        self.menu.draw(display)
+        if self._menu is None:
+            display.draw_rectangle(0, 13, self.width, 40, 15)
+        else:
+            self._menu.draw(display)
         if self._load_error:
             draw_footer(display, self._load_error_detail, self.font, "ENT off")
         elif self._save_error:

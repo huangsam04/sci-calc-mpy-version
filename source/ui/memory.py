@@ -45,7 +45,8 @@ class MemoryManager:
         reporter = getattr(self._gc, "mem_free", None)
         return reporter is None or reporter() >= max(0, int(minimum_free))
 
-    def reserve_buffer(self, name, size, allocator=bytearray):
+    def reserve_buffer(self, name, size, allocator=bytearray,
+                       retry_collect=True):
         """Allocate a named fixed buffer once, with one post-GC retry."""
         size = max(1, int(size))
         existing = self._buffers.get(name)
@@ -57,6 +58,9 @@ class MemoryManager:
         try:
             buffer = allocator(size)
         except MemoryError:
+            if not retry_collect:
+                self._failed_buffers[name] = True
+                return None
             self.collect()
             try:
                 buffer = allocator(size)
@@ -103,7 +107,18 @@ class MemoryManager:
     def register_fonts(self, fonts):
         self._fonts = tuple(font for font in fonts if font is not None)
 
-    def reclaim_for(self, incoming, aggressive=False, exclude=()):
+    def release_font_caches(self):
+        """Drop shared glyph bitmaps between page residency phases."""
+        released = False
+        for font in self._fonts:
+            cache = getattr(font, "_cache", None)
+            if cache:
+                cache.clear()
+                released = True
+        return released
+
+    def reclaim_for(self, incoming, aggressive=False, exclude=(),
+                    collect=True):
         """Release rebuildable caches held by every inactive page.
 
         ``incoming`` is deliberately kept intact.  A collection runs only
@@ -119,12 +134,8 @@ class MemoryManager:
                 released = True
 
         if aggressive:
-            for font in self._fonts:
-                cache = getattr(font, "_cache", None)
-                if cache:
-                    cache.clear()
-                    released = True
+            released = self.release_font_caches() or released
 
-        if released:
+        if released and collect:
             self.collect()
         return released

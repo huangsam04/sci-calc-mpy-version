@@ -3,7 +3,7 @@ Shift key toggles case for lowercase letters (pi, e, variable names).
 Semicolon supports multi-statement input."""
 import time
 from ui.element import UIElement
-from ui.theme import draw_footer
+from ui.theme import SHELL_LETTERS, draw_footer, draw_page_shell
 
 
 # Physical key → char (None = special). Case applied at input time.
@@ -75,13 +75,7 @@ class LetterPanel(UIElement):
         self.upper = bool(state.get("upper", True))
 
     def draw_transition_default(self, display):
-        display.draw_rectangle(2, 1, self.width - 4, 10, 10)
-        rows = ("ESC A  B  C  D  E", "F  G  H  I  J  K",
-                "L  M  N  O  P  Q", "R  S  T  X  Y  Z",
-                "Sh       ;  Bk OK")
-        for index, label in enumerate(rows):
-            display.draw_text8x8(4, 13 + index * 8, label, gs=10)
-        display.draw_text8x8(3, self.height - 9, "OK save  ESC cancel", gs=8)
+        draw_page_shell(display, SHELL_LETTERS, self.font)
 
     @staticmethod
     def _get_char(row, col):

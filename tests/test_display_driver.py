@@ -17,6 +17,31 @@ class _SPI:
         self.writes.append((data, bytes(data)))
 
 
+def test_direct_xglcd_text_reads_packed_glyph_without_cache_objects():
+    display = Display.__new__(Display)
+    display.byte_width = 8
+    display.gs4_buf = bytearray(display.byte_width * 16)
+    font = type("Font", (), {
+        "letters": bytes((2, 5, 2)),
+        "height": 3,
+        "bytes_per_letter": 3,
+        "start_letter": 65,
+        "letter_count": 1,
+    })()
+
+    display.draw_text_direct(4, 7, "A", font, gs=9)
+
+    assert display.gs4_buf[7 * 8 + 2] == 0x90
+    assert display.gs4_buf[8 * 8 + 2] == 0x09
+    assert display.gs4_buf[9 * 8 + 2] == 0x90
+
+    display.gs4_buf = bytearray(display.byte_width * 16)
+    display.draw_text_direct(4, 7, b"A", font, gs=9)
+    assert display.gs4_buf[7 * 8 + 2] == 0x90
+    assert display.gs4_buf[8 * 8 + 2] == 0x09
+    assert display.gs4_buf[9 * 8 + 2] == 0x90
+
+
 def test_write_cmd_reuses_command_buffers_for_common_payload_sizes():
     display = Display.__new__(Display)
     display.dc = _Line()
@@ -44,13 +69,16 @@ def test_present_region_programs_only_the_requested_controller_window():
     display = Display.__new__(Display)
     display.height = 64
     events = []
-    display.set_address = lambda *args: events.append(("address", args))
+    display._write_cmd2 = lambda *args: events.append(("cmd2", args))
+    display._write_cmd0 = lambda command: events.append(("cmd0", command))
     display.write_data = lambda data: events.append(("data", bytes(data)))
     payload = memoryview(bytearray(range(16)))
 
     display.present_region(40, 8, payload)
 
     assert events == [
-        ("address", (40, 0, 47, 63)),
+        ("cmd2", (display.SET_COLUMN_ADDRESS, 68, 75)),
+        ("cmd2", (display.SET_ROW_ADDRESS, 0, 63)),
+        ("cmd0", display.WRITE_RAM),
         ("data", bytes(range(16))),
     ]

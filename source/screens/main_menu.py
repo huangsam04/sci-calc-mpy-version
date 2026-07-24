@@ -1,7 +1,7 @@
 """Main menu screen - top-level navigation."""
 from ui.element import UIElement
 from ui.menu import Menu
-from ui.theme import draw_header
+from ui.theme import SHELL_MAIN_MENU, draw_header, draw_page_shell
 
 
 class MainMenu(UIElement):
@@ -47,10 +47,7 @@ class MainMenu(UIElement):
         self.menu.activate()
 
     def draw_transition_default(self, display):
-        display.draw_text8x8(4, 2, "SCI-CALC", gs=15)
-        display.draw_hline(2, 11, self.width - 4, 8)
-        for index, (label, _) in enumerate(self._items[:4]):
-            display.draw_text8x8(6, 15 + index * 10, label[:23], gs=10)
+        draw_page_shell(display, SHELL_MAIN_MENU, self.font)
 
     def draw(self, display):
         draw_header(display, "SCI-CALC", self.font)

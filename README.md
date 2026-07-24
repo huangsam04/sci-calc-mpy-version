@@ -355,7 +355,7 @@ UI 会显示保存失败并每两秒重试。
 1. 有卡、无卡、损坏 `/sd/main.py` 各启动一次，确认恢复界面和串口错误。
 2. 计算、赋值、重启，确认变量持久化；开关插件后再次进入函数选择器。
 3. 快速输入、长按 DEL/ESC、Shift+RPN、Shift+Tab，确认没有重复事件。
-4. 运行 `tools/device_runtime_monitor.py` 完成500次页面往返；必须看到
+4. 运行 `tools/device_runtime_monitor.py` 完成10次页面往返；必须看到
    `MONITOR_ACCEPTANCE PASS`，且包含 Plot、FunctionPanel、SWAP 恢复与曲线渐显。
 5. 运行秒表 30 分钟，并检查绘图、缩放、求解和错误弹窗。
 

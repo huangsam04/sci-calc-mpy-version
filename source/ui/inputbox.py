@@ -79,12 +79,12 @@ class InputBox(UIElement):
             self.height = height
             self._update_cursor_target(immediate=True)
 
-    def set_str(self, s):
+    def set_str(self, s, immediate=False):
         self.str = s[:self.max_char]
         self.cursor_pos = min(self.cursor_pos, len(self.str))
         self._invalidate_layout()
         self._clamp_view()
-        self._update_cursor_target()
+        self._update_cursor_target(immediate=immediate)
 
     def clear_str(self):
         self.str = ""
