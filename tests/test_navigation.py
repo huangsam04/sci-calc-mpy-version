@@ -86,6 +86,30 @@ class KeyboardStub:
         return self.pressed
 
 
+class QueuedKeyboardStub:
+    def __init__(self, events=(), pressed=()):
+        self.events = list(events)
+        self.pressed = set(pressed)
+        self.pop_count = 0
+
+    def pop_key_event(self):
+        self.pop_count += 1
+        return self.events.pop(0) if self.events else None
+
+    def pop_key_event_at(self, row, col):
+        for index, event in enumerate(self.events):
+            if (event[0], event[1]) == (row, col):
+                self.pop_count += 1
+                return self.events.pop(index)
+        return None
+
+    def is_pressed(self, row, col):
+        return (row, col) in self.pressed
+
+    def any_pressed(self):
+        return bool(self.pressed)
+
+
 class HeapStub:
     def __init__(self, free):
         self.free = free
@@ -143,6 +167,116 @@ def test_navigation_uses_controller_fade_when_reveal_buffer_cannot_be_allocated(
     assert nav.is_transitioning() is False
     assert display.transition_currents
     assert display.brightness == 100
+
+
+def test_completed_fade_reacquires_strip_only_in_a_later_idle_step(
+        monkeypatch):
+    """Fallback motion must converge on the same optional-resource phase."""
+    monkeypatch.setattr(main.time, "ticks_ms", lambda: 100)
+    real_bytearray = bytearray
+    allocation_blocked = [True]
+
+    def phase_allocator(size):
+        if allocation_blocked[0]:
+            raise MemoryError("simulated fragmented heap")
+        return real_bytearray(size)
+
+    monkeypatch.setattr(renderer_module, "bytearray", phase_allocator,
+                        raising=False)
+    registry = type("Registry", (), {"angle_mode": 0})()
+    nav = main.Nav(DisplayStub(), None, registry)
+    nav.boot(ScreenStub())
+    nav.go_to(ScreenStub())
+    assert nav._transition[2] == "fade"
+
+    finish_nav_transition(nav, 100 + main.TRANSITION_MS)
+    nav.settle_current()
+
+    assert nav.memory.get_buffer("transition_strip") is None
+    assert nav._optional_resources_pending is True
+    allocation_blocked[0] = False
+    assert nav.restore_optional_resources() is True
+    assert nav.memory.get_buffer("transition_strip") is not None
+
+
+def test_idle_optional_restore_collects_before_rejecting_low_headroom():
+    """Post-animation garbage may be reclaimed without delaying the key path."""
+    required = (
+        renderer_module.TRANSITION_STRIP_GROUPS * 2 * DisplayStub.height
+        + renderer_module.TRANSITION_ACTIVE_HEADROOM)
+
+    class ReclaimingHeap(HeapStub):
+        def collect(self):
+            super().collect()
+            self.free = required
+
+    heap = ReclaimingHeap(required - 1)
+    memory = MemoryManager(gc_module=heap)
+    registry = type("Registry", (), {"angle_mode": 0})()
+    nav = main.Nav(DisplayStub(), None, registry, memory=memory)
+    nav.boot(ScreenStub())
+    nav.mark_first_frame_presented()
+
+    assert nav.restore_optional_resources() is True
+    assert heap.collects == 1
+    assert nav.memory.get_buffer("transition_strip") is not None
+
+
+def test_navigation_never_collects_before_controller_fade(
+        monkeypatch):
+    """Low-memory input starts visible motion instead of waiting for GC."""
+    monkeypatch.setattr(main.time, "ticks_ms", lambda: 100)
+
+    class ReclaimingHeap(HeapStub):
+        def collect(self):
+            super().collect()
+            self.free = (
+                renderer_module.TRANSITION_STRIP_GROUPS
+                * 2 * DisplayStub.height
+                + renderer_module.TRANSITION_RECOVERY_HEADROOM)
+
+    class ReleasableScreen(ScreenStub):
+        def release_memory(self):
+            return True
+
+    heap = ReclaimingHeap(0)
+    memory = MemoryManager(gc_module=heap)
+    registry = type("Registry", (), {"angle_mode": 0})()
+    nav = main.Nav(DisplayStub(), None, registry, memory=memory)
+    first = ReleasableScreen()
+    second = ScreenStub()
+    nav.boot(first)
+    nav.register_screens((first, second))
+
+    nav.go_to(second)
+
+    assert heap.collects == 0
+    assert nav._transition[2] == "fade"
+
+
+def test_released_heavy_page_uses_recovery_headroom_without_sync_gc(
+        monkeypatch):
+    monkeypatch.setattr(main.time, "ticks_ms", lambda: 100)
+
+    class ReleasableScreen(ScreenStub):
+        def release_memory(self):
+            return True
+
+    heap = HeapStub(
+        renderer_module.TRANSITION_STRIP_GROUPS
+        * 2 * DisplayStub.height
+        + renderer_module.TRANSITION_RECOVERY_HEADROOM)
+    memory = MemoryManager(gc_module=heap)
+    registry = type("Registry", (), {"angle_mode": 0})()
+    nav = main.Nav(DisplayStub(), None, registry, memory=memory)
+    first = ReleasableScreen()
+    second = ScreenStub()
+    nav.boot(first)
+
+    nav.go_to(second)
+
+    assert heap.collects == 0
+    assert nav._transition[2] == "wipe"
 
 
 def test_fade_switches_target_pixels_only_while_oled_current_is_zero(
@@ -203,6 +337,26 @@ def test_wipe_releases_transition_strip_before_page_settlement(monkeypatch):
 
     assert observed == [False]
     assert nav.memory.get_buffer("transition_strip") is None
+
+
+def test_completed_transition_reacquires_strip_only_in_a_later_idle_step(
+        monkeypatch):
+    monkeypatch.setattr(main.time, "ticks_ms", lambda: 100)
+    registry = type("Registry", (), {"angle_mode": 0})()
+    nav = main.Nav(DisplayStub(), None, registry)
+    first = ScreenStub()
+    second = ScreenStub()
+    nav.boot(first)
+    assert nav.enable_optional_resources() is True
+
+    nav.go_to(second)
+    finish_nav_transition(nav, 100 + main.TRANSITION_MS)
+    nav.settle_current()
+
+    assert nav.memory.get_buffer("transition_strip") is None
+    assert nav._optional_resources_pending is True
+    assert nav.restore_optional_resources() is True
+    assert nav.memory.get_buffer("transition_strip") is not None
 
 
 def test_released_page_memory_is_collected_after_transition_before_settlement(
@@ -357,7 +511,7 @@ def test_preallocated_reveal_strip_remains_usable_below_allocation_headroom():
     assert second.activations == 1
 
 
-def test_navigation_transition_is_non_blocking_and_locks_trigger_key(monkeypatch):
+def test_navigation_transition_blocks_only_trigger_key_hold_polling(monkeypatch):
     monkeypatch.setattr(main.time, "ticks_ms", lambda: 100)
     registry = type("Registry", (), {"angle_mode": 0})()
     nav = main.Nav(DisplayStub(), None, registry)
@@ -366,17 +520,49 @@ def test_navigation_transition_is_non_blocking_and_locks_trigger_key(monkeypatch
     second = ScreenStub()
     nav.boot(first)
     nav.present_current()
+    keyboard = QueuedKeyboardStub(((1, 1, False),), pressed=((3, 3),))
 
-    nav.go_to(second)
+    nav.go_to(second, (3, 3, False))
 
     assert nav.current is second
     assert nav.is_transitioning() is True
-    assert nav.filter_event(KeyboardStub(), (1, 1, False)) is None
+    assert nav.poll_event(keyboard) is None
+    assert keyboard.pop_count == 0
     finish_nav_transition(nav, 400)
     assert nav.is_transitioning() is False
-    assert nav.filter_event(KeyboardStub(pressed=True), (1, 1, False)) is None
     nav.settle_current()
-    assert nav.filter_event(KeyboardStub(), (1, 1, False)) == (1, 1, False)
+    event = nav.poll_event(keyboard)
+    assert event == (1, 1, False)
+    assert nav.allows_page_update(event) is True
+    assert nav.allows_page_update(None) is False
+    keyboard.pressed.clear()
+    assert nav.poll_event(keyboard) is None
+    assert nav.allows_page_update(None) is True
+
+
+def test_navigation_preserves_rapid_direction_edges_during_transition(
+        monkeypatch):
+    """Every tap made during motion remains available to the target page."""
+    monkeypatch.setattr(main.time, "ticks_ms", lambda: 100)
+    registry = type("Registry", (), {"angle_mode": 0})()
+    nav = main.Nav(DisplayStub(), None, registry)
+    nav.enable_optional_resources()
+    nav.boot(ScreenStub())
+    queued = QueuedKeyboardStub((
+        (1, 1, False),
+        (3, 1, False),
+        (3, 1, False),
+    ))
+
+    nav.go_to(ScreenStub())
+
+    assert nav.poll_event(queued) is None
+    assert queued.pop_count == 0
+    finish_nav_transition(nav, 100 + main.TRANSITION_MS)
+    nav.settle_current()
+    assert nav.poll_event(queued) == (1, 1, False)
+    assert nav.poll_event(queued) == (3, 1, False)
+    assert nav.poll_event(queued) == (3, 1, False)
 
 
 def test_device_transition_disables_automatic_gc_until_complete(monkeypatch):
@@ -421,12 +607,18 @@ def test_only_escape_is_accepted_until_page_restore_finishes(monkeypatch):
     nav.boot(first)
     nav.go_to(second)
     finish_nav_transition(nav, 100 + main.TRANSITION_MS)
+    keyboard = QueuedKeyboardStub((
+        (1, 1, False),
+        (0, 0, False),
+    ))
 
-    assert nav.filter_event(KeyboardStub(), (1, 1, False)) is None
-    assert nav.allows_page_update(None) is False
-    escape = nav.filter_event(KeyboardStub(), (0, 0, False))
+    escape = nav.poll_event(keyboard)
     assert escape == (0, 0, False)
     assert nav.allows_page_update(escape) is True
+    assert keyboard.events == [(1, 1, False)]
+    assert nav.poll_event(keyboard) is None
+    assert keyboard.events == [(1, 1, False)]
+    assert nav.allows_page_update(None) is False
 
 
 def test_navigation_reveals_default_page_before_restoring_swap(
@@ -551,7 +743,7 @@ def test_page_transition_stays_within_responsive_motion_budget():
     assert ACTIVE_LOOP_SLEEP_MS == 1
 
 
-def test_periodic_gc_is_suspended_while_any_animation_is_active():
+def test_periodic_gc_is_suspended_during_animation_or_user_input():
     source = (Path(__file__).parents[1] / "source" / "main.py").read_text(
         encoding="utf-8")
     start = source.index("if (_frame % 100 == 0")
@@ -560,6 +752,8 @@ def test_periodic_gc_is_suspended_while_any_animation_is_active():
 
     assert "not nav.is_transitioning()" in gc_gate
     assert "not has_active_animations()" in gc_gate
+    assert "event is None" in gc_gate
+    assert "not kb.any_pressed()" in gc_gate
 
     diagnostics_start = source.index("if (diagnostics", end)
     diagnostics_end = source.index(
@@ -641,8 +835,12 @@ def test_navigation_reset_clears_transition_lock_and_owned_animations(monkeypatc
 
     assert nav.current is root
     assert nav.is_transitioning() is False
-    assert nav.filter_event(KeyboardStub(pressed=True), (1, 1, False)) is None
-    assert nav.filter_event(KeyboardStub(), (1, 1, False)) == (1, 1, False)
+    keyboard = QueuedKeyboardStub(
+        ((1, 1, False),), pressed=((1, 1),))
+    assert nav.poll_event(keyboard) is None
+    assert keyboard.events == [(1, 1, False)]
+    keyboard.pressed.clear()
+    assert nav.poll_event(keyboard) == (1, 1, False)
     assert engine.is_animating(child) is False
 
 
@@ -827,28 +1025,20 @@ def test_page_animation_cancel_does_not_cancel_another_page():
     engine.cancel_all_animations()
 
 
-def test_animation_easing_has_exact_smooth_endpoints():
-    assert engine.easing_indent(0.0) == 0.0
-    assert engine.easing_indent(1.0) == 1.0
-    assert engine.easing_smooth(0.0) == 0.0
-    assert engine.easing_smooth(0.5) == 0.5
-    assert engine.easing_smooth(1.0) == 1.0
-    samples = [engine.easing_smooth(i / 10) for i in range(11)]
-    assert samples == sorted(samples)
-
-
-def test_quadratic_ease_out_is_responsive_without_a_stalled_tail():
-    samples = [engine.easing_out_quad(i / 4) for i in range(5)]
-    assert samples[0] == 0.0
-    assert samples[-1] == 1.0
-    assert 0.4 < samples[1] < 0.5
+def test_integer_ease_out_is_responsive_without_a_stalled_tail():
+    scale = engine.PROGRESS_SCALE
+    samples = [engine.ease_out_quad(i * scale // 4) for i in range(5)]
+    assert samples[0] == 0
+    assert samples[-1] == scale
+    assert 4 * scale // 10 < samples[1] < scale // 2
     deltas = [samples[i + 1] - samples[i] for i in range(4)]
     assert deltas == sorted(deltas, reverse=True)
 
     # At the configured frame cadence every transition frame moves at least
     # one pixel, instead of spending the final frames apparently frozen.
     frame_count = main.TRANSITION_MS // ACTIVE_FRAME_MS
-    positions = [int(CONTENT_W * engine.easing_out_quad(i / frame_count))
+    positions = [
+        CONTENT_W * engine.ease_out_quad(i * scale // frame_count) // scale
                  for i in range(frame_count + 1)]
     assert len(set(positions)) == len(positions)
 
@@ -859,8 +1049,11 @@ def test_page_transition_has_enough_visible_motion_samples():
     if positions[-1] != main.TRANSITION_MS:
         positions.append(main.TRANSITION_MS)
 
-    offsets = [int(CONTENT_W * engine.easing_out_quad(
-        elapsed / main.TRANSITION_MS)) for elapsed in positions]
+    scale = engine.PROGRESS_SCALE
+    offsets = [
+        CONTENT_W * engine.ease_out_quad(
+            elapsed * scale // main.TRANSITION_MS) // scale
+        for elapsed in positions]
     steps = [offsets[index + 1] - offsets[index]
              for index in range(len(offsets) - 1)]
 

@@ -121,14 +121,23 @@ def _boot_fail(display, step, total, label, error):
 
 
 def _needs_render(now, last_render, active, dirty, stopwatch_running,
-                  input_changed):
+                  input_changed, animation_finished=False):
     """Decide whether the current loop should submit a full display frame."""
-    if input_changed:
+    if input_changed or animation_finished:
         return True
     elapsed = time.ticks_diff(now, last_render)
     frame_ms = ACTIVE_FRAME_MS if active else IDLE_FRAME_MS
     return (elapsed >= frame_ms
             and (active or dirty or stopwatch_running or elapsed >= 500))
+
+
+def _page_update_requested(keyboard, event):
+    """Keep menu direction hold-repeat alive without repeating calculator input."""
+    return (event is not None
+            or keyboard.is_pressed(0, 0)
+            or keyboard.is_pressed(4, 3)
+            or keyboard.is_pressed(1, 1)
+            or keyboard.is_pressed(3, 1))
 
 
 def _reload_functions(settings, registry=None):
@@ -244,6 +253,7 @@ class Nav:
         self._fade_switched = False
         self._fade_brightness = 100
         self._input_locked = False
+        self._hold_blocked_key = None
         self._optional_resources_pending = False
         self.last_present_us = 0
 
@@ -297,16 +307,16 @@ class Nav:
     def current(self):
         return self.stack[-1]
 
-    def go_to(self, screen):
+    def go_to(self, screen, trigger_event=None):
         old = self.stack[-1]
         self.stack.append(screen)
-        self._start_transition(old, screen, True)
+        self._start_transition(old, screen, True, trigger_event)
 
-    def go_back(self):
+    def go_back(self, trigger_event=None):
         if len(self.stack) <= 1:
             return
         old = self.stack.pop()
-        self._start_transition(old, self.stack[-1], False)
+        self._start_transition(old, self.stack[-1], False, trigger_event)
 
     def _requires_plot_workspace(self, screen):
         return bool(getattr(screen, "requires_plot_workspace", False))
@@ -323,9 +333,13 @@ class Nav:
             gc.enable()
             self._transition_gc_locked = False
 
-    def _start_transition(self, old, new, forward):
+    def _start_transition(self, old, new, forward, trigger_event=None):
         from anim.engine import cancel_all_animations
+        from ui.renderer import TRANSITION_RECOVERY_HEADROOM
         self._transition_cleanup_pending = False
+        self._hold_blocked_key = (
+            (trigger_event[0], trigger_event[1])
+            if trigger_event is not None else None)
         cancel_all_animations()
         # The old pixels already live in controller RAM.  Establish that fact
         # before releasing any Python state, then acquire optional reveal RAM
@@ -340,7 +354,7 @@ class Nav:
         released = (self.memory.reclaim_for(
             new, exclude=(old,), collect=False) or released)
         if self._requires_plot_workspace(old):
-            if self.memory.release_plot_workspace():
+            if self.memory.handoff_plot_workspace():
                 released = True
         # Integer-only transition frames stay within the live heap until the
         # wipe completes. Reclaim released page/module objects immediately
@@ -350,7 +364,12 @@ class Nav:
         self.residency.prepare(new)
 
         if not self.renderer.can_start_transition():
-            self.renderer.enable_transition_buffers(allow_collect=False)
+            if released:
+                self.renderer.enable_transition_buffers(
+                    allow_collect=False,
+                    active_headroom=TRANSITION_RECOVERY_HEADROOM)
+            else:
+                self.renderer.enable_transition_buffers(allow_collect=False)
 
         captured = False
         if self.renderer.can_start_transition():
@@ -359,7 +378,6 @@ class Nav:
             except MemoryError:
                 captured = False
 
-        self._input_locked = True
         started = time.ticks_ms()
         if not captured:
             self.renderer.release_transition_buffers(collect=False)
@@ -375,18 +393,30 @@ class Nav:
     def is_transitioning(self):
         return self._transition is not None
 
-    def filter_event(self, keyboard, event):
+    def poll_event(self, keyboard):
+        """Consume one edge only when the current page can safely receive it.
+
+        Matrix scanning continues during a transition, so the keyboard's
+        bounded queue retains every tap. Page restoration also leaves the
+        head event queued, except for ESC which is always allowed to abort.
+        """
         if self._transition is not None:
             return None
         if self._input_locked:
             if keyboard.any_pressed():
                 return None
             self._input_locked = False
+        if (self._hold_blocked_key is not None
+                and not keyboard.is_pressed(*self._hold_blocked_key)):
+            self._hold_blocked_key = None
         if self.residency.is_restoring(self.current):
             # The default shell remains safe to leave immediately, but other
             # edits must wait or restore_state() could overwrite them.
-            if event is None or (event[0], event[1]) != (0, 0):
+            event = keyboard.pop_key_event_at(0, 0)
+            if event is None:
                 return None
+        else:
+            event = keyboard.pop_key_event()
         if event is not None and getattr(self.current,
                                          "_residency_error", ""):
             self.current.clear_residency_error()
@@ -394,9 +424,10 @@ class Nav:
         return event
 
     def allows_page_update(self, event):
-        """Block held-key polling while a default page is still restoring."""
+        """Gate eventless hold polling without delaying new key edges."""
         return (event is not None
-                or not self.residency.is_restoring(self.current))
+                or (self._hold_blocked_key is None
+                    and not self.residency.is_restoring(self.current)))
 
     def draw_transition(self, now):
         if self._transition is None:
@@ -465,6 +496,7 @@ class Nav:
             self.memory.release_font_caches()
             if not self.renderer.release_transition_buffers():
                 self.memory.collect()
+            self._optional_resources_pending = True
             self._post_transition_collect = False
         elif self._post_transition_collect:
             self._post_transition_collect = False
@@ -484,6 +516,7 @@ class Nav:
         self._transition_cleanup_pending = False
         self._post_transition_collect = False
         self._input_locked = True
+        self._hold_blocked_key = None
         self._optional_resources_pending = False
         self.renderer.release_transition_buffers()
         self.stack[:] = [root]
@@ -498,7 +531,7 @@ class Nav:
         self._optional_resources_pending = True
 
 
-def main():
+def main(run_loop=True):
     # ============================================================
     # Phase 1: Display FIRST — show splash immediately
     # ============================================================
@@ -656,7 +689,8 @@ def main():
     # Phase 3: Main loop
     # ============================================================
     from ui.element import UIElement
-    from anim.engine import animate_all, update_tmp, has_active_animations, active_animation_count
+    from anim.engine import (active_animation_count, animate_all,
+                             has_active_animations)
 
     nav.memory.register_fonts((font_main, font_small))
     nav.register_screens((main_menu, calc_screen, plot_screen, func_panel,
@@ -664,10 +698,12 @@ def main():
                           func_picker, var_panel, about))
     nav.boot(main_menu)
     first_frame_pending = True
-    metrics.bind_runtime(nav, main_menu,
-                         (calc_screen, plot_screen, func_panel, stopwatch,
-                          settings_screen))
+    runtime_targets = (
+        calc_screen, plot_screen, func_panel, stopwatch, settings_screen)
+    metrics.bind_runtime(nav, main_menu, runtime_targets)
     metrics.mark_boot("ui_ready")
+    if not run_loop:
+        return nav, main_menu, runtime_targets
     _frame = 0
     _last_render = time.ticks_add(time.ticks_ms(), -500)
     diagnostics = bool(settings.get("diagnostics", False))
@@ -683,7 +719,6 @@ def main():
     while True:
         try:
             kb.scan()
-            event = kb.pop_key_event()
             now = time.ticks_ms()
             power_state = power.update(now, kb.any_pressed())
             if power_state != AWAKE:
@@ -696,9 +731,12 @@ def main():
                 time.sleep_ms(SLEEP_SCAN_MS)
                 continue
 
+            event = nav.poll_event(kb)
             if (_frame % 100 == 0
                     and not nav.is_transitioning()
-                    and not has_active_animations()):
+                    and not has_active_animations()
+                    and event is None
+                    and not kb.any_pressed()):
                 if diagnostics:
                     gc_started = time.ticks_us()
                 gc.collect()
@@ -707,10 +745,13 @@ def main():
                         time.ticks_diff(time.ticks_us(), gc_started))
             _frame += 1
 
+            # ``animate_all`` removes an animation on the exact tick that it
+            # assigns its endpoint. Keep the preceding state so that endpoint
+            # still gets one display submission instead of waiting for the
+            # 500 ms idle refresh.
+            was_active = nav.is_transitioning() or has_active_animations()
             animate_all()
-            update_tmp()
 
-            event = nav.filter_event(kb, event)
             had_event = event is not None
             if diagnostics and had_event:
                 metrics.record_input()
@@ -732,7 +773,7 @@ def main():
                                  else plot_screen.get_loaded_attr("input_box"))
                     if input_box is not None:
                         screen_factory.set_letter_input(input_box)
-                        nav.go_to(letter_panel)
+                        nav.go_to(letter_panel, event)
                         cur = nav.current
                         event = None
                 elif (erow, ecol) == (4, 4):
@@ -742,7 +783,7 @@ def main():
                     event = None
             if (not nav.is_transitioning()
                     and nav.allows_page_update(event)
-                    and (event is not None or kb.is_pressed(0, 0) or kb.is_pressed(4, 3))):
+                    and _page_update_requested(kb, event)):
                 result = cur.update(kb, event)
                 navigation_results = (
                     "BACK", "FUNC_PANEL_DONE", "FUNC_PANEL_CANCEL",
@@ -760,33 +801,34 @@ def main():
             # the input frame the first transition frame instead of leaving
             # the captured pages dormant for one active-frame interval.
             if result == "BACK":
-                nav.go_back()
+                nav.go_back(event)
             elif result == "FUNC_PANEL_DONE":
-                nav.go_back()
+                nav.go_back(event)
                 _function_reload_pending = True
             elif result in ("FUNC_PICKER_DONE", "LETTER_DONE", "VAR_PANEL_DONE"):
-                nav.go_back()
+                nav.go_back(event)
             elif result == "FUNC_PANEL_CANCEL":
-                nav.go_back()
+                nav.go_back(event)
             elif result == "FUNC_PICKER":
-                nav.go_to(func_picker)
+                nav.go_to(func_picker, event)
             elif result == "VARIABLE_PANEL":
-                nav.go_to(var_panel)
+                nav.go_to(var_panel, event)
             elif ((isinstance(result, UIElement)
                    or isinstance(result, LazyScreen))
                   and result is not cur):
-                nav.go_to(result)
+                nav.go_to(result, event)
 
             cur = nav.current
             now = time.ticks_ms()
             if had_event or result is not None:
                 _dirty = True
             active = nav.is_transitioning() or has_active_animations()
+            animation_finished = was_active and not active
             needs_render = _needs_render(
                 now, _last_render, active, _dirty,
                 (cur is stopwatch
                  and stopwatch.get_loaded_attr("_running", False)),
-                had_event or result is not None)
+                had_event or result is not None, animation_finished)
 
             if needs_render:
                 _last_render = now

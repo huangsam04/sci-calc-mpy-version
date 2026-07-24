@@ -3,6 +3,7 @@ import time
 from ui.element import UIElement
 from ui.cursor import Cursor
 from ui.motion import TEXT_CURSOR_MS
+from anim.engine import cancel_animations
 from input.keyboard import get_key_label
 
 
@@ -91,7 +92,7 @@ class InputBox(UIElement):
         self.cursor_pos = 0
         self.view_offset = 0
         self._invalidate_layout()
-        self._update_cursor_target()
+        self._update_cursor_target(immediate=True)
 
     def insert_str(self, s):
         pos = self.cursor_pos
@@ -101,7 +102,7 @@ class InputBox(UIElement):
         self.cursor_pos += len(s)
         self._invalidate_layout()
         self._clamp_view()
-        self._update_cursor_target()
+        self._update_cursor_target(immediate=True)
         return True
 
     def delete_str(self):
@@ -112,7 +113,7 @@ class InputBox(UIElement):
             self.cursor_pos -= 1
             self._invalidate_layout()
             self._clamp_view()
-            self._update_cursor_target()
+            self._update_cursor_target(immediate=True)
             return True
         return False
 
@@ -249,12 +250,21 @@ class InputBox(UIElement):
         self.cursor.height = self._cursor_height()
         self._cursor_origin = (self.x, self.y)
         if immediate:
+            cancel_animations(self.cursor)
             self.cursor.x = target_x
             self.cursor.y = target_y
             self.cursor.target_x = target_x
             self.cursor.target_y = target_y
         else:
             self.cursor.change_target(target_x, target_y, TEXT_CURSOR_MS)
+
+    def _draw_live_text(self, display, x, y, text):
+        """Use the allocation-free packed path when the display provides it."""
+        direct = getattr(display, "draw_text_direct", None)
+        if direct is not None:
+            direct(x, y, text.encode(), self.font, gs=self.gs)
+        else:
+            display.draw_text(x, y, text, self.font, gs=self.gs, raw=True)
 
     def draw(self, display):
         # PlotScreen moves this widget during its editor animation.  Its text
@@ -272,9 +282,8 @@ class InputBox(UIElement):
             if not visible:
                 continue
             if self.font:
-                # raw=True: don't cache — input text changes every keystroke
-                display.draw_text(self.x + 1, self._text_y(row), visible, self.font,
-                                  gs=self.gs, raw=True)
+                self._draw_live_text(display, self.x + 1,
+                                     self._text_y(row), visible)
             else:
                 display.draw_text8x8(self.x + 1, self._text_y(row), visible, gs=self.gs)
 
@@ -283,14 +292,13 @@ class InputBox(UIElement):
             view_line = self._view_line_index(ranges)
             cue_x = self.x + self.width - 6
             if view_line > 0:
-                display.draw_text(cue_x, self._text_y(0),
-                                  UPPER_CONTINUATION_CUE, self.font,
-                                  gs=self.gs, raw=True)
+                self._draw_live_text(display, cue_x, self._text_y(0),
+                                     UPPER_CONTINUATION_CUE)
             if view_line + len(visible_ranges) < len(ranges):
                 cue_row = len(visible_ranges) - 1
-                display.draw_text(cue_x, self._text_y(cue_row),
-                                  LOWER_CONTINUATION_CUE, self.font,
-                                  gs=self.gs, raw=True)
+                self._draw_live_text(display, cue_x,
+                                     self._text_y(cue_row),
+                                     LOWER_CONTINUATION_CUE)
         self.cursor.draw(display)
 
     def update(self, kb, event=None):

@@ -86,3 +86,19 @@ def test_accepted_input_bypasses_idle_render_throttle(monkeypatch):
 
     assert main._needs_render(10, 0, False, True, False, True) is True
     assert main._needs_render(10, 0, False, True, False, False) is False
+
+
+def test_final_animation_frame_bypasses_the_idle_render_throttle(monkeypatch):
+    """The exact endpoint must be drawn rather than waiting for idle work."""
+    monkeypatch.setattr(main.time, "ticks_diff", lambda newer, older: newer - older)
+
+    assert main._needs_render(10, 0, False, False, False, False,
+                              animation_finished=True) is True
+
+
+def test_held_direction_key_keeps_requesting_page_updates():
+    class Keyboard:
+        def is_pressed(self, row, col):
+            return (row, col) == (3, 1)
+
+    assert main._page_update_requested(Keyboard(), None) is True

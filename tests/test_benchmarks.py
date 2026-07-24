@@ -11,6 +11,7 @@ class FakeNav:
         self.frames = 0
         self.presents = 0
         self.restores = 0
+        self.settles = 0
 
     def reset(self, root):
         self.current = root
@@ -33,6 +34,10 @@ class FakeNav:
 
     def present_current(self):
         self.presents += 1
+
+    def settle_current(self):
+        self.settles += 1
+        return False
 
     def restore_optional_resources(self):
         self.restores += 1
@@ -127,8 +132,9 @@ def test_device_benchmark_runner_exercises_repeated_navigation_without_writes():
     assert report["navigation_cycles"] == 3
     assert report["warmup_transitions"] == 4
     assert report["input_to_present_us"]["count"] == 3
-    assert report["frame_us"]["count"] == 6
+    assert report["frame_us"]["count"] == 12
     assert nav.frames == 10
+    assert nav.settles == 10
     assert nav.restores == 10
     assert any(line.startswith("BENCH nav_event_p95_us=") for line in lines)
     assert any(line.startswith("BENCH frame_p95_us=") for line in lines)
@@ -156,9 +162,12 @@ def test_standalone_benchmark_enables_transitions_only_after_first_frame():
         encoding="utf-8")
 
     runtime = source.index("def _build_runtime")
-    boot = source.index("nav.boot(main_menu)", runtime)
+    build = source.index("main(run_loop=False)", runtime)
+    present = source.index("nav.present_current()", runtime)
     first_frame = source.index("nav.mark_first_frame_presented()", runtime)
     restore = source.index("nav.restore_optional_resources()", runtime)
 
-    assert boot < first_frame < restore
+    assert build < present < first_frame < restore
     assert "nav.reserve_transition_buffers()" not in source[runtime:source.index("def run", runtime)]
+    assert "from screens.function_panel import FunctionPanel" not in source[
+        runtime:source.index("def run", runtime)]

@@ -2,7 +2,7 @@
 import time
 
 from anim.engine import cancel_animations, insert_animation
-from ui.motion import DIALOG_ENTER_MS, MOTION_EASING
+from ui.motion import DIALOG_ENTER_MS
 from ui.theme import CONTENT_W, GS_MUTED, fit_text, draw_text
 
 
@@ -76,9 +76,9 @@ class ErrorPopup:
         self._shade = 0
         self._panel_y = PANEL_START_Y
         insert_animation(self, "_shade", 0, 15,
-                         DIALOG_ENTER_MS, MOTION_EASING)
+                         DIALOG_ENTER_MS)
         insert_animation(self, "_panel_y", PANEL_START_Y, PANEL_Y,
-                         DIALOG_ENTER_MS, MOTION_EASING)
+                         DIALOG_ENTER_MS)
 
     def dismiss(self):
         cancel_animations(self)

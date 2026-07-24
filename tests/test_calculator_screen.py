@@ -119,3 +119,17 @@ def test_expanding_the_input_panel_keeps_selected_history_visible():
 
     assert expanded_history_rows == 3
     assert screen._view_offset == 1
+
+
+def test_typing_uses_editor_and_footer_rows_but_wrapping_falls_back_to_full_frame():
+    screen = CalculatorScreen(None, registry=build_registry(), variables={})
+    screen.activate()
+    screen.mark_presented()
+
+    screen.input_box.insert_str("1")
+    assert screen.get_present_rows() == ((0, 12), (54, 10))
+
+    screen.input_box.set_str("1" * 25, immediate=True)
+    screen.mark_presented()
+    screen.input_box.insert_str("1")
+    assert screen.get_present_rows() is None

@@ -695,7 +695,7 @@ class Display(object):
         bytes_per_letter = font.bytes_per_letter
         start_letter = font.start_letter
         end_letter = start_letter + font.letter_count
-        encoded = isinstance(text, bytes)
+        encoded = not isinstance(text, str)
         if encoded and _HAS_FAST_TEXT_DRAW:
             _draw_packed_text(
                 target, data, text, len(text), x, y, stride, shade, height,
@@ -1031,6 +1031,24 @@ class Display(object):
         self.set_address(x0, y0, x1, y1)
         self.write_data(self.gs4_buf)
 
+    def present_rows(self, row_ranges):
+        """Present complete framebuffer rows with one SPI write per range.
+
+        Full-width rows are contiguous in the GS4 buffer, so this keeps the
+        OLED's unchanged rows in controller RAM without a second framebuffer.
+        Callers may use this only when they know every omitted row is stable.
+        """
+        row_bytes = self.byte_width
+        last_column = self.width // 4 - 1
+        data = memoryview(self.gs4_buf)
+        for row_start, row_count in row_ranges:
+            row_start = max(0, int(row_start))
+            row_end = min(self.height, row_start + max(0, int(row_count)))
+            if row_end <= row_start:
+                continue
+            self.set_address(0, row_start, last_column, row_end - 1)
+            self.write_data(data[row_start * row_bytes:row_end * row_bytes])
+
     def present_region(self, column_start, column_count, data):
         """Write packed rows to a contiguous SSD1322 column window.
 
@@ -1055,6 +1073,11 @@ class Display(object):
         self._command_byte[0] = command
         self.spi.write(self._command_byte)
         self.cs(1)
+
+    def _write_cmd1(self, command, value):
+        self._write_cmd0(command)
+        self._command_arg1[0] = value
+        self.write_data(self._command_arg1)
 
     def _write_cmd2(self, command, first, second):
         self._write_cmd0(command)
@@ -1081,9 +1104,10 @@ class Display(object):
         Note:
             There is a horizontal offset of 28 (pixels start from segment 112)
         """
-        self.set_column_address(x0 + offset, x1 + offset)
-        self.set_row_address(y0, y1)
-        self.write_cmd(self.WRITE_RAM)
+        self._write_cmd2(
+            self.SET_COLUMN_ADDRESS, x0 + offset, x1 + offset)
+        self._write_cmd2(self.SET_ROW_ADDRESS, y0, y1)
+        self._write_cmd0(self.WRITE_RAM)
 
     def set_column_address(self, column_start, column_end):
         """Set column start and end address of display data RAM.
@@ -1157,7 +1181,7 @@ class Display(object):
         """
         percent = max(10, min(100, int(percent)))
         current = max(1, min(15, (percent * 15 + 50) // 100))
-        self.write_cmd(self.MASTER_CURRENT_CONTROL, current)
+        self._write_cmd1(self.MASTER_CURRENT_CONTROL, current)
         self.brightness = percent
 
     def set_transition_current(self, level):
@@ -1168,7 +1192,7 @@ class Display(object):
         fade completes.
         """
         level = max(0, min(15, int(level)))
-        self.write_cmd(self.MASTER_CURRENT_CONTROL, level)
+        self._write_cmd1(self.MASTER_CURRENT_CONTROL, level)
 
     def write_cmd(self, command, *args):
         """Write command to display.

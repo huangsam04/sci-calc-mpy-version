@@ -48,13 +48,37 @@ def draw_header(display, title, font=None, raw=False):
 def draw_footer(display, hint, font=None, right="", raw=False):
     display.fill_rectangle(0, FOOTER_Y, CONTENT_W, SCREEN_H - FOOTER_Y, 0)
     display.draw_hline(0, FOOTER_Y, CONTENT_W, GS_LINE)
-    draw_text(display, TEXT_X, FOOTER_Y + 2,
-              fit_text(hint, 126, font), font, GS_MUTED, raw=raw)
+    fitted_hint = fit_text(hint, 126, font)
+    direct = getattr(display, "draw_text_direct", None)
+    if font and direct is not None:
+        direct(TEXT_X, FOOTER_Y + 2, fitted_hint, font, gs=GS_MUTED)
+    else:
+        draw_text(display, TEXT_X, FOOTER_Y + 2,
+                  fitted_hint, font, GS_MUTED, raw=raw)
     if right:
         fitted = fit_text(right, 76, font)
         x = max(130, CONTENT_W - text_width(fitted, font) - 2)
-        draw_text(display, x, FOOTER_Y + 2, fitted, font, GS_TEXT,
-                  raw=raw)
+        if font and direct is not None:
+            direct(x, FOOTER_Y + 2, fitted, font, gs=GS_TEXT)
+        else:
+            draw_text(display, x, FOOTER_Y + 2, fitted, font, GS_TEXT,
+                      raw=raw)
+
+
+def draw_footer_fast(display, hint, hint_bytes, font=None, right=""):
+    """Draw a static footer hint without building a string framebuffer."""
+    if not font or not hint_bytes:
+        draw_footer(display, hint, font, right)
+        return
+    display.fill_rectangle(0, FOOTER_Y, CONTENT_W, SCREEN_H - FOOTER_Y, 0)
+    display.draw_hline(0, FOOTER_Y, CONTENT_W, GS_LINE)
+    display.draw_text_direct(TEXT_X, FOOTER_Y + 2, hint_bytes, font,
+                             gs=GS_MUTED)
+    if right:
+        fitted = fit_text(right, 76, font)
+        x = max(130, CONTENT_W - text_width(fitted, font) - 2)
+        display.draw_text_direct(x, FOOTER_Y + 2, fitted.encode(), font,
+                                 gs=GS_TEXT)
 
 
 def draw_empty(display, message, font=None, y=30):

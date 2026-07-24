@@ -181,20 +181,21 @@ Shift+`^` 为 `sqrt`，Shift+`RPN` 为 `rpn`，Shift+`Tab` 为 `stab`。页面�
 所有页面/控件继承 `UIElement`，约定 `activate()`、`deactivate()`、`draw(display)`、
 `update(keyboard, event)` 和 `animation_children()`。基类不做业务工作，只定义生命周期边界。
 
-动画引擎用 `(id(target), attribute)` 为键保存 `Animation`，同一属性新动画覆盖旧动画；每帧
-按延迟、时长和 easing 写回对象属性，结束时精确吸附到终值。支持线性、三次进/出/平滑、
-quint 出、quad 出、弹跳；项目常用 `OUT_QUAD`。临时退出目标留在 `_tmp_targets`，直到它没有
-活动动画。离开页面时，`cancel_animations(root)` 深度遍历 `animation_children()`，只取消该页面
-拥有的动画，避免错误清除其他页面动画。
+动画引擎用 `(id(target), attribute)` 为键保存 `Animation`，同一属性新动画覆盖旧动画；所有进度
+以 1024 为满量程的整数定点数计算，只保留实际使用的 quadratic ease-out，不再逐帧创建浮点数、
+查字符串策略表或携带未使用的 easing 字段。结束时精确吸附到终值；需要连续可见反馈的短距离
+运动可要求每帧至少推进一个整数像素。离开页面时，`cancel_animations(root)` 深度遍历
+`animation_children()`，只取消该页面拥有的动画，避免错误清除其他页面动画。
 
 ```text
 animate_all():
     for each live animation:
         if before delay: keep it
         else:
-            t = clamp((now - start) / duration, 0..1)
-            target.attr = int(start + (end - start) * easing(t))
-            if t == 1: set exact end; remove it
+            progress = clamp((now - start) * 1024 // duration, 0..1024)
+            eased = 1024 - (1024 - progress)^2 // 1024
+            target.attr = start + (end - start) * eased // 1024
+            if progress == 1024: set exact end; remove it
 
 cancel_animations(root):
     owned_ids = DFS(root + animation_children)
@@ -212,43 +213,49 @@ workspace 随即释放；JSON 编码与写盘都推迟到无动画的安静循�
 真实状态和重缓存必须等转场结束后恢复。
 
 ```text
-Nav.filter_event(keyboard, event):
-    if transition is running: return None
+Nav.poll_event(keyboard):
+    if transition is running: return None          # 不弹出队列头
     if input_locked:
         if any key remains physically pressed: return None
         input_locked = false
-    return event
+    if target page is restoring:
+        return pop queued ESC if present            # 其他边沿保持原顺序
+    return pop queue head
 
 Nav.draw_transition(now):
     if no transition: return false
-    t = clamp((now - started) / 190 ms, 0..1)
+    progress = clamp((now - started) * 1024 // 190 ms, 0..1024)
     if reveal strip is available:
-        renderer.present_transition(ease_out_quad(t), forward)
+        renderer.present_transition(integer_ease_out(progress), forward)
     else:
         fade OLED current; present default target only at the dark midpoint
-    if t == 1: transition = None        # 当前仍是目标页的默认空布局
+    if progress == 1024: transition = None         # 当前仍是目标页的默认空布局
     remember SPI present elapsed time
     return true
 ```
 
 转场完成后的安静循环调用 `settle_current()`，每次最多执行一项 SWAP 写入、读取或页面重建；
-返回的位标志决定是否重绘和是否还有后续工作。锁定机制保证触发 `ENT`/`ESC` 的按键释放前不会
-落入新页面。`reset(root)` 用于崩溃恢复：清空
+返回的位标志决定是否重绘和是否还有后续工作。转场期间矩阵扫描照常进行，方向键边沿留在有界
+队列中并在目标页可编辑后按顺序回放；触发键只禁止“仍按住”的无边沿轮询，不会锁死其他按键。
+页面恢复时 `ESC` 可从队列中优先取出以立即中止。`reset(root)` 用于崩溃恢复：清空
 所有动画和转场，将栈替换为根页并锁住输入，避免保留损坏页面状态。
 
 ### 4.3 Renderer、状态栏和低内存页面揭示
 
 `Renderer` 不再为页面保存两张 6.7 KiB GS4 图层。旧页已经存在于 SSD1322 自带显示 RAM；
 新页默认布局只需画入应用原有的 8 KiB 主帧缓冲。转场额外内存是4个控制器列 x 2字节/列 x
-64行，即固定512字节条带，并保留7 KiB启动安全线。旧页释放后仍无法取得条带时，导航改用
-SSD1322 master-current 淡出/淡入；中点电流为零时才提交默认目标页，因此不存在可见硬切。
+64行，即固定512字节条带，常规分配保留4 KiB活动安全线。旧页确实释放了大块内存时，可在不
+执行 GC 的前提下按2 KiB恢复线尝试取得条带；按键路径绝不为了动画同步 GC。若当下仍无法分配，
+导航立即使用 SSD1322 master-current 淡出/淡入，中点电流为零时才提交默认目标页，因此不存在
+可见硬切。动画完成并显示稳定页后才释放字体缓存、GC、渐进恢复页面；后续空闲资源阶段可再 GC
+一次并预留条带，使不同页面最终回到同一固定缓冲集合。
 
 ```text
 Renderer.present(screen):
     display.clear_buffers(black)
     screen.draw(display)                         # 仅画内容区
     outgoing_screen = screen
-    sidebar.draw(display)                        # 先清除 x >= 210，再重画 BAT/DEG|RAD
+    sidebar.draw(display)                        # 固定字节直接绘制 BAT/电压/DEG|RAD
     timed display.present()
 
 Renderer.capture_transition(outgoing, incoming):
@@ -264,7 +271,9 @@ Renderer.present_transition(progress, forward):
 
 SSD1322 一个控制器列包含 4 个 GS4 像素。Viper 按连续字节复制新增区域，`present_region()` 只为
 该窗口设置列/行地址并发送数据；整段 190 ms 动画合计约写一屏内容，而不是每帧写一屏。侧栏不在
-揭示窗口内，仍每 500 ms 读取一次 ADC 并显示电压与注册表的 `RAD`/`DEG`。
+揭示窗口内，仍每 500 ms 读取一次 ADC 并显示电压与注册表的 `RAD`/`DEG`。侧栏电压使用一个
+可复用的4字节缓冲和整数十分位换算，所有标签从 XGLCD 源字节直接绘制，不创建字形或整串
+FrameBuffer。
 
 ### 4.4 主循环、渲染门控和崩溃恢复
 
@@ -275,7 +284,6 @@ SSD1322 一个控制器列包含 4 个 GS4 像素。Viper 按连续字节复制�
 forever:
     try:
         kb.scan()
-        event = kb.pop_key_event()
         now = ticks_ms()
 
         state = display_power.update(now, kb.any_pressed())
@@ -284,9 +292,10 @@ forever:
             if state == WOKE: force next render
             sleep(25 ms); continue
 
-        every 100 loops: collect GC (and measure it when diagnostics enabled)
+        event = nav.poll_event(kb)
+        every 100 loops, only with no animation/event/pressed key:
+            collect GC (and measure it when diagnostics enabled)
         animate_all(); cleanup_finished_temporary_targets()
-        event = nav.filter_event(kb, event)
 
         if event:
             optionally print INPUT trace
@@ -689,7 +698,8 @@ set_brightness(percent):
 `XglcdFont` 读取时优先验证该二进制头；为兼容旧资产，头不匹配时也能以 bytes 方式解析 C 源，
 不依赖 UTF-8 注释。字形和整串文本共用上限 256 的缓存；字符串常走一次预渲染/一次 blit，实时
 秒表/输入用 `raw=True` 逐字绘制，避免让缓存被不断变化字符串占满。分配失败时清缓存、GC、重试，
-仍失败则返回 0 宽占位，不让 UI 崩溃。
+仍失败则返回 0 宽占位，不让 UI 崩溃。固定页壳、菜单、底栏与状态侧栏绕过该缓存，直接从紧凑
+字体字节写入主帧缓冲，保证低内存恢复阶段不发生临时字形分配。
 
 ### 8.3 SDCard block-device
 
@@ -820,7 +830,8 @@ CPython `compileall`、对所有源码使用 `-march=xtensawin` 编译 `.mpy`。
 1. `Renderer.present()` 记住 OLED RAM 当前对应的页面。导航时旧页留在面板，新页画到已有主缓冲；
    不再分配 outgoing/incoming 双层，也不在每个动画帧重绘页面。
 2. 512 字节条带由 `xtensawin` Viper 从主缓冲复制新增列，再用 SSD1322 地址窗口增量写入。整段动画
-   合计约一屏 SPI 数据；7 KiB 门禁、捕获异常回退和串行内存页仍保证压力下安全直切。
+   合计约一屏 SPI 数据；常规4 KiB门禁失败时不在按键路径 GC，可按已释放页面的2 KiB恢复线尝试，
+   否则立即降级为安全淡入淡出，并在动画后的空闲阶段回收和重建可选条带。
 3. FunctionPanel 在构造期加载插件目录/描述，`Shift+ENT` 才显式重扫。这保留运行中换卡的能力，
    同时不让任意插件源码回到普通转场路径。
 4. 字体从设备运行期解析 C 源改为构建期 `.xglcd`；部署以 ABI probe 决定 `.mpy` 或 `.py`，每个
@@ -828,6 +839,8 @@ CPython `compileall`、对所有源码使用 `-march=xtensawin` 编译 `.mpy`。
 5. Plot 以四项 LRU 复用已编译表达式，并以注册表 revision 失效；平移缩放不重复编译。
 6. `DeferredStorage` 将 JSON 写出按键关键路径，仍保留 `.tmp -> primary`、`.bak` 和损坏主文件
    的恢复规则。
+7. 动画统一为1024满量程的整数 quadratic ease-out；转场期间输入边沿不被消费，`ESC` 可在恢复
+   阶段优先退出。侧栏用固定字节缓冲直接绘制，移除低堆时最后一个136字节字形分配点。
 
 审查还发现两项必须收口的问题：启动期插件缓存会过期，故添加显式重扫；原始 128 条帧样本会在
 50 次导航中淘汰早期慢帧，故改为固定内存直方图并完整计入所有帧。
@@ -862,20 +875,25 @@ ABI探针并能导入 `main.mpy`；基准与诊断后执行过设备复位，恢
 
 2026-07-24 的最终等几何页面空壳版本在 COM5 上完成10次混合往返。空壳保留真实页面的标题、
 边框、分隔线、坐标轴和固定控件位置，只将状态数据留空；主页预览与真实页标题区域逐字节比较
-差异为0。设备结果如下：
+差异为0。空闲资源恢复和固定侧栏分配修复后的设备结果如下：
 
 | 指标 | 结果 |
 | --- | ---: |
-| 输入到首个动画帧最大值 | 23.102 ms |
-| 动画帧最大值 | 13.864 ms |
+| 输入到首个动画帧最大值 | 19.955 ms |
+| 动画帧最大值 | 12.990 ms |
 | 每次转场最少可见位置 | 13 |
 | 直接切换 / 内存错误 | 0 / 0 |
 | 动画期间 SWAP/SD 事务 | 0 |
-| GC 后可用堆变化 | +32 字节 |
-| 监控期间最低空闲堆 | 592 字节 |
-| 固定缓冲集合 | 空，前后一致；`transition_strip` 仅在转场阶段驻留 |
+| GC 后可用堆变化 | -112 字节 |
+| 监控期间最低空闲堆 | 640 字节（Functions） |
+| 固定缓冲集合 | `transition_strip`，前后一致 |
 | 部署运行时资产 SHA-256 | 59 / 59 一致 |
-| 主机与 MicroPython 兼容检查 | 205 tests passed |
+| 主机与 MicroPython 兼容检查 | 235 tests passed |
+
+同一部署上的真实交互验收回放了转场期间连续压入的3个导航边沿，结果为3/3且顺序不变；菜单和
+输入完整绘制的最大耗时分别为18.113 ms和17.716 ms。另运行 `benchmarks.run(cycles=10)` 后，
+GC 最大26.500 ms，最终堆变化-32字节；其801.056 ms帧桶包含动画后的 SWAP/页面重建，不是动画帧，
+动画预算以严格监控的12.990 ms为准。
 
 复现命令：
 
@@ -908,8 +926,8 @@ ABI探针并能导入 `main.mpy`；基准与诊断后执行过设备复位，恢
 修改时应保持以下不变量：
 
 1. 主循环是唯一事件消费者；页面返回结果而不是自行操纵 `Nav`。
-2. 转场开始后至触发键释放前不允许业务输入；转场结束帧必须是目标页 canonical 默认空布局，
-   实时数据只能在其后的安静循环中渐进加入。
+2. 转场期间不得消费普通输入边沿；触发键长按不得重复导航，恢复阶段 `ESC` 必须能优先退出。
+   转场结束帧必须是目标页 canonical 默认空布局，实时数据只能在其后的安静循环中渐进加入。
 3. 插件必须隔离加载，函数重载必须原地替换 live registry；插件执行不可落入普通转场路径。
 4. 写设置/变量必须使用原子提交和空闲期 `DeferredStorage`；失败不得清空内存状态。
 5. OLED 与 SD 使用同一 SPI2 但不同 CS；部署前复位释放旧 SPI 状态。

@@ -98,6 +98,38 @@ class FunctionPanel(UIElement):
     def animation_children(self):
         return (self._menu,) if self._menu is not None else ()
 
+    def get_present_rows(self):
+        if self._menu is None:
+            return None
+        rows = self._menu.get_present_rows(self.height)
+        if rows is None:
+            return None
+        start, count = rows[0]
+        if start + count >= 54:
+            return ((start, self.height - start),)
+        return rows + ((54, 10),)
+
+    def mark_presented(self):
+        if self._menu is not None:
+            self._menu.mark_presented()
+
+    def _draw_footer(self, display):
+        if self._load_error:
+            draw_footer(display, self._load_error_detail, self.font, "ENT off")
+        elif self._save_error:
+            draw_footer(display, self._save_error, self.font, "ESC retry")
+        elif self._dependency_notice:
+            draw_footer(display, self._dependency_notice, self.font, "ESC back")
+        else:
+            draw_footer(display, "ENT toggle Sh+ENT reload", self.font,
+                        "ESC back")
+
+    def draw_present_rows(self, display):
+        if self._menu is None:
+            return
+        self._menu.draw_present_rows(display)
+        self._draw_footer(display)
+
     def release_memory(self):
         """Discard rebuildable menu labels without rescanning plug-in source."""
         if self._dirty or self._load_error or not self._menu_built:
@@ -382,15 +414,7 @@ class FunctionPanel(UIElement):
             display.draw_rectangle(0, 13, self.width, 40, 15)
         else:
             self._menu.draw(display)
-        if self._load_error:
-            draw_footer(display, self._load_error_detail, self.font, "ENT off")
-        elif self._save_error:
-            draw_footer(display, self._save_error, self.font, "ESC retry")
-        elif self._dependency_notice:
-            draw_footer(display, self._dependency_notice, self.font, "ESC back")
-        else:
-            draw_footer(display, "ENT toggle Sh+ENT reload", self.font,
-                        "ESC back")
+        self._draw_footer(display)
 
     def update(self, kb, event=None):
         action = self.menu.update(kb, event)

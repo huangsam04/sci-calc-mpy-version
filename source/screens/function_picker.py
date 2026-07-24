@@ -1,8 +1,7 @@
 """Function picker: Shift+RPN — 2-column scrollable list of all functions."""
-import time
 from ui.element import UIElement
 from input.keyboard import get_key_label
-from ui.theme import (SHELL_FUNCTION_PICKER, draw_footer, draw_header,
+from ui.theme import (SHELL_FUNCTION_PICKER, draw_footer_fast, draw_header,
                       draw_page_shell)
 from ui.residency import SETTLE_MORE, SETTLE_REDRAW
 
@@ -10,6 +9,10 @@ VISIBLE = 4      # rows visible at once
 ROW_H = 10       # pixel height per row
 COL_W = 100      # pixel width per column
 COL2_X = 105     # x start of right column
+FOOTER_HINT = "UP/DN move  4/6 column"
+FOOTER_HINT_BYTES = b"UP/DN move  4/6 column"
+EMPTY_HINT = "[No functions loaded]"
+EMPTY_HINT_BYTES = b"[No functions loaded]"
 
 
 class FunctionPicker(UIElement):
@@ -23,8 +26,6 @@ class FunctionPicker(UIElement):
         self._names = []
         self._cursor = 0     # flat index into _names
         self._offset = 0     # first visible row's base index (multiple of VISIBLE)
-        self._cooldown = 0
-        self._last_key = None
         self._needs_names_restore = None
 
     def activate(self):
@@ -32,8 +33,6 @@ class FunctionPicker(UIElement):
         self._names = sorted(ft.keys())
         self._cursor = 0
         self._offset = 0
-        self._cooldown = 0
-        self._last_key = None
         self._needs_names_restore = None
 
     def release_memory(self):
@@ -50,14 +49,10 @@ class FunctionPicker(UIElement):
         self._names = []
         self._cursor = 0
         self._offset = 0
-        self._cooldown = 0
-        self._last_key = None
         self._needs_names_restore = None
 
     def activate_default(self):
         self._names = []
-        self._cooldown = 0
-        self._last_key = None
         self._needs_names_restore = -1
 
     def restore_state(self, state):
@@ -123,15 +118,18 @@ class FunctionPicker(UIElement):
             label += "~"
         if selected:
             display.fill_rectangle(x, y, COL_W - 4, font_h, 12)
-            if self.font:
-                display.draw_text(x + 2, y, label, self.font, invert=True, gs=14)
+        if self.font:
+            direct = getattr(display, "draw_text_direct", None)
+            if direct is not None:
+                direct(x + 2, y, label.encode(), self.font,
+                       gs=0 if selected else 15)
             else:
-                display.draw_text8x8(x + 2, y, label[:12], gs=0)
+                display.draw_text(
+                    x + 2, y, label, self.font,
+                    invert=selected, gs=14 if selected else 15, raw=True)
         else:
-            if self.font:
-                display.draw_text(x + 2, y, label, self.font, gs=15)
-            else:
-                display.draw_text8x8(x + 2, y, label[:12], gs=15)
+            display.draw_text8x8(
+                x + 2, y, label[:12], gs=0 if selected else 15)
 
     def draw(self, display):
         draw_header(display, "Functions", self.font)
@@ -155,24 +153,21 @@ class FunctionPicker(UIElement):
 
         # Status
         total = len(self._names)
-        hint = "UP/DN move  4/6 column"
-        right = f"{self._cursor+1}/{total} ENT" if total else ""
+        hint = FOOTER_HINT
+        hint_bytes = FOOTER_HINT_BYTES
+        right = (str(self._cursor + 1) + "/" + str(total) + " ENT"
+                 if total else "")
         if total == 0:
-            hint = "[No functions loaded]"
-        draw_footer(display, hint, self.font, right)
+            hint = EMPTY_HINT
+            hint_bytes = EMPTY_HINT_BYTES
+        draw_footer_fast(
+            display, hint, hint_bytes, self.font, right)
 
     def update(self, kb, event=None):
         if event is None:
             return None
 
         r, c, shift = event
-        now = time.ticks_ms()
-
-        # Per-key cooldown: same-key rapid-fire prevention, different keys pass through
-        if (r, c) == self._last_key and time.ticks_diff(now, self._cooldown) < 150:
-            return None
-        self._cooldown = now
-        self._last_key = (r, c)
         label = get_key_label(r, c, shift)
         n = len(self._names)
 

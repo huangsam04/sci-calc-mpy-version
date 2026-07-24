@@ -10,10 +10,14 @@ from ui.theme import CONTENT_W
 # renders the incoming page into the normal live framebuffer.  Only a narrow
 # packed strip is copied for each incremental hardware reveal.  Four
 # controller columns are 16 pixels / 8 GS4 bytes per row, or 512 bytes at
-# 64px.  Seven KiB remains a hard start gate; destination capture can still
-# degrade safely on pressure.
+# 64px. Target page instances are built only after this strip is released, so
+# four KiB of active headroom is sufficient for the allocation-free shell and
+# avoids putting a GC pause back on the next key press.
 TRANSITION_STRIP_GROUPS = 4
-TRANSITION_ACTIVE_HEADROOM = 7 * 1024
+TRANSITION_ACTIVE_HEADROOM = 4 * 1024
+# The recovery path has already released page/font caches and captures only
+# allocation-free default shells, so it can safely use a smaller reserve.
+TRANSITION_RECOVERY_HEADROOM = 2 * 1024
 TRANSITION_TOTAL_GROUPS = (CONTENT_W + 3) // 4
 TRANSITION_PROGRESS_SCALE = 1024
 
@@ -76,11 +80,22 @@ class Renderer:
         """
         return self.enable_transition_buffers()
 
-    def enable_transition_buffers(self, allow_collect=True):
+    def enable_transition_buffers(self, allow_collect=True,
+                                  active_headroom=TRANSITION_ACTIVE_HEADROOM):
         """Try to acquire the fixed reveal strip for this memory phase."""
         self._transition_allocation_enabled = True
         self._transitions_available = True
-        if self._transition_strip is None and not self._has_allocation_headroom():
+        if (self._transition_strip is None
+                and not self._has_allocation_headroom(active_headroom)):
+            # Optional resources are restored only from an idle loop. Reclaim
+            # temporaries created while rebuilding the target page before
+            # deciding that the live heap cannot safely retain the strip.
+            # Input-path recovery passes allow_collect=False, so a key press
+            # never inherits this pause.
+            if allow_collect:
+                self.memory.collect()
+            if self._has_allocation_headroom(active_headroom):
+                return self._ensure_transition_buffers(allow_collect)
             self._transition_allocation_enabled = False
             self._transitions_available = False
             return False
@@ -112,7 +127,7 @@ class Renderer:
         try:
             strip = self.memory.reserve_buffer(
                 "transition_strip", buffer_length, bytearray,
-                retry_collect=allow_collect)
+                retry_collect=False)
             if strip is None:
                 raise MemoryError()
             base_view = memoryview(strip)
@@ -126,6 +141,7 @@ class Renderer:
             strip = None
             if allow_collect:
                 self.memory.collect()
+                return self._ensure_transition_buffers(False)
             self._transitions_available = False
             self._transition_allocation_enabled = False
             return False
@@ -137,9 +153,9 @@ class Renderer:
     def _transition_buffer_length(self):
         return TRANSITION_STRIP_GROUPS * 2 * self.display.height
 
-    def _has_allocation_headroom(self):
+    def _has_allocation_headroom(self, active_headroom):
         return self.memory.has_headroom(
-            self._transition_buffer_length() + TRANSITION_ACTIVE_HEADROOM)
+            self._transition_buffer_length() + max(0, int(active_headroom)))
 
     def can_start_transition(self):
         """Return whether the already-reserved strip can reveal a page."""
@@ -225,23 +241,55 @@ class Renderer:
         return (self.capture_outgoing(outgoing)
                 and self.capture_incoming(incoming))
 
-    def _present_composed(self):
-        # Sidebar owns and clears the complete non-content region.
-        self.sidebar.draw(self.display)
+    def _present_composed(self, rows=None):
+        # A row-only update is valid only after a canonical frame.  Its
+        # controller writes cover content rows exclusively, so polling the
+        # sidebar here can turn an input character into a full-screen upload.
+        # Leave slow chrome state for the next idle canonical frame instead.
+        if rows is None:
+            self.sidebar.draw(self.display)
         self._chrome_ready = True
         started = time.ticks_us()
-        self.display.present()
+        if rows is not None:
+            self.display.present_rows(rows)
+        else:
+            self.display.present()
         self.last_present_us = time.ticks_diff(time.ticks_us(), started)
+
+    def _screen_present_rows(self, screen):
+        """Return a proven-stable row hint for an already visible screen."""
+        if self._outgoing_screen is not screen:
+            return None
+        if getattr(screen, "_residency_error", ""):
+            return None
+        getter = getattr(screen, "get_present_rows", None)
+        if getter is None:
+            return None
+        return getter()
+
+    @staticmethod
+    def _mark_screen_presented(screen):
+        marker = getattr(screen, "mark_presented", None)
+        if marker is not None:
+            marker()
 
     def present(self, screen):
         """Present one canonical live page frame."""
-        self.display.clear_buffers(0)
-        screen.draw(self.display)
-        error_drawer = getattr(screen, "draw_residency_error", None)
-        if error_drawer is not None:
-            error_drawer(self.display)
-        self._present_composed()
+        rows = self._screen_present_rows(screen)
+        partial_drawer = (getattr(screen, "draw_present_rows", None)
+                          if rows is not None else None)
+        if partial_drawer is None:
+            rows = None
+            self.display.clear_buffers(0)
+            screen.draw(self.display)
+            error_drawer = getattr(screen, "draw_residency_error", None)
+            if error_drawer is not None:
+                error_drawer(self.display)
+        else:
+            partial_drawer(self.display)
+        self._present_composed(rows)
         self._outgoing_screen = screen
+        self._mark_screen_presented(screen)
 
     def present_transition_progress(self, eased_progress, forward):
         """Reveal only newly exposed controller columns of the incoming UI."""

@@ -19,7 +19,8 @@ class KeyboardStub:
 def test_display_brightness_uses_ssd1322_master_current_command():
     display = object.__new__(Display)
     commands = []
-    display.write_cmd = lambda *values: commands.append(values)
+    display._write_cmd1 = lambda command, value: commands.append(
+        (command, value))
 
     display.set_brightness(50)
     display.set_brightness(100)

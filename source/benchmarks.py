@@ -2,6 +2,8 @@
 import gc
 import time
 
+from anim.engine import (
+    active_animation_count, animate_all, cancel_all_animations)
 from performance import metrics as _metrics
 
 
@@ -35,6 +37,20 @@ def _drive_transition(nav, metrics, frame_pace_ms, record=True):
         nav.present_current()
         if record:
             metrics.record_frame(time.ticks_diff(time.ticks_us(), started))
+    settling = True
+    while settling or active_animation_count():
+        was_active = bool(active_animation_count())
+        animate_all()
+        started = time.ticks_us()
+        if was_active:
+            nav.present_current()
+            settling = True
+        else:
+            settling = nav.settle_current()
+        if record:
+            metrics.record_frame(time.ticks_diff(time.ticks_us(), started))
+        if (settling or active_animation_count()) and frame_pace_ms:
+            time.sleep_ms(frame_pace_ms)
     # Plot/function-panel exits release resources intentionally.  Model the
     # next quiet-loop turn so a later normal page can regain animation.
     nav.restore_optional_resources()
@@ -59,83 +75,17 @@ def _emit_report(report, emit):
 
 
 def _build_runtime(metrics):
-    """Build the normal UI without entering its infinite keyboard loop."""
-    metrics.start_boot()
-    from main import _init_display, _reload_functions, Nav
-    metrics.mark_boot("main_module")
-    display = _init_display()
-    metrics.mark_boot("display")
+    """Reuse the production LazyScreen graph without entering its main loop."""
+    from main import main
 
-    from input.keyboard import Keyboard
-    Keyboard()
-    metrics.mark_boot("keyboard")
-
-    from display.xglcd_font import XglcdFont
-    font_main = XglcdFont("/sd/fonts/Bally7x9.xglcd", 7, 9)
-    font_small = XglcdFont("/sd/fonts/Neato5x7.xglcd", 5, 7)
-    metrics.mark_boot("fonts")
-
-    from utils.storage import DeferredStorage, load_settings, load_vars
-    settings = load_settings()
-    persistence = DeferredStorage()
-    metrics.mark_boot("settings")
-    vars_dict = load_vars()
-    metrics.mark_boot("variables")
-    registry = _reload_functions(settings)
-    registry.angle_mode = settings.get("angle_mode", 0)
-    metrics.mark_boot("functions")
-
-    # The optional reveal strip is deliberately deferred until a real core frame
-    # exists.  The benchmark mirrors this lifecycle so it cannot hide a boot
-    # regression by reserving large buffers before page construction.
-    nav = Nav(display, font_small, registry)
-
-    from screens.about import AboutScreen
-    from screens.calculator import CalculatorScreen
-    from screens.function_panel import FunctionPanel
-    from screens.main_menu import MainMenu
-    from screens.plot import PlotScreen
-    from screens.settings import SettingsScreen
-    from screens.stopwatch import StopwatchScreen
-    from version import VERSION
-    metrics.mark_boot("screen_imports")
-
-    about = AboutScreen(font_main, VERSION)
-    calc_screen = CalculatorScreen(
-        font_main, font_small, registry, vars_dict,
-        display_digits=settings.get("display_digits", 4))
-    settings_screen = SettingsScreen(
-        font_main, display, settings, about,
-        request_save=persistence.request_settings,
-        on_display_digits_change=calc_screen.set_display_digits)
-    func_panel = FunctionPanel(
-        font_main, request_settings=persistence.request_settings,
-        settings=settings,
-        plugin_functions=registry.plugin_functions,
-        plugin_dependencies=registry.plugin_dependencies)
-    func_panel.set_load_errors(registry.plugin_errors)
-    stopwatch = StopwatchScreen(font_main)
-    plot_screen = PlotScreen(font_main, font_small, registry,
-                             memory=nav.memory)
-    main_menu = MainMenu(font_main)
-    main_menu.add_screen("Calculator", calc_screen)
-    main_menu.add_screen("Plot", plot_screen)
-    main_menu.add_screen("Function Panel", func_panel)
-    main_menu.add_screen("Stopwatch", stopwatch)
-    main_menu.add_screen("Settings", settings_screen)
-    nav.memory.register_fonts((font_main, font_small))
-    nav.register_screens((main_menu, calc_screen, plot_screen, func_panel,
-                          stopwatch, settings_screen, about))
-    nav.boot(main_menu)
+    nav, root, targets = main(run_loop=False)
+    # A caller may supply an isolated metrics recorder in host tests. The
+    # production builder binds its module singleton, so mirror that binding
+    # onto the requested recorder without rebuilding the screen graph.
+    metrics.bind_runtime(nav, root, targets)
     nav.present_current()
     nav.mark_first_frame_presented()
     nav.restore_optional_resources()
-    metrics.mark_boot("first_frame")
-    metrics.mark_boot("optional_resources")
-    metrics.bind_runtime(
-        nav, main_menu,
-        (calc_screen, plot_screen, func_panel, stopwatch, settings_screen))
-    metrics.mark_boot("ui_ready")
 
 
 def run(cycles=50, frame_pace_ms=16, gc_runs=3, emit=print,
@@ -153,6 +103,7 @@ def run(cycles=50, frame_pace_ms=16, gc_runs=3, emit=print,
 
     if nav.current is not root:
         nav.reset(root)
+    cancel_all_animations()
 
     # Load each target and populate its bounded caches before sampling heap
     # stability. This keeps one-time font/module allocations out of the result.
@@ -179,6 +130,7 @@ def run(cycles=50, frame_pace_ms=16, gc_runs=3, emit=print,
         nav.go_back()
         _drive_transition(nav, metrics, frame_pace_ms)
 
+    cancel_all_animations()
     _collect(metrics)
     heap_after = _heap_free()
     report = metrics.snapshot()

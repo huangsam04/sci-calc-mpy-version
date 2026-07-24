@@ -10,7 +10,7 @@ from anim.engine import insert_animation
 from input.keyboard import get_key_label
 from ui.theme import SHELL_PLOT, draw_footer, draw_page_shell
 from ui.error_popup import ErrorPopup
-from ui.motion import PANEL_SLIDE_MS, MOTION_EASING
+from ui.motion import PANEL_SLIDE_MS
 from ui.residency import SETTLE_MORE, SETTLE_REDRAW
 
 
@@ -64,10 +64,12 @@ class PlotScreen(UIElement):
         self._curve_restore_auto_scale = False
         self._curve_reveal = self.width
         self._curve_job = None
+        self._presented_editor_state = None
 
     def activate(self):
         self.mode = 0
         self._overlay_y = -OVERLAY_H
+        self._presented_editor_state = None
         self.input_box.activate()
         if not self.input_box.get_str() and self.expr:
             self.input_box.set_str(self.expr)
@@ -90,6 +92,7 @@ class PlotScreen(UIElement):
         self._curve_job = None
         self.error_popup.dismiss()
         self.input_box.release_memory()
+        self._presented_editor_state = None
         return released
 
     def snapshot_state(self):
@@ -123,11 +126,13 @@ class PlotScreen(UIElement):
         self._curve_reveal = 0
         self._curve_job = None
         self.error_popup.dismiss()
+        self._presented_editor_state = None
 
     def activate_default(self):
         self.mode = 0
         self._overlay_y = -OVERLAY_H
         self.input_box.cursor.is_visible = False
+        self._presented_editor_state = None
 
     def restore_state(self, state):
         expr = state.get("expr", "")
@@ -149,6 +154,7 @@ class PlotScreen(UIElement):
         self.input_box.cursor.is_visible = (self.mode == 1)
         self._needs_curve_restore = bool(self.expr)
         self._curve_restore_auto_scale = False
+        self._presented_editor_state = None
 
     def settle_step(self):
         if self._needs_curve_restore:
@@ -174,11 +180,45 @@ class PlotScreen(UIElement):
         graph_width = self.width - GRAPH_PAD_X * 2 + 1
         self._curve_reveal = 0
         insert_animation(self, '_curve_reveal', 0, graph_width,
-                         PANEL_SLIDE_MS, MOTION_EASING)
+                         PANEL_SLIDE_MS)
         return SETTLE_REDRAW | SETTLE_MORE
 
     def draw_transition_default(self, display):
         draw_page_shell(display, SHELL_PLOT, self.font)
+
+    def _editor_present_state(self):
+        return (
+            self.mode,
+            int(self._overlay_y),
+            self.input_box.y,
+            self.input_box.str,
+            self.input_box.cursor_pos,
+            self.input_box.cursor.x,
+            self.input_box.cursor.y,
+            self.expr,
+            self.x_min,
+            self.x_max,
+            self._y_min,
+            self._y_max,
+            self._curve_reveal,
+            self._needs_curve_restore,
+            self._curve_job is not None,
+            self.error_popup.active,
+        )
+
+    def get_present_rows(self):
+        """Restrict settled plot-editor keystrokes to their visible rows."""
+        current = self._editor_present_state()
+        previous = self._presented_editor_state
+        if (previous is None or current[0] != 1 or previous[0] != 1
+                or current[1] != 0 or previous[1] != 0):
+            return None
+        if current[7:] != previous[7:] or current[2:7] == previous[2:7]:
+            return None
+        return ((0, OVERLAY_H), (54, 10))
+
+    def mark_presented(self):
+        self._presented_editor_state = self._editor_present_state()
 
     # ── zoom / pan ───────────────────────────────────────────────
 
@@ -222,13 +262,13 @@ class PlotScreen(UIElement):
             self.input_box.insert_str(prefill)
         self.mode = 1
         insert_animation(self, '_overlay_y', self._overlay_y, 0,
-                         PANEL_SLIDE_MS, MOTION_EASING)
+                         PANEL_SLIDE_MS)
         self.input_box.cursor.is_visible = True
 
     def _leave_edit(self, plot=True):
         self.mode = 0
         insert_animation(self, '_overlay_y', self._overlay_y, -OVERLAY_H,
-                         PANEL_SLIDE_MS, MOTION_EASING)
+                         PANEL_SLIDE_MS)
         self.input_box.cursor.is_visible = False
         if plot:
             self.expr = self.input_box.get_str().strip()
@@ -682,6 +722,11 @@ class PlotScreen(UIElement):
             hint = "ENT plot  ESC cancel"
             hint2 = "RPN x"
         draw_footer(display, hint, self.small_font, hint2)
+
+    def draw_present_rows(self, display):
+        """Redraw the settled editor overlay without repainting the graph."""
+        self._draw_overlay(display)
+        self._draw_hint(display)
 
     def draw(self, display):
         if self.mode == 2:

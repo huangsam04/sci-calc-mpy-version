@@ -1,7 +1,7 @@
 import importlib.util
 from pathlib import Path
 
-from display.xglcd_font import XglcdFont
+from display.xglcd_font import FONT_CACHE_MAX, XglcdFont
 
 
 PROJECT = Path(__file__).parents[1]
@@ -60,3 +60,7 @@ def test_font_builder_limits_legacy_sources_to_the_device_glyph_range(tmp_path):
 
     compact = XglcdFont(str(output_path), 5, 7)
     assert len(compact.letters) == compact.bytes_per_letter * 96
+
+
+def test_font_cache_stays_bounded_for_low_memory_runtime():
+    assert FONT_CACHE_MAX <= 64

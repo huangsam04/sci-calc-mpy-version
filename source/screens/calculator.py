@@ -3,14 +3,14 @@ import time
 from anim.engine import insert_animation
 from ui.element import UIElement
 from ui.inputbox import InputBox
-from ui.motion import MOTION_EASING, RESULT_PULSE_MS
+from ui.motion import RESULT_PULSE_MS
 from calc.functions import EvalContext
 from calc.number import (DEFAULT_DISPLAY_DIGITS, MAX_DISPLAY_DIGITS,
                          MIN_DISPLAY_DIGITS, Number, format_number)
 from calc.parser import evaluate, ParseError
 from input.keyboard import get_key_label
-from ui.theme import (SHELL_CALCULATOR, draw_footer, draw_page_shell,
-                      draw_text, fit_text, text_width)
+from ui.theme import (SHELL_CALCULATOR, draw_footer, draw_footer_fast,
+                      draw_page_shell, draw_text, fit_text, text_width)
 from ui.error_popup import ErrorPopup
 from ui.residency import SETTLE_MORE, SETTLE_REDRAW
 from utils.storage import _decode_numbers, _encode_numbers
@@ -34,6 +34,12 @@ class CalculatorScreen(UIElement):
         super().__init__(0, 0, 210, 64)
         self.font = font
         self.small_font = small_font or font
+        self._input_footer_hint = fit_text(
+            "ENT calc  Tab history", 126, self.small_font)
+        self._input_footer_hint_bytes = self._input_footer_hint.encode()
+        self._history_footer_hint = fit_text(
+            "8/2 select  Tab input", 126, self.small_font)
+        self._history_footer_hint_bytes = self._history_footer_hint.encode()
         self.input_box = InputBox(0, 0, 210, INPUT_SINGLE_H,
                                   MAX_EXPRESSION_CHARS, font, visible_rows=2)
         self.mode = 0        # 0=input, 1=history nav, 2=error popup
@@ -52,16 +58,19 @@ class CalculatorScreen(UIElement):
         self._result_pulse = 0
         self._history_restore = None
         self._history_restore_index = 0
+        self._presented_editor_state = None
 
     def activate(self):
         self.input_box.activate()
         self.mode = 0
+        self._presented_editor_state = None
 
     def deactivate(self):
         # Navigation cancels owned animations after this hook. Clear the
         # rendered value too, so an interrupted pulse cannot remain visible
         # when the calculator is opened again.
         self._result_pulse = 0
+        self._presented_editor_state = None
 
     def animation_children(self):
         return (self.input_box, self.error_popup)
@@ -99,10 +108,12 @@ class CalculatorScreen(UIElement):
         self._view_offset = 0
         self._result_pulse = 0
         self.error_popup.dismiss()
+        self._presented_editor_state = None
 
     def activate_default(self):
         self.mode = 0
         self.input_box.cursor.is_visible = False
+        self._presented_editor_state = None
 
     def restore_state(self, state):
         text = state.get("input", "")
@@ -122,6 +133,7 @@ class CalculatorScreen(UIElement):
         self._history_restore = rows
         self._history_restore_index = 0
         self.input_box.cursor.is_visible = (self.mode == 0)
+        self._presented_editor_state = None
 
     def settle_step(self):
         rows = self._history_restore
@@ -159,7 +171,7 @@ class CalculatorScreen(UIElement):
             self.input_box.clear_str()
             self._result_pulse = 15
             insert_animation(self, "_result_pulse", 15, 0,
-                             RESULT_PULSE_MS, MOTION_EASING)
+                             RESULT_PULSE_MS)
         except ParseError as e:
             self.error_popup.show(e.expr if e.expr else expr, e, e.pos)
             self.mode = 2
@@ -192,6 +204,37 @@ class CalculatorScreen(UIElement):
         history_start_y = divider_y + HIST_TOP_GAP
         return divider_y, history_start_y, history_visible
 
+    def _editor_present_state(self):
+        self._panel_layout()
+        return (
+            self.mode,
+            self.input_box.str,
+            self.input_box.cursor_pos,
+            self.input_box.cursor.x,
+            self.input_box.cursor.y,
+            self.input_box.height,
+            len(self.history),
+            self._cursor,
+            self._view_offset,
+            self._result_pulse,
+            self.storage_error,
+        )
+
+    def get_present_rows(self):
+        """Limit ordinary editor feedback to its rows and the counter footer."""
+        current = self._editor_present_state()
+        previous = self._presented_editor_state
+        if previous is None or current[0] != 0 or previous[0] != 0:
+            return None
+        if current[5] != previous[5] or current[6:] != previous[6:]:
+            return None
+        if current[1:5] == previous[1:5]:
+            return None
+        return ((0, current[5]), (54, 10))
+
+    def mark_presented(self):
+        self._presented_editor_state = self._editor_present_state()
+
     def _clamp_view(self, history_visible):
         max_off = max(0, len(self.history) - history_visible)
         if self._cursor < self._view_offset:
@@ -222,6 +265,36 @@ class CalculatorScreen(UIElement):
         draw_text(display, result_x, y, result_text, self.font,
                   gs=14 if selected else 15, invert=selected)
 
+    def _draw_editor(self, display):
+        self.input_box.y = 0
+        divider_y, hist_start_y, hist_visible = self._panel_layout()
+        self.input_box.cursor.is_visible = (self.mode == 0)
+        self.input_box.draw(display)
+        display.draw_hline(0, divider_y, 210, 8)
+        return hist_start_y, hist_visible
+
+    def _draw_footer(self, display):
+        if (self.storage_error
+                and time.ticks_diff(time.ticks_ms(),
+                                    self._storage_error_time) < 5000):
+            draw_footer(display, self.storage_error, self.small_font)
+        elif self.mode == 0:
+            right = (str(len(self.input_box.get_str()))
+                     + "/" + str(MAX_EXPRESSION_CHARS))
+            draw_footer_fast(display, self._input_footer_hint,
+                             self._input_footer_hint_bytes,
+                             self.small_font, right)
+        else:
+            right = str(self._cursor + 1) + "/" + str(len(self.history))
+            draw_footer_fast(display, self._history_footer_hint,
+                             self._history_footer_hint_bytes,
+                             self.small_font, right)
+
+    def draw_present_rows(self, display):
+        """Redraw only the rows declared safe by ``get_present_rows``."""
+        self._draw_editor(display)
+        self._draw_footer(display)
+
     def draw(self, display):
         if self.mode == 2:
             if self.error_popup.expired():
@@ -232,13 +305,7 @@ class CalculatorScreen(UIElement):
                 return
 
         # --- One-line editor that expands to two rows only when needed ---
-        self.input_box.y = 0
-        divider_y, hist_start_y, hist_visible = self._panel_layout()
-        self.input_box.cursor.is_visible = (self.mode == 0)
-        self.input_box.draw(display)
-
-        # --- Divider ---
-        display.draw_hline(0, divider_y, 210, 8)
+        hist_start_y, hist_visible = self._draw_editor(display)
 
         # --- History: four rows with a compact editor, three when expanded ---
         self._clamp_view(hist_visible)
@@ -253,16 +320,7 @@ class CalculatorScreen(UIElement):
                                    fresh=(hist_idx == 0 and self._result_pulse > 0))
 
         # --- Status line (y=55..63) ---
-        if self.storage_error and time.ticks_diff(time.ticks_ms(), self._storage_error_time) < 5000:
-            status = self.storage_error
-            right = ""
-        elif self.mode == 0:
-            status = "ENT calc  Tab history"
-            right = str(len(self.input_box.get_str())) + "/" + str(MAX_EXPRESSION_CHARS)
-        else:
-            status = "8/2 select  Tab input"
-            right = str(self._cursor + 1) + "/" + str(len(self.history))
-        draw_footer(display, status, self.small_font, right)
+        self._draw_footer(display)
 
     def update(self, kb, event=None):
         if self.mode == 2:

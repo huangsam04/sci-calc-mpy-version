@@ -70,6 +70,22 @@ def test_plot_waits_for_panel_animation_before_rendering_new_curve(monkeypatch):
     assert plot.settle_step() == 3
 
 
+def test_plot_editor_uses_overlay_and_footer_rows_after_its_slide_settles():
+    plot = PlotScreen(None, registry=build_registry())
+    plot.mode = 1
+    plot._overlay_y = 0
+    plot.input_box.activate()
+    plot.input_box.y = 1
+    plot.input_box.cursor.y = 2
+    plot.mark_presented()
+
+    plot.input_box.insert_str("x")
+    assert plot.get_present_rows() == ((0, 14), (54, 10))
+
+    plot._overlay_y = -1
+    assert plot.get_present_rows() is None
+
+
 def test_plot_restore_limits_each_quiet_step_to_one_sampling_slice(monkeypatch):
     plot = PlotScreen(None, registry=build_registry())
     plot.expr = "x+1"

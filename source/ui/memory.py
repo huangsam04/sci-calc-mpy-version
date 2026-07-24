@@ -101,6 +101,16 @@ class MemoryManager:
         """Release the graph bitmap after its screen dropped its wrapper."""
         return self.release_buffer("plot_curve")
 
+    def handoff_plot_workspace(self):
+        """Reuse the released graph bitmap as the next transition strip."""
+        buffer = self._buffers.get("plot_curve")
+        if buffer is None:
+            return False
+        self.release_buffer("transition_strip")
+        del self._buffers["plot_curve"]
+        self._buffers["transition_strip"] = buffer
+        return True
+
     def register_screens(self, screens):
         self._screens = tuple(screens)
 

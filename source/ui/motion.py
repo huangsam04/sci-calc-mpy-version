@@ -9,7 +9,6 @@ MENU_CURSOR_MS = 100
 TEXT_CURSOR_MS = 70
 CONTROL_MOTION_MS = 100
 RESULT_PULSE_MS = 180
-MOTION_EASING = "OUT_QUAD"
 
 # The native transition compositor leaves enough time for a 16ms cadence,
 # giving full-page reveals at least twelve visible positions.

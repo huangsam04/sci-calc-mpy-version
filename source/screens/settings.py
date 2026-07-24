@@ -76,7 +76,8 @@ class SettingsScreen(UIElement):
         self.display.set_brightness(value)
         self._request_persist()
         # Only the value changes; replacing the row avoids resetting selection.
-        self.menu.items[2] = ("Brightness  " + str(value) + "%", None)
+        self.menu.replace_item(
+            2, "Brightness  " + str(value) + "%", None)
 
     def _change_display_digits(self, delta, wrap=False):
         value = self._display_digits() + delta
@@ -90,7 +91,8 @@ class SettingsScreen(UIElement):
         if self._on_display_digits_change is not None:
             self._on_display_digits_change(value)
         self._request_persist()
-        self.menu.items[3] = ("Display digits  " + str(value), None)
+        self.menu.replace_item(
+            3, "Display digits  " + str(value), None)
 
     def _on_save_result(self, success):
         self._save_pending = not success
@@ -101,6 +103,34 @@ class SettingsScreen(UIElement):
 
     def animation_children(self):
         return (self.menu,)
+
+    def get_present_rows(self):
+        rows = self.menu.get_present_rows(self.height)
+        if rows is None:
+            return None
+        start, count = rows[0]
+        if start + count >= 54:
+            return ((start, self.height - start),)
+        return rows + ((54, 10),)
+
+    def mark_presented(self):
+        self.menu.mark_presented()
+
+    def _draw_footer(self, display):
+        if self._save_failed:
+            draw_footer(display, "Save failed - check SD", self.font)
+        elif self._save_pending:
+            draw_footer(display, "Saving...", self.font)
+        elif self.menu.cursor_pos in (2, 3):
+            draw_footer(display, "4/6 adjust", self.font, "ENT next")
+        elif self.menu.cursor_pos == 1:
+            draw_footer(display, "ENT open", self.font)
+        else:
+            draw_footer(display, "Firmware version", self.font)
+
+    def draw_present_rows(self, display):
+        self.menu.draw_present_rows(display)
+        self._draw_footer(display)
 
     def snapshot_state(self):
         return {
@@ -136,16 +166,7 @@ class SettingsScreen(UIElement):
     def draw(self, display):
         draw_header(display, "Settings", self.font)
         self.menu.draw(display)
-        if self._save_failed:
-            draw_footer(display, "Save failed - check SD", self.font)
-        elif self._save_pending:
-            draw_footer(display, "Saving...", self.font)
-        elif self.menu.cursor_pos in (2, 3):
-            draw_footer(display, "4/6 adjust", self.font, "ENT next")
-        elif self.menu.cursor_pos == 1:
-            draw_footer(display, "ENT open", self.font)
-        else:
-            draw_footer(display, "Firmware version", self.font)
+        self._draw_footer(display)
 
     def update(self, kb, event=None):
         if event is None:

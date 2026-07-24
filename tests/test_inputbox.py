@@ -62,6 +62,22 @@ def test_expression_capacity_is_separate_from_visible_space():
     assert len(box.get_str()) == 96
 
 
+def test_typing_updates_caret_without_scheduling_extra_frames():
+    engine.cancel_all_animations()
+    box = InputBox(0, 0, 34, 12, 96)
+
+    assert box.insert_str("1") is True
+    assert engine.is_animating(box.cursor) is False
+
+    assert box.delete_str() is True
+    assert engine.is_animating(box.cursor) is False
+
+    box.insert_str("12")
+    box.move_cursor_left()
+    assert engine.is_animating(box.cursor) is True
+    engine.cancel_all_animations()
+
+
 def test_restored_text_can_position_the_cursor_without_animation():
     engine.cancel_all_animations()
     box = InputBox(0, 0, 34, 12, 96)

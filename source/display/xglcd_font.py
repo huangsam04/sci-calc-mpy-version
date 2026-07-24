@@ -6,6 +6,7 @@ from framebuf import FrameBuffer, MONO_VLSB  # type: ignore
 
 _COMPACT_MAGIC = b"XGF1"
 _COMPACT_HEADER_SIZE = 8
+FONT_CACHE_MAX = 64
 
 
 class XglcdFont(object):
@@ -18,6 +19,9 @@ class XglcdFont(object):
         start_letter: ASCII number of first letter
         height_bytes: How many bytes comprises letter height
     """
+    __slots__ = (
+        "width", "height", "start_letter", "letter_count",
+        "bytes_per_letter", "_cache", "_cache_max", "letters")
 
     def __init__(self, path, width, height, start_letter=32, letter_count=96):
         self.width = width
@@ -29,7 +33,7 @@ class XglcdFont(object):
         # Cache rendered glyphs and strings. Hard cap prevents unbounded growth
         # from frequently-changing text like clock displays (time strings).
         self._cache = {}
-        self._cache_max = 256
+        self._cache_max = FONT_CACHE_MAX
         self.__load_xglcd_font(path)
 
     def __load_xglcd_font(self, path):

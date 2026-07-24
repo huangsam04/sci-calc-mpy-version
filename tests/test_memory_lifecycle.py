@@ -43,6 +43,16 @@ def test_memory_plan_reserves_plot_workspace_at_a_fixed_size():
     assert memory.get_buffer("plot_curve", len(workspace)) is workspace
 
 
+def test_plot_workspace_handoff_reuses_the_same_allocation_for_transition():
+    memory = MemoryManager()
+    workspace = memory.reserve_plot_workspace(64)
+
+    assert memory.handoff_plot_workspace() is True
+
+    assert memory.get_buffer("plot_curve") is None
+    assert memory.get_buffer("transition_strip", 512) is workspace
+
+
 def test_released_optional_buffer_can_be_retried_after_a_previous_failure():
     calls = []
 

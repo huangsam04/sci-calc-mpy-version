@@ -1,72 +1,41 @@
-"""Animation engine for smooth UI transitions.
+"""Allocation-light integer animation for high-frequency UI feedback.
 
 Animations target one object attribute and are keyed by (object, attribute),
 so a newer animation replaces an older one without retaining stale targets.
 """
 import time
-import math
 
-# --- Easing functions ---
-
-def easing_linear(t):
-    """t in [0,1] -> value in [0,1]"""
-    return t
-
-def easing_indent(t):
-    """Cubic ease-out with exact endpoints."""
-    return 1 - (1 - t) ** 3
-
-def easing_indent_inv(t):
-    """Cubic ease-in with exact endpoints."""
-    return t ** 3
+PROGRESS_SCALE = 1024
 
 
-def easing_smooth(t):
-    """Cubic ease-in-out for full-screen movement."""
-    if t < 0.5:
-        return 4 * t * t * t
-    return 1 - ((-2 * t + 2) ** 3) / 2
-
-
-def easing_out_quint(t):
-    """Responsive movement with a long, gentle settle near the target."""
-    return 1 - (1 - t) ** 5
-
-
-def easing_out_quad(t):
-    """Balanced deceleration that remains visibly in motion near the end."""
-    return 1 - (1 - t) ** 2
-
-
-def easing_bounce(t):
-    """Exponential decay sine: overshoot and bounce."""
-    return pow(2, -10 * t) * math.sin((t * 10 - 0.75) * (2 * 3.14159265 / 3)) + 1
-
-EASING_MAP = {
-    "LINEAR": easing_linear,
-    "INDENT": easing_indent,
-    "INDENTINV": easing_indent_inv,
-    "SMOOTH": easing_smooth,
-    "OUT_QUINT": easing_out_quint,
-    "OUT_QUAD": easing_out_quad,
-    "BOUNCE": easing_bounce,
-}
+def ease_out_quad(progress, scale=PROGRESS_SCALE):
+    """Return integer quadratic ease-out progress with exact endpoints."""
+    progress = max(0, min(int(scale), int(progress)))
+    remaining = int(scale) - progress
+    return int(scale) - remaining * remaining // int(scale)
 
 
 # --- Animation class ---
 
 class Animation:
-    def __init__(self, target, start_val, end_val, duration, easing="OUT_QUAD", delay=0):
+    __slots__ = (
+        "target", "attr", "start_val", "end_val", "duration",
+        "delay", "ensure_progress", "created", "started", "start_time",
+        "finished", "_stepped")
+
+    def __init__(self, target, start_val, end_val, duration,
+                 delay=0, ensure_progress=False):
         self.target = target          # UIElement or dict with key
         self.attr = None              # attribute name string (e.g. 'x', 'y')
         self.start_val = start_val
         self.end_val = end_val
         self.duration = duration      # ms
-        self.easing = easing          # string key into EASING_MAP
         self.delay = delay            # ms
+        self.ensure_progress = ensure_progress
         self.created = time.ticks_ms()
         self.started = False
         self.finished = False
+        self._stepped = False
 
     def step(self):
         now = time.ticks_ms()
@@ -80,17 +49,39 @@ class Animation:
             self.start_time = now
 
         anim_elapsed = time.ticks_diff(now, self.start_time)
-        t = 1.0 if self.duration <= 0 else min(1.0, anim_elapsed / self.duration)
+        progress = (
+            PROGRESS_SCALE if self.duration <= 0 else
+            min(PROGRESS_SCALE,
+                max(0, anim_elapsed) * PROGRESS_SCALE // self.duration))
+        eased = ease_out_quad(progress)
+        val = (self.start_val
+               + (self.end_val - self.start_val)
+               * eased // PROGRESS_SCALE)
 
-        eased = EASING_MAP[self.easing](t)
-        val = self.start_val + (self.end_val - self.start_val) * eased
+        if (self.ensure_progress and self._stepped
+                and progress < PROGRESS_SCALE
+                and self.end_val != self.start_val):
+            if hasattr(self.target, self.attr):
+                current = getattr(self.target, self.attr)
+            elif isinstance(self.target, dict) and self.attr in self.target:
+                current = self.target[self.attr]
+            else:
+                current = None
+            if current == val:
+                direction = 1 if self.end_val > self.start_val else -1
+                candidate = current + direction
+                if ((direction > 0 and candidate <= self.end_val)
+                        or (direction < 0 and candidate >= self.end_val)):
+                    val = candidate
 
         if hasattr(self.target, self.attr):
-            setattr(self.target, self.attr, int(val))
+            setattr(self.target, self.attr, val)
         elif isinstance(self.target, dict) and self.attr in self.target:
-            self.target[self.attr] = int(val)
+            self.target[self.attr] = val
 
-        if t >= 1.0:
+        self._stepped = True
+
+        if progress >= PROGRESS_SCALE:
             # Snap to exact end
             if hasattr(self.target, self.attr):
                 setattr(self.target, self.attr, self.end_val)
@@ -105,12 +96,13 @@ class Animation:
 # --- Global registry ---
 
 _animations = {}  # (id(target), attribute) -> Animation
-_tmp_targets = []  # elements kept alive for exit animations
 
 
-def insert_animation(target, attr, start_val, end_val, duration, easing="OUT_QUAD", delay=0):
+def insert_animation(target, attr, start_val, end_val, duration,
+                     delay=0, ensure_progress=False):
     """Register an animation. Replaces any existing animation on (target, attr)."""
-    anim = Animation(target, start_val, end_val, duration, easing, delay)
+    anim = Animation(target, start_val, end_val, duration, delay,
+                     ensure_progress)
     anim.attr = attr
     key = (id(target), attr)
 
@@ -121,10 +113,13 @@ def insert_animation(target, attr, start_val, end_val, duration, easing="OUT_QUA
     return anim
 
 
-def insert_tmp_target(target):
-    """Keep a target alive for animations even after it leaves the active tree."""
-    if target not in _tmp_targets:
-        _tmp_targets.append(target)
+def cancel_animation(target, attr):
+    """Cancel one attribute without disturbing other motion on the target."""
+    key = (id(target), attr)
+    if key in _animations:
+        del _animations[key]
+        return True
+    return False
 
 
 def animate_all():
@@ -140,21 +135,6 @@ def animate_all():
     if dead is not None:
         for key in dead:
             del _animations[key]
-
-
-def update_tmp():
-    """Clean up tmp targets whose animations are done."""
-    global _tmp_targets
-    if not _tmp_targets:
-        return
-    surviving = []
-    for t in _tmp_targets:
-        tid = id(t)
-        for k in _animations:
-            if k[0] == tid:
-                surviving.append(t)
-                break
-    _tmp_targets = surviving
 
 
 def is_animating(target):
@@ -178,7 +158,6 @@ def active_animation_count():
 def cancel_all_animations():
     """Release every animation target before changing screen ownership."""
     _animations.clear()
-    _tmp_targets[:] = []
 
 
 def cancel_animations(root):
@@ -195,8 +174,3 @@ def cancel_animations(root):
     for key in list(_animations.keys()):
         if key[0] in target_ids:
             del _animations[key]
-    kept = []
-    for target in _tmp_targets:
-        if id(target) not in target_ids:
-            kept.append(target)
-    _tmp_targets[:] = kept

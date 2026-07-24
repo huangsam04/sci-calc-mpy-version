@@ -14,7 +14,7 @@ if "/sd" not in sys.path:
     sys.path.insert(0, "/sd")
 
 from anim.engine import (active_animation_count, animate_all,
-                         cancel_all_animations, update_tmp)
+                         cancel_all_animations)
 from performance import metrics
 
 
@@ -63,7 +63,6 @@ def _drive(nav):
 
     while nav.is_transitioning():
         animate_all()
-        update_tmp()
         started = time.ticks_us()
         nav.draw_transition(time.ticks_ms())
         elapsed = time.ticks_diff(time.ticks_us(), started)
@@ -87,7 +86,6 @@ def _drive(nav):
     while settling or active_animation_count():
         was_active = bool(active_animation_count())
         animate_all()
-        update_tmp()
         started = time.ticks_us()
         if was_active:
             nav.present_current()
@@ -120,6 +118,8 @@ def _exercise(nav, root, target, cycles):
     heap_before = _heap_free()
     heap_min = heap_before
     nav_elapsed_max = 0
+    nav_forward_max = 0
+    nav_back_max = 0
     input_to_first_max = 0
     frame_elapsed_max = 0
     frame_elapsed_total = 0
@@ -145,6 +145,10 @@ def _exercise(nav, root, target, cycles):
                     nav.go_back()
                 nav_elapsed = time.ticks_diff(time.ticks_us(), started)
                 nav_elapsed_max = max(nav_elapsed_max, nav_elapsed)
+                if forward:
+                    nav_forward_max = max(nav_forward_max, nav_elapsed)
+                else:
+                    nav_back_max = max(nav_back_max, nav_elapsed)
                 heap_min = _minimum(heap_min, _heap_free())
 
                 (animated, frames, elapsed_total, elapsed_max, drive_heap,
@@ -170,9 +174,10 @@ def _exercise(nav, root, target, cycles):
                 frame_elapsed_total += elapsed_total
                 frame_elapsed_max = max(frame_elapsed_max, elapsed_max)
                 heap_min = _minimum(heap_min, drive_heap)
-            except MemoryError:
+            except MemoryError as error:
                 failures += 1
-                print("MONITOR_MEMORY_ERROR")
+                print("MONITOR_MEMORY_ERROR detail=" + (
+                    str(error) or "unknown allocation"))
                 nav.reset(root)
 
     cancel_all_animations()
@@ -182,26 +187,30 @@ def _exercise(nav, root, target, cycles):
     animated_average = animated_frame_total // max(1, animated_frame_count)
     direct_average = direct_frame_total // max(1, direct_frame_count)
     buffers = ",".join(sorted(nav.memory._buffers.keys()))
-    print("MONITOR_SCREEN name="
-          + getattr(target, "transition_title", target.__class__.__name__)
+    name = getattr(target, "transition_title", target.__class__.__name__)
+    print("MONITOR_SCREEN name=" + name
           + " cycles=" + str(cycles)
           + " animated=" + str(animated_count)
           + " direct=" + str(direct_count)
           + " nav_max_us=" + str(nav_elapsed_max)
-          + " input_to_first_max_us=" + str(input_to_first_max)
-          + " frame_avg_us=" + str(average)
-          + " frame_max_us=" + str(frame_elapsed_max)
-          + " animated_frame_avg_us=" + str(animated_average)
-          + " animated_frame_max_us=" + str(animated_frame_max)
-          + " direct_frame_avg_us=" + str(direct_average)
-          + " direct_frame_max_us=" + str(direct_frame_max)
-          + " transition_frames_min=" + str(transition_frames_min)
-          + " heap_before=" + str(heap_before)
-          + " heap_min=" + str(heap_min)
-          + " heap_after=" + str(heap_after)
-          + " heap_delta=" + str(heap_after - heap_before)
+          + " forward_max_us=" + str(nav_forward_max)
+          + " back_max_us=" + str(nav_back_max)
+          + " input_to_first_max_us=" + str(input_to_first_max))
+    print("MONITOR_FRAMES name=" + name
+          + " avg_us=" + str(average)
+          + " max_us=" + str(frame_elapsed_max)
+          + " animated_avg_us=" + str(animated_average)
+          + " animated_max_us=" + str(animated_frame_max)
+          + " direct_avg_us=" + str(direct_average)
+          + " direct_max_us=" + str(direct_frame_max)
+          + " transition_min=" + str(transition_frames_min))
+    print("MONITOR_MEMORY name=" + name
+          + " before=" + str(heap_before)
+          + " min=" + str(heap_min)
+          + " after=" + str(heap_after)
+          + " delta=" + str(heap_after - heap_before)
           + " failures=" + str(failures)
-          + " animations_left=" + str(active_animation_count())
+          + " animations=" + str(active_animation_count())
           + " buffers=" + buffers)
     return (failures, input_to_first_max, animated_frame_max,
             transition_frames_min, direct_count)
@@ -237,7 +246,11 @@ def run(runtime=None):
     if runtime is None:
         runtime = metrics.runtime()
     if runtime is None:
-        raise RuntimeError("SCI-CALC runtime is unavailable")
+        from benchmarks import _build_runtime
+        _build_runtime(metrics)
+        runtime = metrics.runtime()
+    if runtime is None:
+        raise RuntimeError("SCI-CALC runtime build failed")
 
     nav, root, targets = runtime
     if nav.current is not root:

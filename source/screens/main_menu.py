@@ -21,6 +21,15 @@ class MainMenu(UIElement):
     def animation_children(self):
         return (self.menu,)
 
+    def get_present_rows(self):
+        return self.menu.get_present_rows(self.height)
+
+    def mark_presented(self):
+        self.menu.mark_presented()
+
+    def draw_present_rows(self, display):
+        self.menu.draw_present_rows(display)
+
     def activate(self):
         # Selection is persistent navigation state. Returning from a page must
         # restore the item the user entered instead of jumping to the top.

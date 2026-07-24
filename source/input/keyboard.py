@@ -17,22 +17,39 @@ PRESSED = 2
 FALLING_EDGE = 3
 
 SCAN_INTERVAL = 15  # ms
-CLICK_WINDOW = 100  # ms
 DEBOUNCE_MS = 15    # ms — minimum release time before new press is recognized
+EVENT_QUEUE_CAPACITY = 8
+SHIFT_EVENT_FLAG = 0x20
+
+
+def _decode_event(code):
+    position = code & (SHIFT_EVENT_FLAG - 1)
+    return (position // COLS, position % COLS,
+            bool(code & SHIFT_EVENT_FLAG))
 
 
 class Key:
+    __slots__ = (
+        "row", "col", "state", "is_pressed", "start_press", "end_press",
+        "_pending", "_consumed", "_hold_consumed")
+
     def __init__(self, row, col):
         self.row = row
         self.col = col
         self.state = NOT_PRESSED
         self.is_pressed = False
-        self.status_time = 0
         self.start_press = 0
         self.end_press = None
-        self.click_cnt = 0
         self._pending = None  # timestamp of first high read for two-sample
         self._consumed = False  # edge consumed by pop_key_event()
+        self._hold_consumed = False
+
+    def _accept_press(self, cur_time):
+        self._pending = None
+        self.is_pressed = True
+        self.state = RISING_EDGE
+        self._consumed = False
+        self.start_press = cur_time
         self._hold_consumed = False
 
     def update(self, cur_state, cur_time):
@@ -42,47 +59,30 @@ class Key:
                                  time.ticks_diff(cur_time, self.end_press))
                 # If released long ago (>50ms), accept single sample (fast response)
                 if since_release is None or since_release > 50:
-                    self._pending = None
-                    self.click_cnt += 1
-                    self.is_pressed = True
-                    self.state = RISING_EDGE
-                    self._consumed = False
-                    self.status_time = 0
-                    self.start_press = cur_time
-                    self._hold_consumed = False
+                    self._accept_press(cur_time)
+                    return True
                 elif since_release >= DEBOUNCE_MS:
                     # Recent release: require two consecutive high reads (bounce filter)
                     if self._pending is None:
                         self._pending = cur_time
                     else:
-                        self._pending = None
-                        self.click_cnt += 1
-                        self.is_pressed = True
-                        self.state = RISING_EDGE
-                        self._consumed = False
-                        self.status_time = 0
-                        self.start_press = cur_time
-                        self._hold_consumed = False
+                        self._accept_press(cur_time)
+                        return True
                 # else: within DEBOUNCE_MS of release, ignore
             else:
                 self._pending = None
                 self.state = PRESSED
-                self.status_time = time.ticks_diff(cur_time, self.start_press)
         else:
             self._pending = None
             if self.is_pressed:
                 self.is_pressed = False
                 self.state = FALLING_EDGE
-                self.status_time = 0
                 self.end_press = cur_time
                 self.start_press = 0
                 self._hold_consumed = False
             else:
                 self.state = NOT_PRESSED
-                if self.end_press is not None:
-                    self.status_time = time.ticks_diff(cur_time, self.end_press)
-                    if self.status_time > CLICK_WINDOW:
-                        self.click_cnt = 0
+        return False
 
     def get_hold_time(self):
         """Return how long this key has been held in ms, or 0."""
@@ -99,11 +99,18 @@ class Key:
 
 
 class Keyboard:
+    __slots__ = (
+        "keys", "_row_pins", "_col_pins", "_last_scan",
+        "_event_data", "_event_head", "_event_count")
+
     def __init__(self):
         self.keys = [[Key(r, c) for c in range(COLS)] for r in range(ROWS)]
         self._row_pins = [Pin(p, Pin.IN) for p in ROW_PINS]
         self._col_pins = [Pin(p, Pin.OUT) for p in COL_PINS]
         self._last_scan = None
+        self._event_data = bytearray(EVENT_QUEUE_CAPACITY)
+        self._event_head = 0
+        self._event_count = 0
         for cp in self._col_pins:
             cp.value(0)
 
@@ -120,18 +127,62 @@ class Keyboard:
                 raw = self._row_pins[ri].value()
                 self.keys[ri][ci].update(raw, now)
             cp.value(0)
+        self._capture_edges()
+
+    def _queue_event(self, row, col, shift_held):
+        """Keep a bounded edge backlog across slow display frames."""
+        if self._event_count >= EVENT_QUEUE_CAPACITY:
+            return False
+        tail = (self._event_head + self._event_count) % EVENT_QUEUE_CAPACITY
+        code = row * COLS + col
+        if shift_held:
+            code |= SHIFT_EVENT_FLAG
+        self._event_data[tail] = code
+        self._event_count += 1
+        return True
+
+    def _capture_edges(self):
+        shift_held = self.keys[4][0].is_pressed
+        for row in self.keys:
+            for key in row:
+                if key.state == RISING_EDGE and not key._consumed:
+                    if not self._queue_event(
+                            key.row, key.col, shift_held):
+                        return
+                    key._consumed = True
 
     def pop_key_event(self):
         """Return (row, col, shift_held) for first unconsumed rising edge and
         consume it. Shift state is captured atomically with the edge — no more
         label misresolution. Returns None if all edges already consumed."""
-        shift_held = self.keys[4][0].is_pressed
-        for ri in range(ROWS):
-            for ci in range(COLS):
-                k = self.keys[ri][ci]
-                if k.state == RISING_EDGE and not k._consumed:
-                    k._consumed = True
-                    return (ri, ci, shift_held)
+        if self._event_count == 0:
+            # Also supports diagnostic/test callers that update Key objects
+            # directly rather than going through scan().
+            self._capture_edges()
+        if self._event_count == 0:
+            return None
+        code = self._event_data[self._event_head]
+        self._event_head = (self._event_head + 1) % EVENT_QUEUE_CAPACITY
+        self._event_count -= 1
+        return _decode_event(code)
+
+    def pop_key_event_at(self, row, col):
+        """Remove one matching edge while preserving all other queued taps."""
+        if self._event_count == 0:
+            self._capture_edges()
+        wanted = row * COLS + col
+        for offset in range(self._event_count):
+            index = (self._event_head + offset) % EVENT_QUEUE_CAPACITY
+            code = self._event_data[index]
+            if code & (SHIFT_EVENT_FLAG - 1) != wanted:
+                continue
+            while offset < self._event_count - 1:
+                next_index = (index + 1) % EVENT_QUEUE_CAPACITY
+                self._event_data[index] = self._event_data[next_index]
+                index = next_index
+                offset += 1
+            self._event_count -= 1
+            return _decode_event(code)
         return None
 
     def is_pressed(self, row, col):
@@ -144,6 +195,8 @@ class Keyboard:
         return self.keys[row][col].consume_long_press(time.ticks_ms(), threshold_ms)
 
     def discard_pending_events(self):
+        self._event_head = 0
+        self._event_count = 0
         for row in self.keys:
             for key in row:
                 if key.state == RISING_EDGE:

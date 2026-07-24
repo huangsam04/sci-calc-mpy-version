@@ -255,7 +255,7 @@ def test_main_reloads_functions_from_the_shared_in_memory_settings():
     panel_end = factory_source.index("if kind == BUILD_STOPWATCH:", panel_start)
     panel_init = factory_source[panel_start:panel_end]
 
-    assert "nav.go_back()" in handler
+    assert "nav.go_back(event)" in handler
     assert "_function_reload_pending = True" in handler
     idle = source[source.index("if not active and not had_event"):
                   source.index("# Leave enough scheduler headroom")]
