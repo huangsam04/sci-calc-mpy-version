@@ -1,8 +1,6 @@
 """Consistent, actionable error presentation for calculator screens."""
 import time
 
-from anim.engine import cancel_animations, insert_animation
-from ui.motion import DIALOG_ENTER_MS
 from ui.theme import CONTENT_W, GS_MUTED, fit_text, draw_text
 
 
@@ -67,21 +65,15 @@ class ErrorPopup:
         self._panel_y = PANEL_START_Y
 
     def show(self, expr, message, position=None):
-        cancel_animations(self)
         self.expr = str(expr or "")
         self.position = -1 if position is None else max(0, int(position))
         self.title, self.detail = friendly_error(message)
         self.started = time.ticks_ms()
         self.active = True
-        self._shade = 0
-        self._panel_y = PANEL_START_Y
-        insert_animation(self, "_shade", 0, 15,
-                         DIALOG_ENTER_MS)
-        insert_animation(self, "_panel_y", PANEL_START_Y, PANEL_Y,
-                         DIALOG_ENTER_MS)
+        self._shade = 15
+        self._panel_y = PANEL_Y
 
     def dismiss(self):
-        cancel_animations(self)
         self.active = False
         self._shade = 0
         self._panel_y = PANEL_START_Y

@@ -21,22 +21,6 @@ class DisplayStub:
         pass
 
 
-def test_function_panel_defers_menu_allocation_until_post_animation_settle(
-        monkeypatch):
-    monkeypatch.setattr(loader, "list_function_files", lambda: [])
-    panel = FunctionPanel(
-        None, settings={"enabled_functions": ["basic", "trig"]})
-
-    assert panel._menu is None
-    assert panel._items == []
-
-    panel.activate_default()
-    assert panel._menu is None
-
-    assert panel.settle_step() & 1
-    assert panel._menu is not None
-
-
 def test_plugin_load_error_is_visible_in_function_panel():
     panel = FunctionPanel(
         None,
@@ -50,31 +34,6 @@ def test_plugin_load_error_is_visible_in_function_panel():
     assert any("broken" in text for text in display.text)
     assert any("boom" in text for text in display.text)
     assert any("ENT off" in text for text in display.text)
-
-
-def test_function_panel_restores_choices_only_after_settle(monkeypatch):
-    monkeypatch.setattr(loader, "list_function_files", lambda: [])
-    panel = FunctionPanel(
-        None, settings={"enabled_functions": ["basic", "trig"]})
-    panel._toggled = {"math": True}
-    panel._dirty = True
-    panel.menu.cursor_pos = 2
-    panel.menu.view_offset = 1
-    state = panel.snapshot_state()
-
-    panel.reset_state()
-    panel.activate_default()
-    panel.restore_state(state)
-
-    assert panel.menu.items == []
-    first_flags = panel.settle_step()
-    assert first_flags & 1
-    assert len(panel.menu.items) == 1
-    while panel.settle_step() & 1:
-        pass
-    assert panel.menu.items
-    assert panel.menu.cursor_pos == 2
-    assert panel._toggled == {"math": True}
 
 
 def test_function_panel_reuses_loaded_catalog_without_reexecuting_plugins(
@@ -243,28 +202,25 @@ def test_main_reloads_functions_from_the_shared_in_memory_settings():
     source = (Path(__file__).parents[1] / "source" / "main.py").read_text(
         encoding="utf-8")
     start = source.index('elif result == "FUNC_PANEL_DONE":')
-    end = source.index('elif result in ("FUNC_PICKER_DONE"', start)
+    end = source.index("elif result in (", start)
     handler = source[start:end]
     helper_start = source.index("def _reload_functions_after_reclaim(")
     helper_end = source.index("def _draw_crash", helper_start)
     helper = source[helper_start:helper_end]
-    factory_source = (
-        Path(__file__).parents[1] / "source" / "ui" / "lazy_screen.py"
-    ).read_text(encoding="utf-8")
-    panel_start = factory_source.index("if kind == BUILD_FUNCTION_PANEL:")
-    panel_end = factory_source.index("if kind == BUILD_STOPWATCH:", panel_start)
-    panel_init = factory_source[panel_start:panel_end]
+    panel_start = source.index("func_panel = FunctionPanel(")
+    panel_end = source.index("func_panel.set_load_errors", panel_start)
+    panel_init = source[panel_start:panel_end]
 
     assert "nav.go_back(event)" in handler
     assert "_function_reload_pending = True" in handler
-    idle = source[source.index("if not active and not had_event"):
-                  source.index("# Leave enough scheduler headroom")]
-    assert "_reload_functions_after_reclaim(" in idle
-    assert "nav, nav.current, settings, registry" in idle
-    assert "loaded_panel.set_plugin_catalog(" in idle
-    assert "loaded_panel = func_panel.loaded()" in idle
+    background = source[source.index("# Potentially blocking work"):
+                        source.index("time.sleep_ms(IDLE_LOOP_SLEEP_MS)")]
+    assert "_reload_functions_after_reclaim(" in background
+    assert "nav, nav.current, settings, registry" in background
+    assert "BACKGROUND_IDLE_MS" in background
     assert "return _reload_functions(settings, registry)" in helper
     assert "plugin_functions=registry.plugin_functions" in panel_init
     assert "plugin_dependencies=registry.plugin_dependencies" in panel_init
-    assert "FunctionPanel(\n                None," in panel_init
+    assert "FunctionPanel(\n            None," in panel_init
+    assert "func_panel.set_plugin_catalog(" in background
     assert "load_settings()" not in handler

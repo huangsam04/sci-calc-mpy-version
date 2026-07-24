@@ -2,13 +2,10 @@
 from ui.element import UIElement
 from ui.menu import Menu
 from utils.storage import load_settings
-from ui.theme import (SHELL_FUNCTION_PANEL, draw_footer, draw_header,
-                      draw_page_shell)
-from ui.residency import SETTLE_MORE, SETTLE_REDRAW
+from ui.theme import draw_footer, draw_header
 
 
 class FunctionPanel(UIElement):
-    swap_key = "functions"
     transition_title = "Functions"
 
     def __init__(self, font, request_settings=None, settings=None,
@@ -31,11 +28,6 @@ class FunctionPanel(UIElement):
         self._plugin_files = ()
         self._dependency_notice = ""
         self._menu_built = False
-        self._needs_menu_restore = False
-        self._restore_cursor = 0
-        self._restore_view = 0
-        self._restore_group_index = 0
-        self._restore_plugin_index = 0
         # Listing SD filenames is safe during boot.  Function/dependency
         # metadata comes from the live registry's first load; recompiling
         # add-ons here used to create a second peak that could freeze splash.
@@ -95,9 +87,6 @@ class FunctionPanel(UIElement):
             self.menu.view_offset = 0
         self.menu.activate()
 
-    def animation_children(self):
-        return (self._menu,) if self._menu is not None else ()
-
     def get_present_rows(self):
         if self._menu is None:
             return None
@@ -129,125 +118,6 @@ class FunctionPanel(UIElement):
             return
         self._menu.draw_present_rows(display)
         self._draw_footer(display)
-
-    def release_memory(self):
-        """Discard rebuildable menu labels without rescanning plug-in source."""
-        if self._dirty or self._load_error or not self._menu_built:
-            return False
-        self._menu = None
-        self._items = []
-        self._menu_built = False
-        return True
-
-    def snapshot_state(self):
-        menu = self._menu
-        toggled = {}
-        for name, enabled in self._toggled.items():
-            if len(toggled) >= 64:
-                break
-            toggled[str(name)] = bool(enabled)
-        return {
-            "cursor": menu.cursor_pos if menu is not None else 0,
-            "view": menu.view_offset if menu is not None else 0,
-            "toggled": toggled,
-            "dirty": bool(self._dirty),
-            "load_error": self._load_error[:64],
-            "load_detail": self._load_error_detail[:160],
-        }
-
-    def reset_state(self):
-        self._menu = None
-        self._items = []
-        self._toggled = {}
-        self._dirty = False
-        self._load_error = ""
-        self._load_error_detail = ""
-        self._dependency_notice = ""
-        self._menu_built = False
-        self._needs_menu_restore = False
-        self._restore_cursor = 0
-        self._restore_view = 0
-        self._restore_group_index = 0
-        self._restore_plugin_index = 0
-
-    def activate_default(self):
-        self._menu = None
-        self._items = []
-        self._menu_built = False
-        self._needs_menu_restore = True
-        self._restore_group_index = 0
-        self._restore_plugin_index = 0
-
-    def restore_state(self, state):
-        toggled = state.get("toggled", {})
-        if not isinstance(toggled, dict) or len(toggled) > 64:
-            raise ValueError("Invalid function panel snapshot")
-        self._toggled = {str(name): bool(value)
-                         for name, value in toggled.items()}
-        self._dirty = bool(state.get("dirty", False))
-        self._load_error = str(state.get("load_error", ""))[:64]
-        self._load_error_detail = str(state.get("load_detail", ""))[:160]
-        self._restore_cursor = max(0, int(state.get("cursor", 0)))
-        self._restore_view = max(0, int(state.get("view", 0)))
-        self._needs_menu_restore = True
-        self._restore_group_index = 0
-        self._restore_plugin_index = 0
-
-    def settle_step(self):
-        if not self._needs_menu_restore:
-            return 0
-        if self._append_restore_item():
-            return SETTLE_REDRAW | SETTLE_MORE
-        self._needs_menu_restore = False
-        self._menu_built = True
-        self.menu.cursor_pos = max(
-            0, min(self._restore_cursor, len(self._items) - 1))
-        self.menu.view_offset = self._restore_view
-        self.menu._clamp_view()
-        self.menu.activate()
-        return SETTLE_REDRAW
-
-    def _append_restore_item(self):
-        """Build at most one menu row so restored details visibly stream in."""
-        from calc.functions import (FUNCTION_GROUPS, FUNCTION_GROUP_LABELS,
-                                    DEFAULT_ENABLED_GROUPS)
-
-        while self._restore_group_index < len(DEFAULT_ENABLED_GROUPS):
-            index = self._restore_group_index
-            self._restore_group_index += 1
-            group_name = DEFAULT_ENABLED_GROUPS[index]
-            if group_name not in FUNCTION_GROUPS:
-                continue
-            is_on = self._is_enabled(group_name)
-            prefix = "[x]" if is_on else "[ ]"
-            display_name = FUNCTION_GROUP_LABELS.get(group_name, group_name)
-            function_names = FUNCTION_GROUPS[group_name]
-            label = (prefix + " " + display_name + " ("
-                     + ", ".join(function_names[:3]) + "...)")
-            self.menu.add_item(label, None)
-            self._items.append((group_name, is_on, True))
-            return True
-
-        if self._restore_plugin_index < len(self._plugin_files):
-            name, _ = self._plugin_files[self._restore_plugin_index]
-            self._restore_plugin_index += 1
-            setting_name = "plugin:" + name
-            is_on = self._is_enabled(setting_name)
-            prefix = "[x]" if is_on else "[ ]"
-            label = prefix + " Add-on: " + name
-            function_names = self._plugin_functions.get(name, ())
-            if function_names:
-                summary = ", ".join(function_names[:2])
-                if len(function_names) > 2:
-                    summary += "..."
-                label += " (" + summary + ")"
-            self.menu.add_item(label, None)
-            self._items.append((setting_name, is_on, False))
-            return True
-        return False
-
-    def draw_transition_default(self, display):
-        draw_page_shell(display, SHELL_FUNCTION_PANEL)
 
     def deactivate(self):
         if self._dirty:
@@ -418,6 +288,8 @@ class FunctionPanel(UIElement):
 
     def update(self, kb, event=None):
         action = self.menu.update(kb, event)
+        if action == "MOVE":
+            return "REDRAW"
         if action == "ENTER":
             if event is not None and event[2]:
                 # Plugin inspection executes SD source. Keep that work behind

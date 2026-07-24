@@ -2,16 +2,14 @@
 import time
 from ui.element import UIElement
 from input.keyboard import get_key_label
-from ui.residency import SETTLE_MORE, SETTLE_REDRAW
-from ui.theme import SHELL_STOPWATCH, draw_footer, draw_page_shell
+from ui.theme import draw_footer
 
 LAP_H = 9        # row height for lap entries
 LAP_COUNT = 4    # visible lap rows
-LAP_MAX = 99     # cap stored laps so a long session cannot exhaust RAM
+LAP_MAX = 20     # bounded RAM snapshot while the heavy page is unloaded
 
 
 class StopwatchScreen(UIElement):
-    swap_key = "stopwatch"
     transition_title = "Stopwatch"
 
     def __init__(self, font):
@@ -24,81 +22,10 @@ class StopwatchScreen(UIElement):
         self._laps = []          # list of (lap_number, elapsed_ms)
         self._lap_cursor = 0     # selected lap index (0 = newest)
         self._view_offset = 0    # first visible lap index
-        self._last_action = 0
-        self._last_key = ""
         self._next_lap_num = 1   # next lap number to assign
-        self._lap_restore = None
 
     def activate(self):
-        self._last_action = 0
-        self._last_key = ""
-
-    def snapshot_state(self):
-        return {
-            "running": bool(self._running),
-            "paused": bool(self._paused),
-            "elapsed": int(self._get_elapsed()),
-            "start_time": int(self._start_time) if self._running else 0,
-            "laps": [[int(number), int(elapsed)]
-                     for number, elapsed in self._laps[:LAP_MAX]],
-            "cursor": self._lap_cursor,
-            "view": self._view_offset,
-            "next_lap": self._next_lap_num,
-        }
-
-    def reset_state(self):
-        self._reset()
-        self._last_action = 0
-        self._last_key = ""
-
-    def activate_default(self):
-        self._last_action = 0
-        self._last_key = ""
-
-    def restore_state(self, state):
-        laps = state.get("laps", [])
-        if not isinstance(laps, list) or len(laps) > LAP_MAX:
-            raise ValueError("Invalid stopwatch snapshot")
-        elapsed = max(0, int(state.get("elapsed", 0)))
-        self._elapsed = elapsed
-        self._running = bool(state.get("running", False))
-        self._paused = bool(state.get("paused", False)) and not self._running
-        if self._running:
-            now = time.ticks_ms()
-            saved_start = int(state.get(
-                "start_time", time.ticks_add(now, -elapsed)))
-            live_elapsed = time.ticks_diff(now, saved_start)
-            if live_elapsed < elapsed:
-                live_elapsed = elapsed
-            self._elapsed = live_elapsed
-            self._start_time = time.ticks_add(now, -live_elapsed)
-        else:
-            self._start_time = 0
-        self._laps = []
-        self._lap_restore = laps
-        self._lap_cursor = max(0, int(state.get("cursor", 0)))
-        self._view_offset = max(0, int(state.get("view", 0)))
-        self._next_lap_num = max(1, int(state.get("next_lap", 1)))
-
-    def settle_step(self):
-        rows = self._lap_restore
-        if rows is None:
-            return 0
-        index = len(self._laps)
-        if index >= len(rows):
-            self._lap_restore = None
-            return 0
-        row = rows[index]
-        if not isinstance(row, list) or len(row) != 2:
-            raise ValueError("Invalid stopwatch lap")
-        self._laps.append((int(row[0]), int(row[1])))
-        if len(self._laps) < len(rows):
-            return SETTLE_REDRAW | SETTLE_MORE
-        self._lap_restore = None
-        return SETTLE_REDRAW
-
-    def draw_transition_default(self, display):
-        draw_page_shell(display, SHELL_STOPWATCH, self.font)
+        pass
 
     # ── timer logic ─────────────────────────────────────────────
 
@@ -124,7 +51,6 @@ class StopwatchScreen(UIElement):
         self._lap_cursor = 0
         self._view_offset = 0
         self._next_lap_num = 1
-        self._lap_restore = None
 
     def _lap(self):
         if self._running:
@@ -224,12 +150,6 @@ class StopwatchScreen(UIElement):
 
         if label == "ESC":
             return "BACK"
-
-        now = time.ticks_ms()
-        if label == self._last_key and time.ticks_diff(now, self._last_action) < 200:
-            return None
-        self._last_action = now
-        self._last_key = label
 
         # Navigation: scroll lap list
         if label in ("up", "8"):

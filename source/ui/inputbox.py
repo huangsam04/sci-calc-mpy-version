@@ -2,8 +2,6 @@
 import time
 from ui.element import UIElement
 from ui.cursor import Cursor
-from ui.motion import TEXT_CURSOR_MS
-from anim.engine import cancel_animations
 from input.keyboard import get_key_label
 
 
@@ -54,9 +52,6 @@ class InputBox(UIElement):
 
     def deactivate(self):
         self.cursor.is_visible = False
-
-    def animation_children(self):
-        return (self.cursor,)
 
     def release_memory(self):
         """Forget only the derived line-layout cache, never the input text."""
@@ -249,14 +244,7 @@ class InputBox(UIElement):
 
         self.cursor.height = self._cursor_height()
         self._cursor_origin = (self.x, self.y)
-        if immediate:
-            cancel_animations(self.cursor)
-            self.cursor.x = target_x
-            self.cursor.y = target_y
-            self.cursor.target_x = target_x
-            self.cursor.target_y = target_y
-        else:
-            self.cursor.change_target(target_x, target_y, TEXT_CURSOR_MS)
+        self.cursor.change_target(target_x, target_y)
 
     def _draw_live_text(self, display, x, y, text):
         """Use the allocation-free packed path when the display provides it."""

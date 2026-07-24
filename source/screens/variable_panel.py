@@ -1,10 +1,7 @@
 """Variable panel: Shift+Tab — 2-column table of defined variables."""
-import time
 from ui.element import UIElement
 from input.keyboard import get_key_label
-from ui.theme import (SHELL_VARIABLE_PANEL, draw_empty, draw_footer,
-                      draw_header, draw_page_shell)
-from ui.residency import SETTLE_MORE, SETTLE_REDRAW
+from ui.theme import draw_empty, draw_footer, draw_header
 
 VISIBLE = 4
 ROW_H = 10
@@ -13,7 +10,6 @@ COL2_X = 108
 
 
 class VariablePanel(UIElement):
-    swap_key = "variable_panel"
     transition_title = "Variables"
 
     def __init__(self, font, calc_screen):
@@ -23,68 +19,11 @@ class VariablePanel(UIElement):
         self._names = []
         self._cursor = 0
         self._offset = 0
-        self._cooldown = 0
-        self._last_key = None
-        self._needs_names_restore = None
 
     def activate(self):
         self._rebuild()
         self._cursor = 0
         self._offset = 0
-        self._cooldown = 0
-        self._last_key = None
-        self._needs_names_restore = None
-
-    def release_memory(self):
-        """Variable names are a disposable sorted view of calculator state."""
-        if not self._names:
-            return False
-        self._names = []
-        return True
-
-    def snapshot_state(self):
-        return {"cursor": self._cursor, "offset": self._offset}
-
-    def reset_state(self):
-        self._names = []
-        self._cursor = 0
-        self._offset = 0
-        self._cooldown = 0
-        self._last_key = None
-        self._needs_names_restore = None
-
-    def activate_default(self):
-        self._names = []
-        self._cooldown = 0
-        self._last_key = None
-        self._needs_names_restore = -1
-
-    def restore_state(self, state):
-        self._cursor = max(0, int(state.get("cursor", 0)))
-        self._offset = max(0, int(state.get("offset", 0)))
-        self._needs_names_restore = -1
-
-    def settle_step(self):
-        stage = self._needs_names_restore
-        if stage is None:
-            return 0
-        if stage < 0:
-            self._rebuild()
-            self._clamp()
-            self._needs_names_restore = 0
-            if not self._names:
-                self._needs_names_restore = None
-                return SETTLE_REDRAW
-            return SETTLE_MORE
-        stage += 1
-        if stage >= VISIBLE:
-            self._needs_names_restore = None
-            return SETTLE_REDRAW
-        self._needs_names_restore = stage
-        return SETTLE_REDRAW | SETTLE_MORE
-
-    def draw_transition_default(self, display):
-        draw_page_shell(display, SHELL_VARIABLE_PANEL, self.font)
 
     def _rebuild(self):
         self._names = sorted(self.calc.vars.keys())
@@ -129,9 +68,7 @@ class VariablePanel(UIElement):
         if n == 0:
             draw_empty(display, "No variables defined", self.font)
         else:
-            visible_rows = (VISIBLE if self._needs_names_restore is None
-                            else max(0, self._needs_names_restore))
-            for row in range(visible_rows):
+            for row in range(VISIBLE):
                 y = 15 + row * ROW_H
                 li = self._offset + row
                 if li < n:
@@ -157,13 +94,6 @@ class VariablePanel(UIElement):
             return None
 
         r, c, shift = event
-        now = time.ticks_ms()
-
-        # Per-key cooldown: same-key rapid-fire prevention, different keys pass through
-        if (r, c) == self._last_key and time.ticks_diff(now, self._cooldown) < 150:
-            return None
-        self._cooldown = now
-        self._last_key = (r, c)
         label = get_key_label(r, c, shift)
         n = len(self._names)
 

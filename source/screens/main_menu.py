@@ -1,11 +1,10 @@
 """Main menu screen - top-level navigation."""
 from ui.element import UIElement
 from ui.menu import Menu
-from ui.theme import SHELL_MAIN_MENU, draw_header, draw_page_shell
+from ui.theme import draw_header
 
 
 class MainMenu(UIElement):
-    swap_key = "main_menu"
     transition_title = "SCI-CALC"
 
     def __init__(self, font):
@@ -17,9 +16,6 @@ class MainMenu(UIElement):
     def add_screen(self, label, screen):
         self.menu.add_item(label, screen)
         self._items.append((label, screen))
-
-    def animation_children(self):
-        return (self.menu,)
 
     def get_present_rows(self):
         return self.menu.get_present_rows(self.height)
@@ -35,35 +31,14 @@ class MainMenu(UIElement):
         # restore the item the user entered instead of jumping to the top.
         self.menu.activate()
 
-    def snapshot_state(self):
-        return {"cursor": self.menu.cursor_pos,
-                "view": self.menu.view_offset}
-
-    def reset_state(self):
-        self.menu.cursor_pos = 0
-        self.menu.view_offset = 0
-
-    def activate_default(self):
-        self.menu.cursor_pos = 0
-        self.menu.view_offset = 0
-        self.menu.activate()
-
-    def restore_state(self, state):
-        self.menu.cursor_pos = max(0, min(
-            int(state.get("cursor", 0)), len(self._items) - 1))
-        self.menu.view_offset = max(0, int(state.get("view", 0)))
-        self.menu._clamp_view()
-        self.menu.activate()
-
-    def draw_transition_default(self, display):
-        draw_page_shell(display, SHELL_MAIN_MENU, self.font)
-
     def draw(self, display):
         draw_header(display, "SCI-CALC", self.font)
         self.menu.draw(display)
 
     def update(self, kb, event=None):
         action = self.menu.update(kb, event)
+        if action == "MOVE":
+            return "REDRAW"
         if action == "ENTER":
             target = self.menu.get_selected()
             if target:

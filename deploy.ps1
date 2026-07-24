@@ -214,11 +214,25 @@ if ($UseMpy) {
     Build-MpyAssets
 }
 
-$Directories = @("anim", "calc", "display", "fonts", "functions", "input", "screens", "ui", "utils")
+$Directories = @("calc", "display", "fonts", "functions", "input", "screens", "ui", "utils")
 $CreateDirectories = "import os`n" + (($Directories | ForEach-Object {
     "try: os.mkdir('/sd/$_')`nexcept OSError: pass"
 }) -join "`n")
 Invoke-MpRemote exec $CreateDirectories
+
+$ObsoleteRuntimeFiles = @(
+    "/sd/ui/lazy_screen.py",
+    "/sd/ui/lazy_screen.mpy",
+    "/sd/ui/residency.py",
+    "/sd/ui/residency.mpy",
+    "/sd/anim/__init__.py",
+    "/sd/anim/__init__.mpy",
+    "/sd/anim/engine.py",
+    "/sd/anim/engine.mpy"
+)
+foreach ($RemotePath in $ObsoleteRuntimeFiles) {
+    Remove-RemotePath -Path $RemotePath
+}
 
 Write-Host ("Uploading SD application as " + $(if ($UseMpy) { ".mpy" } else { ".py" }) + " files...")
 Copy-RuntimeAsset (Join-Path $Source "launch.py") "/sd/launch.py"

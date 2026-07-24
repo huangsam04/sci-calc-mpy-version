@@ -1,7 +1,5 @@
 """About screen: version and hardware info."""
 from ui.element import UIElement
-from ui.residency import SETTLE_MORE, SETTLE_REDRAW
-from ui.theme import SHELL_ABOUT, draw_page_shell
 from input.keyboard import get_key_label
 from version import VERSION
 
@@ -13,21 +11,9 @@ class AboutScreen(UIElement):
         super().__init__(0, 0, 210, 64)
         self.font = font
         self.version = version
-        self._visible_lines = 7
 
     def activate(self):
-        self._visible_lines = 7
-
-    def activate_default(self):
-        self._visible_lines = 1
-
-    def settle_step(self):
-        if self._visible_lines >= 7:
-            return 0
-        self._visible_lines += 1
-        if self._visible_lines < 7:
-            return SETTLE_REDRAW | SETTLE_MORE
-        return SETTLE_REDRAW
+        pass
 
     def draw(self, display):
         # Eight-pixel spacing fits seven lines on the 64px display.
@@ -41,7 +27,7 @@ class AboutScreen(UIElement):
             "Kailh Choc v1",
             "Designed by SHAO",
         ]
-        for i, line in enumerate(lines[:self._visible_lines]):
+        for i, line in enumerate(lines):
             y = 2 + i * 8
             if line:
                 if self.font:
@@ -57,6 +43,3 @@ class AboutScreen(UIElement):
         if label == "ESC":
             return "BACK"
         return None
-
-    def draw_transition_default(self, display):
-        draw_page_shell(display, SHELL_ABOUT, self.font)

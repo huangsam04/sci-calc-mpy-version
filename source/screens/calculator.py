@@ -1,19 +1,15 @@
 """Calculator screen: expression input, history, and evaluation."""
 import time
-from anim.engine import insert_animation
 from ui.element import UIElement
 from ui.inputbox import InputBox
-from ui.motion import RESULT_PULSE_MS
 from calc.functions import EvalContext
 from calc.number import (DEFAULT_DISPLAY_DIGITS, MAX_DISPLAY_DIGITS,
                          MIN_DISPLAY_DIGITS, Number, format_number)
 from calc.parser import evaluate, ParseError
 from input.keyboard import get_key_label
-from ui.theme import (SHELL_CALCULATOR, draw_footer, draw_footer_fast,
-                      draw_page_shell, draw_text, fit_text, text_width)
+from ui.theme import (draw_footer, draw_footer_fast, draw_text, fit_text,
+                      text_width)
 from ui.error_popup import ErrorPopup
-from ui.residency import SETTLE_MORE, SETTLE_REDRAW
-from utils.storage import _decode_numbers, _encode_numbers
 
 INPUT_SINGLE_H = 12
 INPUT_DOUBLE_H = 22
@@ -26,7 +22,6 @@ MAX_EXPRESSION_CHARS = 96
 
 
 class CalculatorScreen(UIElement):
-    swap_key = "calculator"
     transition_title = "Calculator"
 
     def __init__(self, font, small_font=None, registry=None, variables=None,
@@ -46,8 +41,6 @@ class CalculatorScreen(UIElement):
         self.history = []
         self._cursor = 0         # selected history index
         self._view_offset = 0    # first visible history index
-        self._cooldown = 0
-        self._hist_last_key = None
         self._esc_guard = 0       # prevent ESC double-fire after exiting history
         self.context = EvalContext(variables if variables is not None else {}, registry)
         self.display_digits = DEFAULT_DISPLAY_DIGITS
@@ -55,9 +48,6 @@ class CalculatorScreen(UIElement):
         self.storage_error = ""
         self._storage_error_time = 0
         self.error_popup = ErrorPopup(font, self.small_font)
-        self._result_pulse = 0
-        self._history_restore = None
-        self._history_restore_index = 0
         self._presented_editor_state = None
 
     def activate(self):
@@ -66,98 +56,12 @@ class CalculatorScreen(UIElement):
         self._presented_editor_state = None
 
     def deactivate(self):
-        # Navigation cancels owned animations after this hook. Clear the
-        # rendered value too, so an interrupted pulse cannot remain visible
-        # when the calculator is opened again.
-        self._result_pulse = 0
         self._presented_editor_state = None
-
-    def animation_children(self):
-        return (self.input_box, self.error_popup)
 
     def release_memory(self):
         """Release derived editor/error state while preserving 20-entry history."""
         released = self.error_popup.release_memory()
         return self.input_box.release_memory() or released
-
-    def snapshot_state(self):
-        history = []
-        for expr, result in self.history[:20]:
-            history.append([expr, _encode_numbers(result)])
-        return {
-            "input": self.input_box.get_str(),
-            "input_cursor": self.input_box.cursor_pos,
-            "input_view": self.input_box.view_offset,
-            "mode": self.mode if self.mode in (0, 1) else 0,
-            "history_cursor": self._cursor,
-            "history_view": self._view_offset,
-            "history": history,
-        }
-
-    def reset_state(self):
-        self.input_box.str = ""
-        self.input_box.cursor_pos = 0
-        self.input_box.view_offset = 0
-        self.input_box._layout_dirty = True
-        self.input_box.cursor.is_visible = False
-        self.history = []
-        self._history_restore = None
-        self._history_restore_index = 0
-        self.mode = 0
-        self._cursor = 0
-        self._view_offset = 0
-        self._result_pulse = 0
-        self.error_popup.dismiss()
-        self._presented_editor_state = None
-
-    def activate_default(self):
-        self.mode = 0
-        self.input_box.cursor.is_visible = False
-        self._presented_editor_state = None
-
-    def restore_state(self, state):
-        text = state.get("input", "")
-        if not isinstance(text, str):
-            raise ValueError("Invalid calculator input snapshot")
-        self.input_box.set_str(text, immediate=True)
-        self.input_box.cursor_pos = max(
-            0, min(int(state.get("input_cursor", len(text))), len(text)))
-        self.input_box.view_offset = max(0, int(state.get("input_view", 0)))
-        self.mode = int(state.get("mode", 0))
-        self._cursor = max(0, int(state.get("history_cursor", 0)))
-        self._view_offset = max(0, int(state.get("history_view", 0)))
-        rows = state.get("history", [])
-        if not isinstance(rows, list) or len(rows) > 20:
-            raise ValueError("Invalid calculator history snapshot")
-        self.history = []
-        self._history_restore = rows
-        self._history_restore_index = 0
-        self.input_box.cursor.is_visible = (self.mode == 0)
-        self._presented_editor_state = None
-
-    def settle_step(self):
-        rows = self._history_restore
-        if rows is None:
-            return 0
-        index = self._history_restore_index
-        if index >= len(rows):
-            self._history_restore = None
-            self._history_restore_index = 0
-            return 0
-        row = rows[index]
-        if (not isinstance(row, list) or len(row) != 2
-                or not isinstance(row[0], str)):
-            raise ValueError("Invalid calculator history row")
-        self.history.append((row[0], _decode_numbers(row[1])))
-        self._history_restore_index = index + 1
-        if self._history_restore_index < len(rows):
-            return SETTLE_REDRAW | SETTLE_MORE
-        self._history_restore = None
-        self._history_restore_index = 0
-        return SETTLE_REDRAW
-
-    def draw_transition_default(self, display):
-        draw_page_shell(display, SHELL_CALCULATOR, self.font)
 
     def _enter(self):
         expr = self.input_box.get_str().strip()
@@ -169,9 +73,6 @@ class CalculatorScreen(UIElement):
             if len(self.history) > 20:
                 self.history.pop()
             self.input_box.clear_str()
-            self._result_pulse = 15
-            insert_animation(self, "_result_pulse", 15, 0,
-                             RESULT_PULSE_MS)
         except ParseError as e:
             self.error_popup.show(e.expr if e.expr else expr, e, e.pos)
             self.mode = 2
@@ -216,7 +117,6 @@ class CalculatorScreen(UIElement):
             len(self.history),
             self._cursor,
             self._view_offset,
-            self._result_pulse,
             self.storage_error,
         )
 
@@ -253,13 +153,10 @@ class CalculatorScreen(UIElement):
         expr_width = max(24, result_x - 8)
         return fit_text(expr, expr_width, self.font), result_text, result_x
 
-    def _draw_history_row(self, display, y, expr, result, selected, fresh=False):
+    def _draw_history_row(self, display, y, expr, result, selected):
         expr_text, result_text, result_x = self._history_text(expr, result)
         if selected:
             display.fill_rectangle(2, y, 206, HIST_ROW_H - 1, 12)
-        elif fresh:
-            pulse_gs = 3 + min(8, self._result_pulse // 2)
-            display.fill_rectangle(2, y, 206, HIST_ROW_H - 1, pulse_gs)
         draw_text(display, 4, y, expr_text, self.font,
                   gs=14 if selected else 15, invert=selected)
         draw_text(display, result_x, y, result_text, self.font,
@@ -316,8 +213,7 @@ class CalculatorScreen(UIElement):
             y = hist_start_y + i * HIST_ROW_H
             expr_str, result = self.history[hist_idx]
             is_selected = (self.mode == 1 and hist_idx == self._cursor)
-            self._draw_history_row(display, y, expr_str, result, is_selected,
-                                   fresh=(hist_idx == 0 and self._result_pulse > 0))
+            self._draw_history_row(display, y, expr_str, result, is_selected)
 
         # --- Status line (y=55..63) ---
         self._draw_footer(display)
@@ -345,7 +241,6 @@ class CalculatorScreen(UIElement):
                     self.mode = 1
                     self._cursor = 0
                     self._view_offset = 0
-                    self._cooldown = time.ticks_ms()
             elif action == "stab":
                 return "VARIABLE_PANEL"
             elif action == "ESC":
@@ -368,13 +263,6 @@ class CalculatorScreen(UIElement):
                 return None
 
             r, c, shift = event
-            now = time.ticks_ms()
-
-            # Per-key cooldown: same-key rapid-fire prevention, different keys pass through
-            if (r, c) == self._hist_last_key and time.ticks_diff(now, self._cooldown) < 180:
-                return None
-            self._cooldown = now
-            self._hist_last_key = (r, c)
 
             label = get_key_label(r, c, shift)
 

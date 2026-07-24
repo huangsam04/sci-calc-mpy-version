@@ -1,9 +1,7 @@
-"""Menu widget: scrollable list with animation transitions."""
+"""Menu widget: scrollable list with immediate cursor feedback."""
 from ui.element import UIElement
 from ui.cursor import Cursor
-from anim.engine import is_animating
 from input.keyboard import get_key_label
-from ui.motion import MENU_CURSOR_MS
 
 
 MENU_REPEAT_DELAY_MS = 250
@@ -66,17 +64,11 @@ class Menu(UIElement):
         self.cursor.x = self.x + 2
         self.cursor.y = target_y
         self.cursor.width = self._highlight_width(self.cursor_pos)
-        self.cursor.target_x = self.x + 2
-        self.cursor.target_y = target_y
-        self.cursor.target_w = self.cursor.width
         self._presented_y = None
         self._presented_width = None
         self._presented_view_offset = None
         self._repeat_direction = 0
         self._repeat_hold_ms = 0
-
-    def animation_children(self):
-        return (self.cursor,)
 
     def get_present_rows(self, display_height):
         """Return the menu rows affected by the current highlight frame."""
@@ -88,8 +80,7 @@ class Menu(UIElement):
         if self.view_offset != self._presented_view_offset:
             return ((self.y, self.height),)
         if (current_y == previous_y
-                and current_width == self._presented_width
-                and not is_animating(self.cursor)):
+                and current_width == self._presented_width):
             return None
         font_height = self.font.height if self.font else 8
         row_start = max(0, min(previous_y, current_y) - 2)
@@ -132,7 +123,6 @@ class Menu(UIElement):
         self.cursor.change_target(
             self.x + 2,
             self.y + 2 + (self.cursor_pos - self.view_offset) * self.row_height,
-            MENU_CURSOR_MS,
             width=self._highlight_width(self.cursor_pos)
         )
 
@@ -208,8 +198,7 @@ class Menu(UIElement):
 
     def update(self, kb, event=None):
         if event is None:
-            self._repeat_held_direction(kb)
-            return None
+            return "MOVE" if self._repeat_held_direction(kb) else None
 
         r, c, shift = event
         label = get_key_label(r, c, shift)

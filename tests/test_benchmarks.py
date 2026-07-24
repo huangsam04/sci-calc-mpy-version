@@ -7,41 +7,24 @@ from performance import PerformanceMetrics
 class FakeNav:
     def __init__(self, root):
         self.current = root
-        self._transitioning = False
-        self.frames = 0
         self.presents = 0
-        self.restores = 0
         self.settles = 0
 
     def reset(self, root):
         self.current = root
-        self._transitioning = False
 
     def go_to(self, target):
         self.current = target
-        self._transitioning = True
 
     def go_back(self):
         self.current = "root"
-        self._transitioning = True
-
-    def is_transitioning(self):
-        return self._transitioning
-
-    def draw_transition(self, now):
-        self.frames += 1
-        self._transitioning = False
 
     def present_current(self):
         self.presents += 1
 
     def settle_current(self):
         self.settles += 1
-        return False
-
-    def restore_optional_resources(self):
-        self.restores += 1
-        return False
+        return 0
 
 
 def test_performance_metrics_reports_phase_latency_frame_and_gc_summaries():
@@ -117,7 +100,7 @@ def test_latency_and_gc_metrics_keep_fixed_storage_across_long_runs():
     assert metrics.snapshot()["input_to_present_us"]["count"] == 0
 
 
-def test_device_benchmark_runner_exercises_repeated_navigation_without_writes():
+def test_device_benchmark_runner_exercises_five_navigation_rounds_without_writes():
     metrics = PerformanceMetrics(sample_limit=16)
     root = "root"
     nav = FakeNav(root)
@@ -126,18 +109,18 @@ def test_device_benchmark_runner_exercises_repeated_navigation_without_writes():
     metrics.bind_runtime(nav, root, ("plot", "calculator"))
     lines = []
 
-    report = run(metrics=metrics, cycles=3, frame_pace_ms=0,
+    report = run(metrics=metrics, cycles=5, frame_pace_ms=0,
                  gc_runs=1, emit=lines.append)
 
-    assert report["navigation_cycles"] == 3
-    assert report["warmup_transitions"] == 4
-    assert report["input_to_present_us"]["count"] == 3
-    assert report["frame_us"]["count"] == 12
-    assert nav.frames == 10
-    assert nav.settles == 10
-    assert nav.restores == 10
-    assert any(line.startswith("BENCH nav_event_p95_us=") for line in lines)
-    assert any(line.startswith("BENCH frame_p95_us=") for line in lines)
+    assert report["navigation_cycles"] == 5
+    assert report["warmup_navigations"] == 4
+    assert report["input_to_present_us"]["count"] == 5
+    assert report["frame_us"]["count"] == 10
+    assert nav.presents == 14
+    assert nav.settles == 14
+    assert any(
+        line.startswith("BENCH input_to_present_p95_us=") for line in lines)
+    assert any(line.startswith("BENCH loop_step_p95_us=") for line in lines)
 
 
 def test_benchmark_runner_builds_a_standalone_runtime_when_app_state_is_absent():
@@ -157,17 +140,27 @@ def test_benchmark_runner_builds_a_standalone_runtime_when_app_state_is_absent()
     assert report["navigation_cycles"] == 1
 
 
-def test_standalone_benchmark_enables_transitions_only_after_first_frame():
+def test_standalone_benchmark_reuses_the_already_presented_runtime():
     source = (Path(__file__).parents[1] / "source" / "benchmarks.py").read_text(
         encoding="utf-8")
 
     runtime = source.index("def _build_runtime")
     build = source.index("main(run_loop=False)", runtime)
-    present = source.index("nav.present_current()", runtime)
-    first_frame = source.index("nav.mark_first_frame_presented()", runtime)
-    restore = source.index("nav.restore_optional_resources()", runtime)
+    bind = source.index("metrics.bind_runtime(nav, root, targets)", runtime)
 
-    assert build < present < first_frame < restore
-    assert "nav.reserve_transition_buffers()" not in source[runtime:source.index("def run", runtime)]
+    assert build < bind
+    assert "transition" not in source[runtime:source.index("def run", runtime)]
     assert "from screens.function_panel import FunctionPanel" not in source[
         runtime:source.index("def run", runtime)]
+
+
+def test_device_interaction_acceptance_reuses_resident_framebuffer():
+    source = (
+        Path(__file__).parents[1]
+        / "tools" / "device_interaction_acceptance.py"
+    ).read_text(encoding="utf-8")
+
+    assert "SAMPLE_COUNT = 5" in source
+    assert "metrics.runtime()" in source
+    assert "_init_display" not in source
+    assert "Renderer(" not in source

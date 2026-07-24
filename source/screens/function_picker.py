@@ -1,9 +1,7 @@
 """Function picker: Shift+RPN — 2-column scrollable list of all functions."""
 from ui.element import UIElement
 from input.keyboard import get_key_label
-from ui.theme import (SHELL_FUNCTION_PICKER, draw_footer_fast, draw_header,
-                      draw_page_shell)
-from ui.residency import SETTLE_MORE, SETTLE_REDRAW
+from ui.theme import draw_footer_fast, draw_header
 
 VISIBLE = 4      # rows visible at once
 ROW_H = 10       # pixel height per row
@@ -16,7 +14,6 @@ EMPTY_HINT_BYTES = b"[No functions loaded]"
 
 
 class FunctionPicker(UIElement):
-    swap_key = "function_picker"
     transition_title = "Functions"
 
     def __init__(self, font, calc_screen):
@@ -24,63 +21,18 @@ class FunctionPicker(UIElement):
         self.font = font
         self.calc_screen = calc_screen
         self._names = []
+        self._registry_revision = -1
         self._cursor = 0     # flat index into _names
         self._offset = 0     # first visible row's base index (multiple of VISIBLE)
-        self._needs_names_restore = None
 
     def activate(self):
         ft = self.calc_screen.context.registry
-        self._names = sorted(ft.keys())
+        revision = getattr(ft, "revision", None)
+        if revision != self._registry_revision:
+            self._names = sorted(ft.keys())
+            self._registry_revision = revision
         self._cursor = 0
         self._offset = 0
-        self._needs_names_restore = None
-
-    def release_memory(self):
-        """Function names are rebuilt from the live registry on activation."""
-        if not self._names:
-            return False
-        self._names = []
-        return True
-
-    def snapshot_state(self):
-        return {"cursor": self._cursor, "offset": self._offset}
-
-    def reset_state(self):
-        self._names = []
-        self._cursor = 0
-        self._offset = 0
-        self._needs_names_restore = None
-
-    def activate_default(self):
-        self._names = []
-        self._needs_names_restore = -1
-
-    def restore_state(self, state):
-        self._cursor = max(0, int(state.get("cursor", 0)))
-        self._offset = max(0, int(state.get("offset", 0)))
-        self._needs_names_restore = -1
-
-    def settle_step(self):
-        stage = self._needs_names_restore
-        if stage is None:
-            return 0
-        if stage < 0:
-            self._names = sorted(self.calc_screen.context.registry.keys())
-            self._clamp()
-            self._needs_names_restore = 0
-            if not self._names:
-                self._needs_names_restore = None
-                return SETTLE_REDRAW
-            return SETTLE_MORE
-        stage += 1
-        if stage >= VISIBLE:
-            self._needs_names_restore = None
-            return SETTLE_REDRAW
-        self._needs_names_restore = stage
-        return SETTLE_REDRAW | SETTLE_MORE
-
-    def draw_transition_default(self, display):
-        draw_page_shell(display, SHELL_FUNCTION_PICKER, self.font)
 
     def _clamp(self):
         n = len(self._names)
@@ -138,8 +90,7 @@ class FunctionPicker(UIElement):
         self._clamp()
         n = len(self._names)
 
-        visible_rows = (VISIBLE if self._needs_names_restore is None
-                        else max(0, self._needs_names_restore))
+        visible_rows = VISIBLE
         for row in range(visible_rows):
             y = 15 + row * ROW_H
             # Left column

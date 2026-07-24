@@ -10,12 +10,13 @@ SOURCE = Path(__file__).parents[1] / "source"
 class SplashDisplay:
     def __init__(self):
         self.present_count = 0
+        self.text = []
 
     def clear_buffers(self, color=0):
         pass
 
-    def draw_text8x8(self, *args, **kwargs):
-        pass
+    def draw_text8x8(self, x, y, value, **kwargs):
+        self.text.append((x, y, value))
 
     def draw_hline(self, *args, **kwargs):
         pass
@@ -54,24 +55,24 @@ def test_boot_uses_generated_binary_font_assets():
     assert "/sd/fonts/Neato5x7.xglcd" in main_source
 
 
-def test_boot_defers_optional_transition_buffers_until_after_core_first_frame():
+def test_boot_presents_core_frame_before_run_loop_can_return():
     main_source = (SOURCE / "main.py").read_text(encoding="utf-8")
 
     nav_created = main_source.index("nav = Nav(display, font_small, registry)")
     screens = main_source.index("from screens.main_menu import MainMenu")
-    boot = main_source.index("nav.boot(main_menu)")
-    first_frame = main_source.index("nav.mark_first_frame_presented()")
-    restore = main_source.index("nav.restore_optional_resources()")
+    first_frame = main_source.index(
+        "_present_first_ui_frame(nav, main_menu)", screens)
+    return_gate = main_source.index("if not run_loop:", first_frame)
 
-    assert nav_created < screens < boot < first_frame < restore
-    assert "nav.reserve_transition_buffers()" not in main_source[nav_created:screens]
+    assert nav_created < screens < first_frame < return_gate
+    assert "transition_buffers" not in main_source
+    assert "ui.residency" not in main_source
+    assert "lazy_screen" not in main_source
 
 
 def test_boot_progress_avoids_artificial_animation_delay(monkeypatch):
     display = SplashDisplay()
     delays = []
-    monkeypatch.setattr(main, "_boot_fill_w", 0)
-    monkeypatch.setattr(main, "_boot_title_gs", 0)
     monkeypatch.setattr(main.time, "sleep_ms", delays.append)
 
     for step in range(1, 9):
@@ -81,19 +82,24 @@ def test_boot_progress_avoids_artificial_animation_delay(monkeypatch):
     assert delays == []
 
 
+def test_boot_progress_shows_the_actual_operation(monkeypatch):
+    display = SplashDisplay()
+    delays = []
+    monkeypatch.setattr(main.time, "sleep_ms", delays.append)
+
+    main._boot_progress(
+        display, 3, 8, "Loading settings...", "load_settings()")
+
+    assert any(value == "(load_settings())"
+               for _, _, value in display.text)
+    assert delays == []
+
+
 def test_accepted_input_bypasses_idle_render_throttle(monkeypatch):
     monkeypatch.setattr(main.time, "ticks_diff", lambda newer, older: newer - older)
 
-    assert main._needs_render(10, 0, False, True, False, True) is True
-    assert main._needs_render(10, 0, False, True, False, False) is False
-
-
-def test_final_animation_frame_bypasses_the_idle_render_throttle(monkeypatch):
-    """The exact endpoint must be drawn rather than waiting for idle work."""
-    monkeypatch.setattr(main.time, "ticks_diff", lambda newer, older: newer - older)
-
-    assert main._needs_render(10, 0, False, False, False, False,
-                              animation_finished=True) is True
+    assert main._needs_render(10, 0, True, False, True) is True
+    assert main._needs_render(10, 0, True, False, False) is False
 
 
 def test_held_direction_key_keeps_requesting_page_updates():
@@ -102,3 +108,53 @@ def test_held_direction_key_keeps_requesting_page_updates():
             return (row, col) == (3, 1)
 
     assert main._page_update_requested(Keyboard(), None) is True
+
+
+def test_sidebar_refresh_deadline_invalidates_without_polling_each_frame(
+        monkeypatch):
+    class Renderer:
+        def __init__(self):
+            self.invalidations = 0
+
+        def invalidate_sidebar(self):
+            self.invalidations += 1
+
+    monkeypatch.setattr(
+        main.time, "ticks_diff", lambda newer, older: newer - older)
+    renderer = Renderer()
+
+    assert main._refresh_sidebar_if_due(renderer, 4999, 0) == 0
+    assert renderer.invalidations == 0
+    assert main._refresh_sidebar_if_due(renderer, 5000, 0) == 5000
+    assert renderer.invalidations == 1
+
+
+def test_angle_toggle_immediately_invalidates_sidebar():
+    class Registry:
+        angle_mode = 0
+
+    class Persistence:
+        def __init__(self):
+            self.saved = None
+
+        def request_settings(self, settings):
+            self.saved = settings
+
+    class Renderer:
+        def __init__(self):
+            self.invalidations = 0
+
+        def invalidate_sidebar(self):
+            self.invalidations += 1
+
+    registry = Registry()
+    settings = {}
+    persistence = Persistence()
+    renderer = Renderer()
+
+    main._toggle_angle_mode(registry, settings, persistence, renderer)
+
+    assert registry.angle_mode == 1
+    assert settings["angle_mode"] == 1
+    assert persistence.saved is settings
+    assert renderer.invalidations == 1

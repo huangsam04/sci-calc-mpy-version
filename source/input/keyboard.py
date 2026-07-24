@@ -11,15 +11,11 @@ COL_PINS = [13, 12, 14, 27, 26, 25]
 ROWS = 5
 COLS = 6
 
-NOT_PRESSED = 0
-RISING_EDGE = 1
-PRESSED = 2
-FALLING_EDGE = 3
-
-SCAN_INTERVAL = 15  # ms
-DEBOUNCE_MS = 15    # ms — minimum release time before new press is recognized
+SCAN_INTERVAL = 8   # ms
+DEBOUNCE_MS = 8     # ms — minimum release time before new press is recognized
 EVENT_QUEUE_CAPACITY = 8
 SHIFT_EVENT_FLAG = 0x20
+SHIFT_INDEX = 4 * COLS
 
 
 def _decode_event(code):
@@ -28,91 +24,51 @@ def _decode_event(code):
             bool(code & SHIFT_EVENT_FLAG))
 
 
-class Key:
-    __slots__ = (
-        "row", "col", "state", "is_pressed", "start_press", "end_press",
-        "_pending", "_consumed", "_hold_consumed")
-
-    def __init__(self, row, col):
-        self.row = row
-        self.col = col
-        self.state = NOT_PRESSED
-        self.is_pressed = False
-        self.start_press = 0
-        self.end_press = None
-        self._pending = None  # timestamp of first high read for two-sample
-        self._consumed = False  # edge consumed by pop_key_event()
-        self._hold_consumed = False
-
-    def _accept_press(self, cur_time):
-        self._pending = None
-        self.is_pressed = True
-        self.state = RISING_EDGE
-        self._consumed = False
-        self.start_press = cur_time
-        self._hold_consumed = False
-
-    def update(self, cur_state, cur_time):
-        if cur_state:
-            if not self.is_pressed:
-                since_release = (None if self.end_press is None else
-                                 time.ticks_diff(cur_time, self.end_press))
-                # If released long ago (>50ms), accept single sample (fast response)
-                if since_release is None or since_release > 50:
-                    self._accept_press(cur_time)
-                    return True
-                elif since_release >= DEBOUNCE_MS:
-                    # Recent release: require two consecutive high reads (bounce filter)
-                    if self._pending is None:
-                        self._pending = cur_time
-                    else:
-                        self._accept_press(cur_time)
-                        return True
-                # else: within DEBOUNCE_MS of release, ignore
-            else:
-                self._pending = None
-                self.state = PRESSED
-        else:
-            self._pending = None
-            if self.is_pressed:
-                self.is_pressed = False
-                self.state = FALLING_EDGE
-                self.end_press = cur_time
-                self.start_press = 0
-                self._hold_consumed = False
-            else:
-                self.state = NOT_PRESSED
-        return False
-
-    def get_hold_time(self):
-        """Return how long this key has been held in ms, or 0."""
-        if self.is_pressed:
-            return time.ticks_diff(time.ticks_ms(), self.start_press)
-        return 0
-
-    def consume_long_press(self, now, threshold_ms):
-        if (self.is_pressed and not self._hold_consumed
-                and time.ticks_diff(now, self.start_press) >= threshold_ms):
-            self._hold_consumed = True
-            return True
-        return False
-
-
 class Keyboard:
+    """Allocation-free matrix state using bitmaps instead of 30 key objects."""
+
     __slots__ = (
-        "keys", "_row_pins", "_col_pins", "_last_scan",
-        "_event_data", "_event_head", "_event_count")
+        "_row_pins", "_col_pins", "_last_scan", "_pressed_mask",
+        "_released_mask", "_hold_consumed_mask", "_release_times",
+        "_press_starts", "_event_data", "_event_head", "_event_count")
 
     def __init__(self):
-        self.keys = [[Key(r, c) for c in range(COLS)] for r in range(ROWS)]
         self._row_pins = [Pin(p, Pin.IN) for p in ROW_PINS]
         self._col_pins = [Pin(p, Pin.OUT) for p in COL_PINS]
         self._last_scan = None
+        self._pressed_mask = 0
+        self._released_mask = 0
+        self._hold_consumed_mask = 0
+        self._release_times = [0] * (ROWS * COLS)
+        self._press_starts = [0] * (ROWS * COLS)
         self._event_data = bytearray(EVENT_QUEUE_CAPACITY)
         self._event_head = 0
         self._event_count = 0
         for cp in self._col_pins:
             cp.value(0)
+
+    def _update_key(self, index, raw, now):
+        """Update one matrix position and return whether it rose."""
+        bit = 1 << index
+        pressed = bool(self._pressed_mask & bit)
+        if raw:
+            if pressed:
+                return False
+            if (self._released_mask & bit
+                    and time.ticks_diff(
+                        now, self._release_times[index]) < DEBOUNCE_MS):
+                return False
+            self._pressed_mask |= bit
+            self._hold_consumed_mask &= ~bit
+            self._press_starts[index] = now
+            return True
+        if pressed:
+            self._pressed_mask &= ~bit
+            self._released_mask |= bit
+            self._hold_consumed_mask &= ~bit
+            self._release_times[index] = now
+            self._press_starts[index] = 0
+        return False
 
     def scan(self):
         now = time.ticks_ms()
@@ -120,14 +76,17 @@ class Keyboard:
                 and time.ticks_diff(now, self._last_scan) < SCAN_INTERVAL):
             return
         self._last_scan = now
+        rising_mask = 0
         for ci, cp in enumerate(self._col_pins):
             cp.value(1)
             time.sleep_us(10)
             for ri in range(ROWS):
                 raw = self._row_pins[ri].value()
-                self.keys[ri][ci].update(raw, now)
+                index = ri * COLS + ci
+                if self._update_key(index, raw, now):
+                    rising_mask |= 1 << index
             cp.value(0)
-        self._capture_edges()
+        self._capture_rising(rising_mask)
 
     def _queue_event(self, row, col, shift_held):
         """Keep a bounded edge backlog across slow display frames."""
@@ -141,24 +100,18 @@ class Keyboard:
         self._event_count += 1
         return True
 
-    def _capture_edges(self):
-        shift_held = self.keys[4][0].is_pressed
-        for row in self.keys:
-            for key in row:
-                if key.state == RISING_EDGE and not key._consumed:
-                    if not self._queue_event(
-                            key.row, key.col, shift_held):
-                        return
-                    key._consumed = True
+    def _capture_rising(self, rising_mask):
+        shift_held = bool(self._pressed_mask & (1 << SHIFT_INDEX))
+        for index in range(ROWS * COLS):
+            if rising_mask & (1 << index):
+                if not self._queue_event(
+                        index // COLS, index % COLS, shift_held):
+                    return
 
     def pop_key_event(self):
         """Return (row, col, shift_held) for first unconsumed rising edge and
         consume it. Shift state is captured atomically with the edge — no more
         label misresolution. Returns None if all edges already consumed."""
-        if self._event_count == 0:
-            # Also supports diagnostic/test callers that update Key objects
-            # directly rather than going through scan().
-            self._capture_edges()
         if self._event_count == 0:
             return None
         code = self._event_data[self._event_head]
@@ -168,8 +121,6 @@ class Keyboard:
 
     def pop_key_event_at(self, row, col):
         """Remove one matching edge while preserving all other queued taps."""
-        if self._event_count == 0:
-            self._capture_edges()
         wanted = row * COLS + col
         for offset in range(self._event_count):
             index = (self._event_head + offset) % EVENT_QUEUE_CAPACITY
@@ -186,28 +137,35 @@ class Keyboard:
         return None
 
     def is_pressed(self, row, col):
-        return self.keys[row][col].is_pressed
+        return bool(self._pressed_mask & (1 << (row * COLS + col)))
 
     def get_hold_time(self, row, col):
-        return self.keys[row][col].get_hold_time()
+        index = row * COLS + col
+        if not self._pressed_mask & (1 << index):
+            return 0
+        return time.ticks_diff(time.ticks_ms(), self._press_starts[index])
 
     def consume_long_press(self, row, col, threshold_ms):
-        return self.keys[row][col].consume_long_press(time.ticks_ms(), threshold_ms)
+        index = row * COLS + col
+        bit = 1 << index
+        if (not self._pressed_mask & bit
+                or self._hold_consumed_mask & bit
+                or time.ticks_diff(
+                    time.ticks_ms(),
+                    self._press_starts[index]) < threshold_ms):
+            return False
+        self._hold_consumed_mask |= bit
+        return True
 
     def discard_pending_events(self):
         self._event_head = 0
         self._event_count = 0
-        for row in self.keys:
-            for key in row:
-                if key.state == RISING_EDGE:
-                    key._consumed = True
+
+    def has_pending_events(self):
+        return self._event_count != 0
 
     def any_pressed(self):
-        for row in self.keys:
-            for key in row:
-                if key.is_pressed:
-                    return True
-        return False
+        return self._pressed_mask != 0
 
 
 # --- Key label lookup (matches original calcLayout) ---

@@ -8,9 +8,7 @@ from machine import Pin, SPI
 # --- Minimal imports for splash screen ---
 from display.ssd1322 import Display as SSD1322
 from display.xglcd_font import XglcdFont
-from ui.motion import (PAGE_TRANSITION_MS, ACTIVE_FRAME_MS, IDLE_FRAME_MS,
-                       ACTIVE_LOOP_SLEEP_MS, IDLE_LOOP_SLEEP_MS,
-                       SLEEP_SCAN_MS)
+from ui.motion import IDLE_FRAME_MS, IDLE_LOOP_SLEEP_MS, SLEEP_SCAN_MS
 from version import VERSION
 from performance import metrics
 
@@ -20,10 +18,9 @@ SPI_DATA = 23
 SPI_CS = 5
 SPI_DC = 16
 SPI_RESET = 17
-TRANSITION_MS = PAGE_TRANSITION_MS
-TRANSITION_PROGRESS_SCALE = 1024
-BOOT_PROGRESS_FRAMES = 1
-BOOT_FINAL_HOLD_MS = 40
+INPUT_BATCH_LIMIT = 5
+BACKGROUND_IDLE_MS = 750
+SIDEBAR_REFRESH_MS = 5000
 
 
 def _init_display():
@@ -38,61 +35,28 @@ def _init_display():
     return SSD1322(spi, cs, dc, rst)
 
 
-# --- Boot animation state ---
-_boot_fill_w = 0       # current animated bar fill width (pixels)
-_boot_title_gs = 0     # title grayscale for fade-in
-
-
-def _boot_progress(display, step, total, label=""):
-    """Draw the completed state of one blocking boot phase."""
-    global _boot_fill_w, _boot_title_gs
-
+def _boot_progress(display, step, total, label="", operation=""):
+    """Draw one truthful, allocation-light boot checkpoint."""
     bar_x, bar_y, bar_w, bar_h = 20, 34, 216, 5
-    target_w = int((bar_w - 2) * step / total)
-
-    # Title fade-in: gradually brighten from 0→15 over first few steps
-    if _boot_title_gs < 15:
-        _boot_title_gs = min(15, _boot_title_gs + 3)
-
-    # Imports are synchronous, so intermediate splash frames cannot report
-    # real progress. One frame per completed phase gets to the usable UI much
-    # sooner while preserving meaningful stage feedback.
-    frames = BOOT_PROGRESS_FRAMES
-    for i in range(frames):
-        t = (i + 1) / frames
-        eased = 1 - (1 - t) ** 3
-        current_w = _boot_fill_w + int((target_w - _boot_fill_w) * eased)
-
-        display.clear_buffers(0)
-
-        # Title — centered on full 256px display (8 chars × 8px = 64px, (256-64)/2 = 96)
-        display.draw_text8x8(96, 10, "SCI-CALC", gs=_boot_title_gs)
-        # Decorative separator
-        display.draw_hline(60, 20, 136, min(_boot_title_gs, 6))
-
-        # Progress bar track
-        display.draw_rectangle(bar_x, bar_y, bar_w, bar_h, 6)
-        # Progress bar fill
-        if current_w > 0:
-            display.fill_rectangle(bar_x + 1, bar_y + 1,
-                                   max(1, current_w), bar_h - 2, 15)
-        # Glint — bright pixel at the leading edge of the fill
-        if current_w > 2:
-            gx = bar_x + 1 + current_w - 2
-            display.draw_vline(gx, bar_y + 1, bar_h - 2, 15)
-
-        # Step label
-        if label:
-            display.draw_text8x8(20, 44, label, gs=10)
-
-        # Step counter (right-aligned)
-        progress = f"{step}/{total}"
-        px = 210 - len(progress) * 8
-        display.draw_text8x8(px, 44, progress, gs=8)
-
-        display.present()
-
-    _boot_fill_w = target_w
+    fill_w = (bar_w - 2) * step // max(1, total)
+    display.clear_buffers(0)
+    display.draw_text8x8(96, 10, "SCI-CALC", gs=15)
+    display.draw_hline(60, 20, 136, 6)
+    display.draw_rectangle(bar_x, bar_y, bar_w, bar_h, 6)
+    if fill_w:
+        display.fill_rectangle(
+            bar_x + 1, bar_y + 1, fill_w, bar_h - 2, 15)
+    if label:
+        display.draw_text8x8(20, 44, label, gs=10)
+    progress = str(step) + "/" + str(total)
+    display.draw_text8x8(
+        210 - len(progress) * 8, 44, progress, gs=8)
+    if operation:
+        detail = "(" + operation + ")"
+        if len(detail) > 29:
+            detail = detail[:28] + "~"
+        display.draw_text8x8(12, 54, detail, gs=7)
+    display.present()
 
 
 def _boot_fail(display, step, total, label, error):
@@ -120,15 +84,26 @@ def _boot_fail(display, step, total, label, error):
     time.sleep(2)
 
 
-def _needs_render(now, last_render, active, dirty, stopwatch_running,
-                  input_changed, animation_finished=False):
+def _needs_render(now, last_render, dirty, stopwatch_running, input_changed):
     """Decide whether the current loop should submit a full display frame."""
-    if input_changed or animation_finished:
+    if input_changed:
         return True
     elapsed = time.ticks_diff(now, last_render)
-    frame_ms = ACTIVE_FRAME_MS if active else IDLE_FRAME_MS
-    return (elapsed >= frame_ms
-            and (active or dirty or stopwatch_running or elapsed >= 500))
+    return (elapsed >= IDLE_FRAME_MS
+            and (dirty or stopwatch_running
+                 or elapsed >= SIDEBAR_REFRESH_MS))
+
+
+def _drain_input_batch(nav, keyboard, handler):
+    """Dispatch at most five queued edges before the next display write."""
+    count = 0
+    while count < INPUT_BATCH_LIMIT:
+        event = nav.poll_event(keyboard)
+        if event is None:
+            break
+        handler(event)
+        count += 1
+    return count
 
 
 def _page_update_requested(keyboard, event):
@@ -138,6 +113,22 @@ def _page_update_requested(keyboard, event):
             or keyboard.is_pressed(4, 3)
             or keyboard.is_pressed(1, 1)
             or keyboard.is_pressed(3, 1))
+
+
+def _refresh_sidebar_if_due(renderer, now, last_refresh):
+    """Invalidate slow status pixels independently from page rendering."""
+    if time.ticks_diff(now, last_refresh) < SIDEBAR_REFRESH_MS:
+        return last_refresh
+    renderer.invalidate_sidebar()
+    return now
+
+
+def _toggle_angle_mode(registry, settings, persistence, renderer):
+    """Update calculation state and its sidebar pixels in one input step."""
+    registry.angle_mode = 1 - registry.angle_mode
+    settings["angle_mode"] = registry.angle_mode
+    renderer.invalidate_sidebar()
+    persistence.request_settings(settings)
 
 
 def _reload_functions(settings, registry=None):
@@ -177,14 +168,15 @@ def _reload_functions(settings, registry=None):
 
 
 def _reload_functions_after_reclaim(nav, active_screen, settings, registry):
-    """Reload plug-ins only after reclaiming every inactive UI cache.
-
-    A function-panel exit is the largest transient allocation in the app.
-    It now runs only after the return animation, keeping the visible target
-    intact while every inactive page and optional animation buffer is freed.
-    """
+    """Reload plug-ins only after reclaiming the optional plot workspace."""
     nav.prepare_memory_intensive_operation(active_screen)
     return _reload_functions(settings, registry)
+
+
+def _present_first_ui_frame(nav, root):
+    """Replace the 8/8 splash before diagnostics may return."""
+    nav.boot(root)
+    nav.present_current()
 
 
 def _draw_crash(display, error):
@@ -230,305 +222,108 @@ def _draw_crash(display, error):
 # ── Screen navigation ───────────────────────────────────────────
 
 class Nav:
-    """Screen stack and non-blocking transition state.
+    """Immediate navigation across resident pages."""
 
-    Frame capture, composition, fixed chrome and presentation are delegated to
-    one Renderer instance with reusable buffers.
-    """
-    def __init__(self, display, font_small, registry, memory=None,
-                 residency=None):
+    __slots__ = (
+        "memory", "renderer", "stack", "_managed", "_input_locked",
+        "_collect_pending", "last_present_us")
+
+    def __init__(self, display, font_small, registry, memory=None):
         from ui.memory import MemoryManager
         from ui.renderer import Renderer
-        from ui.residency import PageResidency
         from ui.sidebar import Sidebar
         self.memory = memory or MemoryManager()
-        self.renderer = Renderer(display, Sidebar(font_small, registry),
-                                 memory=self.memory)
-        self.residency = residency or PageResidency(memory=self.memory)
+        self.renderer = Renderer(
+            display, Sidebar(font_small, registry), memory=self.memory)
         self.stack = []
-        self._transition = None
-        self._transition_cleanup_pending = False
-        self._post_transition_collect = False
-        self._transition_gc_locked = False
-        self._fade_switched = False
-        self._fade_brightness = 100
+        self._managed = ()
         self._input_locked = False
-        self._hold_blocked_key = None
-        self._optional_resources_pending = False
+        self._collect_pending = False
         self.last_present_us = 0
 
-    def boot(self, screen):
-        """Set root screen (no transition)."""
-        self.stack.append(screen)
-        self.residency.recover(screen)
-        screen.activate()
-
-    def reserve_transition_buffers(self):
-        """Legacy explicit opt-in used by standalone diagnostics only."""
-        return self.renderer.enable_transition_buffers()
-
-    def enable_optional_resources(self):
-        """Enable the reveal strip only when the active page is memory-safe."""
-        if (self.stack
-                and getattr(self.current, "requires_serial_memory", False)):
-            return False
-        return self.renderer.enable_transition_buffers()
-
-    def mark_first_frame_presented(self):
-        """Permit one idle attempt to enable optional transition layers."""
-        self._optional_resources_pending = True
-
-    def restore_optional_resources(self):
-        """Attempt optional transition allocation after a stable live frame."""
-        if (not self._optional_resources_pending
-                or self._transition is not None
-                or not self.stack
-                or getattr(self.current, "requires_serial_memory", False)):
-            return False
-        self._optional_resources_pending = False
-        return self.enable_optional_resources()
-
-    def prepare_memory_intensive_operation(self, active_screen):
-        """Release optional buffers before compiling/reloading large state."""
-        self._optional_resources_pending = False
-        self.renderer.release_transition_buffers()
-        self.memory.reclaim_for(active_screen, aggressive=True)
-        self.memory.release_plot_workspace()
-        # ``release_plot_workspace`` owns a raw bytearray rather than a page
-        # cache, so force coalescing even when no screen reported a release.
-        self.memory.collect()
-        self._optional_resources_pending = True
-
     def register_screens(self, screens):
-        """Register pages whose rebuildable caches can be reclaimed safely."""
-        self.memory.register_screens(screens)
+        self._managed = tuple(screens)
 
     @property
     def current(self):
         return self.stack[-1]
 
+    def boot(self, screen):
+        self.stack[:] = [screen]
+        screen.activate()
+
     def go_to(self, screen, trigger_event=None):
-        old = self.stack[-1]
+        if screen is self.current:
+            return
+        old = self.current
+        old.deactivate()
         self.stack.append(screen)
-        self._start_transition(old, screen, True, trigger_event)
+        try:
+            screen.activate()
+        except Exception:
+            self.stack.pop()
+            old.activate()
+            raise
 
     def go_back(self, trigger_event=None):
         if len(self.stack) <= 1:
             return
         old = self.stack.pop()
-        self._start_transition(old, self.stack[-1], False, trigger_event)
-
-    def _requires_plot_workspace(self, screen):
-        return bool(getattr(screen, "requires_plot_workspace", False))
-
-    def _lock_transition_gc(self):
-        if (hasattr(gc, "mem_free")
-                and hasattr(gc, "disable")
-                and not self._transition_gc_locked):
-            gc.disable()
-            self._transition_gc_locked = True
-
-    def _unlock_transition_gc(self):
-        if self._transition_gc_locked:
-            gc.enable()
-            self._transition_gc_locked = False
-
-    def _start_transition(self, old, new, forward, trigger_event=None):
-        from anim.engine import cancel_all_animations
-        from ui.renderer import TRANSITION_RECOVERY_HEADROOM
-        self._transition_cleanup_pending = False
-        self._hold_blocked_key = (
-            (trigger_event[0], trigger_event[1])
-            if trigger_event is not None else None)
-        cancel_all_animations()
-        # The old pixels already live in controller RAM.  Establish that fact
-        # before releasing any Python state, then acquire optional reveal RAM
-        # only after the outgoing page and plot workspace are gone.
-        try:
-            self.renderer.hold_outgoing(old)
-        except MemoryError:
-            # The last presented page is still a valid outgoing visual.
-            pass
-
-        released = self.residency.leave(old)
-        released = (self.memory.reclaim_for(
-            new, exclude=(old,), collect=False) or released)
-        if self._requires_plot_workspace(old):
-            if self.memory.handoff_plot_workspace():
-                released = True
-        # Integer-only transition frames stay within the live heap until the
-        # wipe completes. Reclaim released page/module objects immediately
-        # afterward, before SWAP restore or target-page construction.
-        self._post_transition_collect = True
-        self._lock_transition_gc()
-        self.residency.prepare(new)
-
-        if not self.renderer.can_start_transition():
-            if released:
-                self.renderer.enable_transition_buffers(
-                    allow_collect=False,
-                    active_headroom=TRANSITION_RECOVERY_HEADROOM)
-            else:
-                self.renderer.enable_transition_buffers(allow_collect=False)
-
-        captured = False
-        if self.renderer.can_start_transition():
-            try:
-                captured = self.renderer.capture_incoming(new, default=True)
-            except MemoryError:
-                captured = False
-
-        started = time.ticks_ms()
-        if not captured:
-            self.renderer.release_transition_buffers(collect=False)
-            self._optional_resources_pending = True
-            self._fade_switched = False
-            self._fade_brightness = getattr(
-                self.renderer.display, "brightness", 100)
-            self._transition = (started, forward, "fade")
-            return
-
-        self._transition = (started, forward, "wipe")
-
-    def is_transitioning(self):
-        return self._transition is not None
+        old.deactivate()
+        released = False
+        if getattr(old, "requires_plot_workspace", False):
+            releaser = getattr(old, "release_memory", None)
+            if releaser is not None:
+                released = bool(releaser())
+            released = self.memory.release_plot_workspace() or released
+        if released:
+            self._collect_pending = True
+        self.current.activate()
 
     def poll_event(self, keyboard):
-        """Consume one edge only when the current page can safely receive it.
-
-        Matrix scanning continues during a transition, so the keyboard's
-        bounded queue retains every tap. Page restoration also leaves the
-        head event queued, except for ESC which is always allowed to abort.
-        """
-        if self._transition is not None:
-            return None
         if self._input_locked:
             if keyboard.any_pressed():
                 return None
             self._input_locked = False
-        if (self._hold_blocked_key is not None
-                and not keyboard.is_pressed(*self._hold_blocked_key)):
-            self._hold_blocked_key = None
-        if self.residency.is_restoring(self.current):
-            # The default shell remains safe to leave immediately, but other
-            # edits must wait or restore_state() could overwrite them.
-            event = keyboard.pop_key_event_at(0, 0)
-            if event is None:
-                return None
-        else:
-            event = keyboard.pop_key_event()
-        if event is not None and getattr(self.current,
-                                         "_residency_error", ""):
-            self.current.clear_residency_error()
-            return None
-        return event
-
-    def allows_page_update(self, event):
-        """Gate eventless hold polling without delaying new key edges."""
-        return (event is not None
-                or (self._hold_blocked_key is None
-                    and not self.residency.is_restoring(self.current)))
-
-    def draw_transition(self, now):
-        if self._transition is None:
-            return False
-        started, forward, kind = self._transition
-        elapsed = max(0, time.ticks_diff(now, started))
-        progress = min(
-            TRANSITION_PROGRESS_SCALE,
-            elapsed * TRANSITION_PROGRESS_SCALE // TRANSITION_MS)
-        if kind == "fade":
-            half = TRANSITION_PROGRESS_SCALE // 2
-            maximum = max(1, min(15,
-                (int(self._fade_brightness) * 15 + 50) // 100))
-            setter = getattr(self.renderer.display,
-                             "set_transition_current", None)
-            if progress < half:
-                level = maximum * (half - progress) // half
-            else:
-                if not self._fade_switched:
-                    if setter is not None:
-                        setter(0)
-                    self.renderer.present_default(self.current)
-                    self._fade_switched = True
-                    self.last_present_us = self.renderer.last_present_us
-                level = maximum * (progress - half) // half
-            if setter is not None:
-                setter(level)
-            if progress >= TRANSITION_PROGRESS_SCALE:
-                restore = getattr(self.renderer.display, "set_brightness", None)
-                if restore is not None:
-                    restore(self._fade_brightness)
-                self._transition_cleanup_pending = False
-                self._transition = None
-                self._unlock_transition_gc()
-            return True
-        if progress >= TRANSITION_PROGRESS_SCALE:
-            # A delayed loop never catches up by issuing several OLED writes
-            # in one frame. Keep the transition live until one fixed strip per
-            # frame has exposed the complete default page.
-            if not self.renderer.finish_transition(self.current, forward):
-                self.last_present_us = self.renderer.last_present_us
-                return True
-            self.last_present_us = self.renderer.last_present_us
-            self._transition_cleanup_pending = True
-            self._transition = None
-            self._unlock_transition_gc()
-            return True
-        remaining = TRANSITION_PROGRESS_SCALE - progress
-        eased = (TRANSITION_PROGRESS_SCALE
-                 - remaining * remaining // TRANSITION_PROGRESS_SCALE)
-        self.renderer.present_transition_progress(eased, forward)
-        self.last_present_us = self.renderer.last_present_us
-        return True
+        return keyboard.pop_key_event()
 
     def present_current(self):
         self.renderer.present(self.current)
         self.last_present_us = self.renderer.last_present_us
 
     def settle_current(self):
-        """Run one post-transition restore step and report pending work."""
-        from ui.residency import SETTLE_MORE, SETTLE_REDRAW
-        if self._transition is not None:
+        return self.current.settle_step() or 0
+
+    def prepare_memory_intensive_operation(self, active_screen):
+        for screen in self._managed:
+            if screen is active_screen:
+                continue
+            releaser = getattr(screen, "release_memory", None)
+            if releaser is not None:
+                releaser()
+        self.memory.release_plot_workspace()
+        self.memory.collect()
+        self._collect_pending = False
+
+    def collect_pending(self):
+        if not self._collect_pending:
             return False
-        if self._transition_cleanup_pending:
-            self._transition_cleanup_pending = False
-            self.memory.release_font_caches()
-            if not self.renderer.release_transition_buffers():
-                self.memory.collect()
-            self._optional_resources_pending = True
-            self._post_transition_collect = False
-        elif self._post_transition_collect:
-            self._post_transition_collect = False
-            self.memory.release_font_caches()
-            self.memory.collect()
-        flags = self.residency.settle(self.current)
-        if flags & SETTLE_REDRAW:
-            self.present_current()
-        return bool(flags & SETTLE_MORE)
+        self.memory.collect()
+        self._collect_pending = False
+        return True
 
     def reset(self, root):
-        """Recover to one root page without retaining failed UI state."""
-        from anim.engine import cancel_all_animations
-        cancel_all_animations()
-        self._unlock_transition_gc()
-        self._transition = None
-        self._transition_cleanup_pending = False
-        self._post_transition_collect = False
-        self._input_locked = True
-        self._hold_blocked_key = None
-        self._optional_resources_pending = False
-        self.renderer.release_transition_buffers()
+        for screen in self._managed:
+            releaser = getattr(screen, "release_memory", None)
+            if releaser is not None:
+                releaser()
         self.stack[:] = [root]
-        self.memory.reclaim_for(root, aggressive=True)
         self.memory.release_plot_workspace()
-        # A recovery reset is deliberately rare.  Compact the heap even when
-        # all cache owners were already empty, so a failed temporary
-        # allocation cannot strand the UI on a fragmented heap.
         self.memory.collect()
-        self.residency.recover(root)
+        self._collect_pending = False
+        self.renderer.invalidate()
+        self._input_locked = True
         root.activate()
-        self._optional_resources_pending = True
 
 
 def main(run_loop=True):
@@ -538,10 +333,11 @@ def main(run_loop=True):
     metrics.start_boot()
     display = _init_display()
     metrics.mark_boot("display")
-    _boot_progress(display, 1, 8, "Loading keyboard...")
+    _boot_progress(
+        display, 1, 8, "Loading keyboard...", "Keyboard()")
 
     # ============================================================
-    # Phase 2: Lazy-load everything else while showing progress.
+    # Phase 2: Build the resident interface while showing progress.
     # Each step is wrapped — failure shows error on screen, then
     # continues with a fallback so the calculator still boots.
     # ============================================================
@@ -550,7 +346,8 @@ def main(run_loop=True):
     try:
         from input.keyboard import Keyboard, get_key_label
         kb = Keyboard()
-        _boot_progress(display, 2, 8, "Loading fonts...")
+        _boot_progress(
+            display, 2, 8, "Loading fonts...", "XglcdFont(/sd/fonts)")
     except Exception as e:
         _boot_fail(display, 2, 8, "Keyboard", e)
         raise  # can't run without keyboard
@@ -567,13 +364,15 @@ def main(run_loop=True):
     except Exception:
         font_small = None
     metrics.mark_boot("fonts")
-    _boot_progress(display, 3, 8, "Loading settings...")
+    _boot_progress(
+        display, 3, 8, "Loading settings...", "load_settings()")
 
     # Settings (fallback: defaults)
     try:
         from utils.storage import load_settings
         settings = load_settings()
-        _boot_progress(display, 4, 8, "Loading variables...")
+        _boot_progress(
+            display, 4, 8, "Loading variables...", "load_vars()")
     except Exception as e:
         _boot_fail(display, 4, 8, "Settings", e)
         settings = {"angle_mode": 0, "enabled_functions": ["basic", "trig", "math", "list"], "diagnostics": False, "brightness": 100, "display_digits": 4}
@@ -583,7 +382,8 @@ def main(run_loop=True):
     try:
         from utils.storage import load_vars
         vars_dict = load_vars()
-        _boot_progress(display, 5, 8, "Loading functions...")
+        _boot_progress(
+            display, 5, 8, "Loading functions...", "_reload_functions()")
     except Exception as e:
         _boot_fail(display, 5, 8, "Vars", e)
         vars_dict = {}
@@ -593,7 +393,8 @@ def main(run_loop=True):
     try:
         registry = _reload_functions(settings)
         registry.angle_mode = settings.get("angle_mode", 0)
-        _boot_progress(display, 6, 8, "Loading screens...")
+        _boot_progress(
+            display, 6, 8, "Loading screens...", "import screens.*")
     except Exception as e:
         _boot_fail(display, 6, 8, "Functions", e)
         from calc.functions import build_registry
@@ -601,31 +402,24 @@ def main(run_loop=True):
         registry.angle_mode = settings.get("angle_mode", 0)
     metrics.mark_boot("functions")
 
-    # ``utils.power`` is a compiled module whose initial load reserves a
-    # 1.25 KiB code object on this ESP32 build.  Plug-ins must load first so
-    # their configured function set retains its startup budget, but this
-    # module must still arrive before the reveal strip and screen objects
-    # fragment the heap.
     from utils.power import AWAKE, WOKE, DisplayPower
 
-    # Keep optional reveal and graph buffers out of the core boot phase.  The
-    # first real page frame must fit before any non-essential allocation runs.
     nav = Nav(display, font_small, registry)
-    nav.residency.swap.start_session()
 
     # Screens (import + build — skip broken ones)
     try:
         from screens.main_menu import MainMenu
         from screens.calculator import CalculatorScreen
-        from ui.lazy_screen import (
-            BUILD_ABOUT, BUILD_FUNCTION_PANEL, BUILD_FUNCTION_PICKER,
-            BUILD_LETTERS, BUILD_PLOT, BUILD_SETTINGS, BUILD_STOPWATCH,
-            BUILD_VARIABLE_PANEL,
-            DEFAULT_ABOUT, DEFAULT_FUNCTION_PANEL, DEFAULT_FUNCTION_PICKER,
-            DEFAULT_LETTERS, DEFAULT_PLOT, DEFAULT_SETTINGS,
-            DEFAULT_STOPWATCH, DEFAULT_VARIABLE_PANEL, LazyScreen,
-            ScreenFactory)
-        _boot_progress(display, 7, 8, "Building interface...")
+        from screens.about import AboutScreen
+        from screens.letter_panel import LetterPanel
+        from screens.function_picker import FunctionPicker
+        from screens.variable_panel import VariablePanel
+        from screens.function_panel import FunctionPanel
+        from screens.plot import PlotScreen
+        from screens.settings import SettingsScreen
+        from screens.stopwatch import StopwatchScreen
+        _boot_progress(
+            display, 7, 8, "Building interface...", "construct screens")
     except Exception as e:
         _boot_fail(display, 7, 8, "Screens", e)
         # If imports failed, we can't continue — the error screen already showed
@@ -638,40 +432,30 @@ def main(run_loop=True):
         calc_screen = CalculatorScreen(
             font_main, font_small, registry, vars_dict,
             display_digits=settings.get("display_digits", 4))
-        screen_factory = ScreenFactory(
-            font_main, font_small, display, settings, persistence,
-            calc_screen, registry, nav.memory)
+        # Auxiliary pages use the display's built-in 8x8 font. This avoids SD
+        # glyph reads and cache growth on the latency-sensitive input path.
+        about = AboutScreen(None, VERSION)
+        letter_panel = LetterPanel(None, calc_screen.input_box)
+        func_picker = FunctionPicker(None, calc_screen)
+        var_panel = VariablePanel(None, calc_screen)
+        settings_screen = SettingsScreen(
+            None, display, settings, about,
+            request_save=persistence.request_settings,
+            on_display_digits_change=calc_screen.set_display_digits)
+        func_panel = FunctionPanel(
+            None, request_settings=persistence.request_settings,
+            settings=settings,
+            plugin_functions=registry.plugin_functions,
+            plugin_dependencies=registry.plugin_dependencies)
+        func_panel.set_load_errors(registry.plugin_errors)
+        # Build dynamic menus during boot, never on the first input frame.
+        func_picker.activate()
+        func_panel.activate()
+        stopwatch = StopwatchScreen(None)
+        plot_screen = PlotScreen(
+            None, None, registry, memory=nav.memory)
 
-        about = LazyScreen(
-            "about", "About", DEFAULT_ABOUT,
-            screen_factory, BUILD_ABOUT, font=font_main)
-        screen_factory.set_about(about)
-        settings_screen = LazyScreen(
-            "settings", "Settings", DEFAULT_SETTINGS,
-            screen_factory, BUILD_SETTINGS, font=font_main)
-
-        func_panel = LazyScreen(
-            "function_panel", "Functions", DEFAULT_FUNCTION_PANEL,
-            screen_factory, BUILD_FUNCTION_PANEL)
-        stopwatch = LazyScreen(
-            "stopwatch", "Stopwatch", DEFAULT_STOPWATCH,
-            screen_factory, BUILD_STOPWATCH, font=font_main)
-        letter_panel = LazyScreen(
-            "letter_panel", "Letters", DEFAULT_LETTERS,
-            screen_factory, BUILD_LETTERS, font=font_main)
-        func_picker = LazyScreen(
-            "function_picker", "Functions", DEFAULT_FUNCTION_PICKER,
-            screen_factory, BUILD_FUNCTION_PICKER, font=font_main)
-        var_panel = LazyScreen(
-            "variable_panel", "Variables", DEFAULT_VARIABLE_PANEL,
-            screen_factory, BUILD_VARIABLE_PANEL, font=font_main)
-        plot_screen = LazyScreen(
-            "plot", "Plot", DEFAULT_PLOT,
-            screen_factory, BUILD_PLOT,
-            requires_plot_workspace=True,
-            font=font_main)
-
-        main_menu = MainMenu(font_main)
+        main_menu = MainMenu(None)
         main_menu.add_screen("Calculator", calc_screen)
         main_menu.add_screen("Plot", plot_screen)
         main_menu.add_screen("Function Panel", func_panel)
@@ -681,40 +465,93 @@ def main(run_loop=True):
         _boot_fail(display, 7, 8, "Init", e)
         raise
 
-    _boot_progress(display, 8, 8, "Starting SCI-CALC...")
-    if BOOT_FINAL_HOLD_MS:
-        time.sleep_ms(BOOT_FINAL_HOLD_MS)
+    _boot_progress(
+        display, 8, 8, "Starting SCI-CALC...",
+        "_present_first_ui_frame()")
 
     # ============================================================
     # Phase 3: Main loop
     # ============================================================
-    from ui.element import UIElement
-    from anim.engine import (active_animation_count, animate_all,
-                             has_active_animations)
+    from ui.element import (
+        SETTLE_COLLECT, SETTLE_MORE, SETTLE_REDRAW, UIElement)
 
-    nav.memory.register_fonts((font_main, font_small))
-    nav.register_screens((main_menu, calc_screen, plot_screen, func_panel,
-                          stopwatch, settings_screen, letter_panel,
-                          func_picker, var_panel, about))
-    nav.boot(main_menu)
-    first_frame_pending = True
     runtime_targets = (
         calc_screen, plot_screen, func_panel, stopwatch, settings_screen)
+    nav.register_screens(runtime_targets)
+    try:
+        _present_first_ui_frame(nav, main_menu)
+    except Exception as e:
+        _draw_crash(display, e)
+        raise
     metrics.bind_runtime(nav, main_menu, runtime_targets)
     metrics.mark_boot("ui_ready")
     if not run_loop:
         return nav, main_menu, runtime_targets
     _frame = 0
-    _last_render = time.ticks_add(time.ticks_ms(), -500)
+    _last_render = time.ticks_ms()
+    _last_input = _last_render
+    _last_sidebar_refresh = _last_render
     diagnostics = bool(settings.get("diagnostics", False))
     _diag_last = time.ticks_ms()
     _diag_render_us = 0
     _diag_present_us = 0
     _diag_frames = 0
-    _dirty = True
+    _dirty = False
     _function_reload_pending = False
     power = DisplayPower(
         display, int(settings.get("sleep_timeout_s", 180)) * 1000)
+
+    def _handle_event(event):
+        nonlocal _function_reload_pending, _last_sidebar_refresh
+        cur = nav.current
+        if event is not None:
+            if diagnostics:
+                metrics.record_input()
+                print("INPUT page=" + cur.__class__.__name__
+                      + " row=" + str(event[0])
+                      + " col=" + str(event[1])
+                      + " shift=" + str(int(event[2]))
+                      + " key=" + get_key_label(
+                          event[0], event[1], event[2]))
+            erow, ecol, eshift = event
+            if ((erow, ecol) == (3, 5) and eshift
+                    and (cur is calc_screen or cur is plot_screen)):
+                input_box = (calc_screen.input_box
+                             if cur is calc_screen
+                             else plot_screen.input_box)
+                if input_box is not None:
+                    letter_panel.input_box = input_box
+                    nav.go_to(letter_panel, event)
+                    return True
+            if (erow, ecol) == (4, 4):
+                _toggle_angle_mode(
+                    registry, settings, persistence, nav.renderer)
+                _last_sidebar_refresh = time.ticks_ms()
+                return True
+        elif not _page_update_requested(kb, None):
+            return False
+
+        result = cur.update(kb, event)
+        if diagnostics and result is not None:
+            print("ACTION page=" + cur.__class__.__name__
+                  + " result=" + str(result))
+
+        if result == "BACK":
+            nav.go_back(event)
+        elif result == "FUNC_PANEL_DONE":
+            nav.go_back(event)
+            _function_reload_pending = True
+        elif result in (
+                "FUNC_PICKER_DONE", "LETTER_DONE", "VAR_PANEL_DONE",
+                "FUNC_PANEL_CANCEL"):
+            nav.go_back(event)
+        elif result == "FUNC_PICKER":
+            nav.go_to(func_picker, event)
+        elif result == "VARIABLE_PANEL":
+            nav.go_to(var_panel, event)
+        elif isinstance(result, UIElement) and result is not cur:
+            nav.go_to(result, event)
+        return event is not None or result is not None
 
     while True:
         try:
@@ -726,118 +563,39 @@ def main(run_loop=True):
                 if power_state == WOKE:
                     _dirty = True
                     _last_render = time.ticks_add(now, -500)
+                    nav.renderer.invalidate_sidebar()
+                    _last_sidebar_refresh = now
                 # Matrix keys cannot wake ESP32 deep sleep reliably, so keep a
                 # low-cost scan loop while the OLED controller is asleep.
                 time.sleep_ms(SLEEP_SCAN_MS)
                 continue
 
-            event = nav.poll_event(kb)
-            if (_frame % 100 == 0
-                    and not nav.is_transitioning()
-                    and not has_active_animations()
-                    and event is None
-                    and not kb.any_pressed()):
-                if diagnostics:
-                    gc_started = time.ticks_us()
-                gc.collect()
-                if diagnostics:
-                    metrics.record_gc(
-                        time.ticks_diff(time.ticks_us(), gc_started))
             _frame += 1
-
-            # ``animate_all`` removes an animation on the exact tick that it
-            # assigns its endpoint. Keep the preceding state so that endpoint
-            # still gets one display submission instead of waiting for the
-            # 500 ms idle refresh.
-            was_active = nav.is_transitioning() or has_active_animations()
-            animate_all()
-
-            had_event = event is not None
-            if diagnostics and had_event:
-                metrics.record_input()
-
-            cur = nav.current
-            result = None
-            if diagnostics and event is not None:
-                print("INPUT page=" + cur.__class__.__name__
-                      + " row=" + str(event[0])
-                      + " col=" + str(event[1])
-                      + " shift=" + str(int(event[2]))
-                      + " key=" + get_key_label(event[0], event[1], event[2]))
-            if not nav.is_transitioning() and event is not None:
-                erow, ecol, eshift = event
-                if ((erow, ecol) == (3, 5) and eshift
-                        and (cur is calc_screen or cur is plot_screen)):
-                    input_box = (calc_screen.input_box
-                                 if cur is calc_screen
-                                 else plot_screen.get_loaded_attr("input_box"))
-                    if input_box is not None:
-                        screen_factory.set_letter_input(input_box)
-                        nav.go_to(letter_panel, event)
-                        cur = nav.current
-                        event = None
-                elif (erow, ecol) == (4, 4):
-                    registry.angle_mode = 1 - registry.angle_mode
-                    settings["angle_mode"] = registry.angle_mode
-                    persistence.request_settings(settings)
-                    event = None
-            if (not nav.is_transitioning()
-                    and nav.allows_page_update(event)
-                    and _page_update_requested(kb, event)):
-                result = cur.update(kb, event)
-                navigation_results = (
-                    "BACK", "FUNC_PANEL_DONE", "FUNC_PANEL_CANCEL",
-                    "FUNC_PICKER_DONE", "LETTER_DONE", "VAR_PANEL_DONE",
-                    "FUNC_PICKER", "VARIABLE_PANEL")
-                if (result not in navigation_results
-                        and not isinstance(result, UIElement)
-                        and not isinstance(result, LazyScreen)):
-                    nav.residency.mark_dirty(cur)
-                if diagnostics and result is not None:
-                    print("ACTION page=" + cur.__class__.__name__
-                          + " result=" + str(result))
-
-            # Apply navigation before deciding whether to render. This makes
-            # the input frame the first transition frame instead of leaving
-            # the captured pages dormant for one active-frame interval.
-            if result == "BACK":
-                nav.go_back(event)
-            elif result == "FUNC_PANEL_DONE":
-                nav.go_back(event)
-                _function_reload_pending = True
-            elif result in ("FUNC_PICKER_DONE", "LETTER_DONE", "VAR_PANEL_DONE"):
-                nav.go_back(event)
-            elif result == "FUNC_PANEL_CANCEL":
-                nav.go_back(event)
-            elif result == "FUNC_PICKER":
-                nav.go_to(func_picker, event)
-            elif result == "VARIABLE_PANEL":
-                nav.go_to(var_panel, event)
-            elif ((isinstance(result, UIElement)
-                   or isinstance(result, LazyScreen))
-                  and result is not cur):
-                nav.go_to(result, event)
-
-            cur = nav.current
+            batch_count = _drain_input_batch(nav, kb, _handle_event)
+            hold_changed = False
+            if batch_count == 0:
+                hold_changed = _handle_event(None)
+            input_changed = bool(batch_count or hold_changed)
             now = time.ticks_ms()
-            if had_event or result is not None:
+            if input_changed:
+                _last_input = now
                 _dirty = True
-            active = nav.is_transitioning() or has_active_animations()
-            animation_finished = was_active and not active
+
+            cur = nav.current
+            sidebar_refresh = _refresh_sidebar_if_due(
+                nav.renderer, now, _last_sidebar_refresh)
+            if sidebar_refresh != _last_sidebar_refresh:
+                _last_sidebar_refresh = sidebar_refresh
+                _dirty = True
             needs_render = _needs_render(
-                now, _last_render, active, _dirty,
-                (cur is stopwatch
-                 and stopwatch.get_loaded_attr("_running", False)),
-                had_event or result is not None, animation_finished)
+                now, _last_render, _dirty,
+                (cur is stopwatch and stopwatch._running),
+                input_changed)
 
             if needs_render:
                 _last_render = now
                 render_started = time.ticks_us()
-                if not nav.draw_transition(now):
-                    nav.present_current()
-                if first_frame_pending:
-                    nav.mark_first_frame_presented()
-                    first_frame_pending = False
+                nav.present_current()
                 _diag_present_us += nav.last_present_us
                 render_elapsed = time.ticks_diff(time.ticks_us(), render_started)
                 _diag_render_us += render_elapsed
@@ -845,20 +603,18 @@ def main(run_loop=True):
                     metrics.record_frame(render_elapsed)
                 _diag_frames += 1
                 _dirty = False
+                # Capture edges that occurred during the OLED transfer before
+                # any GC, SD write or lazy rebuild is allowed to start.
+                kb.scan()
+                now = time.ticks_ms()
 
-            if (diagnostics
-                    and not active
-                    and time.ticks_diff(now, _diag_last) >= 5000):
-                heap_before = gc.mem_free() if hasattr(gc, "mem_free") else -1
-                gc.collect()
-                heap_after = gc.mem_free() if hasattr(gc, "mem_free") else -1
+            if diagnostics and time.ticks_diff(now, _diag_last) >= 5000:
+                heap_free = gc.mem_free() if hasattr(gc, "mem_free") else -1
                 divisor = max(1, _diag_frames)
                 print("PERF frames=" + str(_diag_frames)
                       + " render_us=" + str(_diag_render_us // divisor)
                       + " present_us=" + str(_diag_present_us // divisor)
-                      + " heap_before=" + str(heap_before)
-                      + " heap_after=" + str(heap_after)
-                      + " animations=" + str(active_animation_count()))
+                      + " heap_free=" + str(heap_free))
                 _diag_last = now
                 _diag_render_us = 0
                 _diag_present_us = 0
@@ -867,41 +623,54 @@ def main(run_loop=True):
             if calc_screen.context.dirty and calc_screen.context.consume_dirty():
                 persistence.request_vars(calc_screen.vars)
 
-            # SD writes are deliberately delayed until a quiet loop. The
-            # underlying storage functions retain their atomic backup scheme.
-            if not active and not had_event and result is None:
-                settling = nav.settle_current()
-                # A settle step can itself start a curve/menu animation. Read
-                # the scheduler state again before permitting any SD or
-                # plugin work in this same loop iteration.
-                active = nav.is_transitioning() or has_active_animations()
-                if not settling and not active and _function_reload_pending:
+            quiet = (batch_count == 0
+                     and not hold_changed
+                     and not kb.has_pending_events()
+                     and not kb.any_pressed())
+            settle_flags = nav.settle_current() if quiet else 0
+            if settle_flags & SETTLE_COLLECT:
+                gc_started = time.ticks_us()
+                gc.collect()
+                if diagnostics:
+                    metrics.record_gc(
+                        time.ticks_diff(time.ticks_us(), gc_started))
+            if settle_flags & SETTLE_REDRAW:
+                _dirty = True
+
+            # Potentially blocking work gets a grace period after input.
+            if (quiet
+                    and not (settle_flags & SETTLE_MORE)
+                    and time.ticks_diff(now, _last_input)
+                        >= BACKGROUND_IDLE_MS):
+                if _function_reload_pending:
                     _reload_functions_after_reclaim(
                         nav, nav.current, settings, registry)
-                    loaded_panel = func_panel.loaded()
-                    if loaded_panel is not None:
-                        loaded_panel.set_plugin_catalog(
-                            registry.plugin_functions,
-                            registry.plugin_dependencies)
-                        loaded_panel.set_load_errors(registry.plugin_errors)
+                    func_panel.set_plugin_catalog(
+                        registry.plugin_functions,
+                        registry.plugin_dependencies)
+                    func_panel.set_load_errors(registry.plugin_errors)
                     _function_reload_pending = False
                     _dirty = True
-                elif not settling and not active:
-                    nav.restore_optional_resources()
+                elif nav.collect_pending():
+                    pass
+                elif (_frame % 256 == 0
+                      and (not hasattr(gc, "mem_free")
+                           or gc.mem_free() < 12 * 1024)):
+                    gc_started = time.ticks_us()
+                    gc.collect()
+                    if diagnostics:
+                        metrics.record_gc(
+                            time.ticks_diff(time.ticks_us(), gc_started))
+                else:
                     persisted = persistence.flush(now)
                     if persisted is not None and not persisted[1]:
                         calc_screen.set_storage_error("Not saved - check SD")
                         _dirty = True
 
-            # Leave enough scheduler headroom to sustain the 16 ms (~60 FPS)
-            # active deadline after a full-frame SPI transfer.
-            time.sleep_ms(ACTIVE_LOOP_SLEEP_MS if active else IDLE_LOOP_SLEEP_MS)
+            time.sleep_ms(IDLE_LOOP_SLEEP_MS)
 
         except MemoryError as e:
-            # Memory pressure should return to a usable root page rather than
-            # leaving a crash overlay on top of a half-transitioned screen.
-            # Nav.reset cancels animations, frees rebuildable inactive state,
-            # compacts the heap, and locks input until the pressed key lifts.
+            # Memory pressure returns to a usable root and forgets snapshots.
             if diagnostics:
                 print("MEMORY_RECOVER " + str(e))
             try:
@@ -910,6 +679,7 @@ def main(run_loop=True):
                 pass
             nav.reset(main_menu)
             _last_render = 0
+            _last_input = time.ticks_ms()
             _dirty = True
 
         except Exception as e:
@@ -941,6 +711,8 @@ def main(run_loop=True):
 
             nav.reset(main_menu)
             _last_render = 0
+            _last_input = time.ticks_ms()
+            _dirty = True
 
 
 if __name__ == "__main__":

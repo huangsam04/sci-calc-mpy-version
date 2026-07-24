@@ -1,337 +1,63 @@
-"""Single composition and low-memory presentation path for UI frames."""
-import sys
+"""Single-frame renderer with optional row-only OLED updates."""
 import time
 
-from ui.memory import MemoryManager
-from ui.theme import CONTENT_W
-
-
-# A transition leaves the outgoing page in the SSD1322's own display RAM and
-# renders the incoming page into the normal live framebuffer.  Only a narrow
-# packed strip is copied for each incremental hardware reveal.  Four
-# controller columns are 16 pixels / 8 GS4 bytes per row, or 512 bytes at
-# 64px. Target page instances are built only after this strip is released, so
-# four KiB of active headroom is sufficient for the allocation-free shell and
-# avoids putting a GC pause back on the next key press.
-TRANSITION_STRIP_GROUPS = 4
-TRANSITION_ACTIVE_HEADROOM = 4 * 1024
-# The recovery path has already released page/font caches and captures only
-# allocation-free default shells, so it can safely use a smaller reserve.
-TRANSITION_RECOVERY_HEADROOM = 2 * 1024
-TRANSITION_TOTAL_GROUPS = (CONTENT_W + 3) // 4
-TRANSITION_PROGRESS_SCALE = 1024
-
-
-try:
-    import micropython  # type: ignore
-except ImportError:
-    micropython = None
-
-
-_HAS_FAST_REGION_COPY = (micropython is not None
-                         and sys.implementation.name == "micropython")
-
-
-if _HAS_FAST_REGION_COPY:
-    @micropython.viper
-    def _copy_packed_region(dst: ptr8, src: ptr8, src_offset: int,
-                            row_bytes: int, rows: int, stride: int):
-        row: int = 0
-        while row < rows:
-            dst_base: int = row * row_bytes
-            src_base: int = row * stride + src_offset
-            index: int = 0
-            while index < row_bytes:
-                dst[dst_base + index] = src[src_base + index]
-                index += 1
-            row += 1
-else:
-    def _copy_packed_region(dst, src, src_offset, row_bytes, rows, stride):
-        """Host fallback matching the allocation-free Viper copier."""
-        for row in range(rows):
-            dst_base = row * row_bytes
-            src_base = row * stride + src_offset
-            for index in range(row_bytes):
-                dst[dst_base + index] = src[src_base + index]
+from ui.theme import CONTENT_W, SCREEN_H
 
 
 class Renderer:
-    """Compose frames and reveal pages through the SSD1322's own RAM."""
+    __slots__ = (
+        "display", "sidebar", "last_present_us", "_visible_screen",
+        "_sidebar_dirty")
 
     def __init__(self, display, sidebar, memory=None):
         self.display = display
         self.sidebar = sidebar
-        self.memory = memory or MemoryManager()
         self.last_present_us = 0
-        self._transition_strip = None
-        self._transition_views = None
-        self._transition_groups_presented = 0
-        self._outgoing_screen = None
-        self._transition_allocation_enabled = False
-        self._transitions_available = True
-        self._chrome_ready = False
+        self._visible_screen = None
+        self._sidebar_dirty = True
 
-    def reserve_transition_buffers(self):
-        """Legacy explicit opt-in for standalone callers.
-
-        Production boot uses ``enable_transition_buffers`` only after the
-        core page has reached the display.  This compatibility name reserves
-        only the small reveal strip, never the mutually-exclusive plot area.
-        """
-        return self.enable_transition_buffers()
-
-    def enable_transition_buffers(self, allow_collect=True,
-                                  active_headroom=TRANSITION_ACTIVE_HEADROOM):
-        """Try to acquire the fixed reveal strip for this memory phase."""
-        self._transition_allocation_enabled = True
-        self._transitions_available = True
-        if (self._transition_strip is None
-                and not self._has_allocation_headroom(active_headroom)):
-            # Optional resources are restored only from an idle loop. Reclaim
-            # temporaries created while rebuilding the target page before
-            # deciding that the live heap cannot safely retain the strip.
-            # Input-path recovery passes allow_collect=False, so a key press
-            # never inherits this pause.
-            if allow_collect:
-                self.memory.collect()
-            if self._has_allocation_headroom(active_headroom):
-                return self._ensure_transition_buffers(allow_collect)
-            self._transition_allocation_enabled = False
-            self._transitions_available = False
-            return False
-        return self._ensure_transition_buffers(allow_collect)
-
-    def release_transition_buffers(self, collect=True):
-        """Free the optional strip before a memory-intensive operation."""
-        had_buffer = self._transition_strip is not None
-        self._transition_views = None
-        self._transition_strip = None
-        self._transition_groups_presented = 0
-        self._outgoing_screen = None
-        self._transition_allocation_enabled = False
-        self._transitions_available = True
-        released = self.memory.release_buffer("transition_strip")
-        if (had_buffer or released) and collect:
-            self.memory.collect()
-        return had_buffer or released
-
-    def _ensure_transition_buffers(self, allow_collect=True):
-        """Allocate the reveal strip only during an explicit optional phase."""
-        if self._transition_strip is not None:
-            return True
-        if (not self._transition_allocation_enabled
-                or not self._transitions_available):
-            return False
-
-        buffer_length = TRANSITION_STRIP_GROUPS * 2 * self.display.height
-        try:
-            strip = self.memory.reserve_buffer(
-                "transition_strip", buffer_length, bytearray,
-                retry_collect=False)
-            if strip is None:
-                raise MemoryError()
-            base_view = memoryview(strip)
-            views = tuple(
-                base_view[:groups * 2 * self.display.height]
-                for groups in range(1, TRANSITION_STRIP_GROUPS + 1))
-        except MemoryError:
-            self.memory.release_buffer("transition_strip")
-            views = None
-            base_view = None
-            strip = None
-            if allow_collect:
-                self.memory.collect()
-                return self._ensure_transition_buffers(False)
-            self._transitions_available = False
-            self._transition_allocation_enabled = False
-            return False
-
-        self._transition_strip = strip
-        self._transition_views = views
-        return True
-
-    def _transition_buffer_length(self):
-        return TRANSITION_STRIP_GROUPS * 2 * self.display.height
-
-    def _has_allocation_headroom(self, active_headroom):
-        return self.memory.has_headroom(
-            self._transition_buffer_length() + max(0, int(active_headroom)))
-
-    def can_start_transition(self):
-        """Return whether the already-reserved strip can reveal a page."""
-        return self._transition_strip is not None
-
-    def capture_outgoing(self, outgoing):
-        """Keep the outgoing page in hardware RAM while preparing the wipe."""
-        if not self._ensure_transition_buffers():
-            return False
-        self.hold_outgoing(outgoing)
-        return True
-
-    def hold_outgoing(self, outgoing):
-        """Ensure the old page is in OLED RAM without allocating reveal RAM."""
-        # Navigation is only accepted after a canonical frame is visible.
-        # Treat controller RAM as authoritative even if an optional-resource
-        # phase cleared the renderer's bookkeeping reference.
-        self._outgoing_screen = outgoing
-        return True
-
-    def _draw_minimal_default(self, incoming):
-        """Draw an allocation-bounded page shell after a page draw OOM."""
-        title = getattr(incoming, "transition_title",
-                        incoming.__class__.__name__)
-        if not isinstance(title, str) or len(title) > 20:
-            title = "Loading"
-        self.display.draw_rectangle(1, 1, CONTENT_W - 2,
-                                    self.display.height - 2, 8)
-        self.display.draw_text8x8(6, 5, title, gs=15)
-        self.display.draw_hline(5, 16, CONTENT_W - 10, 6)
-        self.display.draw_text8x8(6, self.display.height - 11,
-                                  "Loading...", gs=8)
-
-    def _draw_incoming(self, incoming, default):
-        drawer = (getattr(incoming, "draw_transition_default", None)
-                  if default else None)
-        try:
-            if drawer is None:
-                incoming.draw(self.display)
-            else:
-                drawer(self.display)
-        except MemoryError:
-            self.display.clear_buffers(0)
-            self._draw_minimal_default(incoming)
-
-    def _draw_sidebar_safe(self):
-        try:
+    def _present(self, rows):
+        if self._sidebar_dirty:
             self.sidebar.draw(self.display)
-        except MemoryError:
-            # The fixed content reveal remains valid without optional chrome.
-            # A canonical idle frame will restore the sidebar after settling.
-            pass
-
-    def capture_incoming(self, incoming, default=False):
-        """Render incoming once; do not overwrite the OLED until animation.
-
-        Page-residency transitions deliberately capture the page's empty,
-        allocation-bounded layout.  Real state is restored only after the
-        hardware reveal has completed.
-        """
-        if self._transition_strip is None:
-            return False
-        self.display.fill_rectangle(
-            0, 0, CONTENT_W, self.display.height, 0)
-        self._draw_incoming(incoming, default)
-        self._chrome_ready = True
-        self._transition_groups_presented = 0
-        return True
-
-    def present_default(self, incoming):
-        """Present a target shell at the dark midpoint of a fade fallback."""
-        self.display.fill_rectangle(
-            0, 0, CONTENT_W, self.display.height, 0)
-        self._draw_incoming(incoming, True)
-        self._chrome_ready = True
+            self._sidebar_dirty = False
         started = time.ticks_us()
-        self.display.present()
-        self.last_present_us = time.ticks_diff(time.ticks_us(), started)
-        self._outgoing_screen = incoming
-
-    def capture_transition(self, outgoing, incoming):
-        """Compatibility helper for callers that do not need a reclaim seam."""
-        return (self.capture_outgoing(outgoing)
-                and self.capture_incoming(incoming))
-
-    def _present_composed(self, rows=None):
-        # A row-only update is valid only after a canonical frame.  Its
-        # controller writes cover content rows exclusively, so polling the
-        # sidebar here can turn an input character into a full-screen upload.
-        # Leave slow chrome state for the next idle canonical frame instead.
         if rows is None:
-            self.sidebar.draw(self.display)
-        self._chrome_ready = True
-        started = time.ticks_us()
-        if rows is not None:
-            self.display.present_rows(rows)
-        else:
             self.display.present()
+        else:
+            self.display.present_rows(rows)
         self.last_present_us = time.ticks_diff(time.ticks_us(), started)
 
-    def _screen_present_rows(self, screen):
-        """Return a proven-stable row hint for an already visible screen."""
-        if self._outgoing_screen is not screen:
-            return None
-        if getattr(screen, "_residency_error", ""):
+    def _present_rows(self, screen):
+        if self._visible_screen is not screen:
             return None
         getter = getattr(screen, "get_present_rows", None)
-        if getter is None:
-            return None
-        return getter()
+        return getter() if getter is not None else None
 
-    @staticmethod
-    def _mark_screen_presented(screen):
+    def present(self, screen):
+        rows = self._present_rows(screen)
+        if self._sidebar_dirty:
+            rows = None
+        partial = (getattr(screen, "draw_present_rows", None)
+                   if rows is not None else None)
+        if partial is None:
+            rows = None
+            if self._sidebar_dirty:
+                self.display.clear_buffers(0)
+            else:
+                self.display.fill_rectangle(
+                    0, 0, CONTENT_W, SCREEN_H, 0)
+            screen.draw(self.display)
+        else:
+            partial(self.display)
+        self._present(rows)
+        self._visible_screen = screen
         marker = getattr(screen, "mark_presented", None)
         if marker is not None:
             marker()
 
-    def present(self, screen):
-        """Present one canonical live page frame."""
-        rows = self._screen_present_rows(screen)
-        partial_drawer = (getattr(screen, "draw_present_rows", None)
-                          if rows is not None else None)
-        if partial_drawer is None:
-            rows = None
-            self.display.clear_buffers(0)
-            screen.draw(self.display)
-            error_drawer = getattr(screen, "draw_residency_error", None)
-            if error_drawer is not None:
-                error_drawer(self.display)
-        else:
-            partial_drawer(self.display)
-        self._present_composed(rows)
-        self._outgoing_screen = screen
-        self._mark_screen_presented(screen)
+    def invalidate(self):
+        self._visible_screen = None
+        self._sidebar_dirty = True
 
-    def present_transition_progress(self, eased_progress, forward):
-        """Reveal only newly exposed controller columns of the incoming UI."""
-        target = min(TRANSITION_TOTAL_GROUPS,
-                     TRANSITION_TOTAL_GROUPS * eased_progress
-                     // TRANSITION_PROGRESS_SCALE)
-        if eased_progress >= TRANSITION_PROGRESS_SCALE:
-            target = TRANSITION_TOTAL_GROUPS
-        previous = self._transition_groups_presented
-        target = min(target, previous + TRANSITION_STRIP_GROUPS)
-        if target <= previous:
-            self.last_present_us = 0
-            return
-
-        remaining = target - previous
-        group_start = (TRANSITION_TOTAL_GROUPS - target
-                       if forward else previous)
-        self.last_present_us = 0
-        while remaining:
-            groups = min(remaining, TRANSITION_STRIP_GROUPS)
-            row_bytes = groups * 2
-            _copy_packed_region(
-                self._transition_strip, self.display.gs4_buf,
-                group_start * 2, row_bytes, self.display.height,
-                self.display.byte_width)
-            started = time.ticks_us()
-            self.display.present_region(
-                group_start, groups, self._transition_views[groups - 1])
-            self.last_present_us += time.ticks_diff(time.ticks_us(), started)
-            group_start += groups
-            remaining -= groups
-        self._transition_groups_presented = target
-
-    def present_transition(self, eased_progress, forward):
-        """Compatibility wrapper for standalone float-based callers."""
-        progress = int(eased_progress * TRANSITION_PROGRESS_SCALE)
-        self.present_transition_progress(progress, forward)
-
-    def finish_transition(self, screen, forward):
-        """Expose the final columns; the live framebuffer is now canonical."""
-        self.present_transition_progress(TRANSITION_PROGRESS_SCALE, forward)
-        if self._transition_groups_presented < TRANSITION_TOTAL_GROUPS:
-            return False
-        self._outgoing_screen = screen
-        return True
+    def invalidate_sidebar(self):
+        self._sidebar_dirty = True

@@ -6,11 +6,15 @@ class DisplaySpy:
 
     def __init__(self):
         self.clears = 0
+        self.content_clears = 0
         self.full_presents = 0
         self.row_presents = []
 
     def clear_buffers(self, color=0):
         self.clears += 1
+
+    def fill_rectangle(self, *args):
+        self.content_clears += 1
 
     def present(self):
         self.full_presents += 1
@@ -84,3 +88,26 @@ def test_partial_present_defers_sidebar_polling_until_an_idle_full_frame():
     assert display.row_presents == [((15, 21),)]
     assert sidebar.draws == 1
     assert sidebar.refresh_checks == 0
+
+
+def test_page_switch_preserves_sidebar_pixels_until_explicit_invalidation():
+    display = DisplaySpy()
+    first = PartialScreen()
+    second = PartialScreen()
+    sidebar = SidebarSpy()
+    renderer = Renderer(display, sidebar)
+
+    renderer.present(first)
+    renderer.present(second)
+
+    assert display.clears == 1
+    assert display.content_clears == 1
+    assert display.full_presents == 2
+    assert sidebar.draws == 1
+
+    renderer.invalidate_sidebar()
+    renderer.present(second)
+
+    assert display.clears == 2
+    assert display.content_clears == 1
+    assert sidebar.draws == 2

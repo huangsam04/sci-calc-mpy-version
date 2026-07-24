@@ -36,8 +36,8 @@ class PerformanceMetrics:
         self._boot_last = None
         self._input_started = None
         # These windows are deliberately allocated with the module at boot.
-        # Appending a timing value must never grow a Python list while a page
-        # transition is using the constrained ESP32 heap.
+        # Appending a timing value must never grow a Python list while the
+        # constrained ESP32 heap is rendering a page.
         self._input_to_present_us = _FixedSampleWindow(self.sample_limit)
         self._gc_us = _FixedSampleWindow(self.sample_limit)
         self._runtime = None
@@ -52,7 +52,7 @@ class PerformanceMetrics:
         samples.append(value)
 
     def _reset_frames(self):
-        # One 50-cycle benchmark produces far more frame samples than it is
+        # Repeated navigation produces far more frame samples than it is
         # sensible to retain as Python integers. A fixed histogram preserves
         # every frame for p95/max while keeping the device heap predictable.
         for index in range(len(self._frame_histogram)):

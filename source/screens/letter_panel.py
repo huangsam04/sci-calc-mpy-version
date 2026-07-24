@@ -1,9 +1,8 @@
 """Letter overlay panel: Shift+RPN opens A-Z input, default uppercase.
 Shift key toggles case for lowercase letters (pi, e, variable names).
 Semicolon supports multi-statement input."""
-import time
 from ui.element import UIElement
-from ui.theme import SHELL_LETTERS, draw_footer, draw_page_shell
+from ui.theme import draw_footer
 
 
 # Physical key → char (None = special). Case applied at input time.
@@ -32,7 +31,6 @@ _DISPLAY_ROWS = [
 
 
 class LetterPanel(UIElement):
-    swap_key = "letter_panel"
     transition_title = "Letters"
 
     def __init__(self, font, input_box):
@@ -41,41 +39,10 @@ class LetterPanel(UIElement):
         self.input_box = input_box
         self.text = ""
         self.upper = True   # default uppercase
-        self._last_action = 0
-        self._last_key = None
 
     def activate(self):
         self.text = ""
         self.upper = True
-        self._last_action = time.ticks_ms()
-        self._last_key = None
-
-    def release_memory(self):
-        """The bounded draft is core state; there is no derived cache."""
-        return False
-
-    def snapshot_state(self):
-        return {"text": self.text, "upper": bool(self.upper)}
-
-    def reset_state(self):
-        self.text = ""
-        self.upper = True
-        self._last_action = 0
-        self._last_key = None
-
-    def activate_default(self):
-        self._last_action = time.ticks_ms()
-        self._last_key = None
-
-    def restore_state(self, state):
-        text = state.get("text", "")
-        if not isinstance(text, str) or len(text) > self.input_box.max_char:
-            raise ValueError("Invalid letter panel snapshot")
-        self.text = text
-        self.upper = bool(state.get("upper", True))
-
-    def draw_transition_default(self, display):
-        draw_page_shell(display, SHELL_LETTERS, self.font)
 
     @staticmethod
     def _get_char(row, col):
@@ -114,13 +81,6 @@ class LetterPanel(UIElement):
             return None
 
         r, c, _ = event  # letter panel ignores shift — uses raw (r,c) for key mapping
-        now = time.ticks_ms()
-
-        # Per-key cooldown: same-key double-tap prevention, different keys pass through
-        if (r, c) == self._last_key and time.ticks_diff(now, self._last_action) < 100:
-            return None
-        self._last_action = now
-        self._last_key = (r, c)
 
         # ESC (0,0): cancel
         if r == 0 and c == 0:

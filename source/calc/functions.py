@@ -95,6 +95,7 @@ class FunctionRegistry:
         self.plugin_dependencies = {}
         self._plugin_exports = {}
         self._dependency_exports = {}
+        self._symbolic_names = None
 
     def _add(self, name, callback, kind, precedence, associativity, min_args):
         if not isinstance(name, str) or not name:
@@ -125,6 +126,7 @@ class FunctionRegistry:
         if name in self._defs:
             raise ValueError("Function already registered: " + name)
         self._defs[name] = (name, precedence, kind, min_args, associativity, callback)
+        self._symbolic_names = None
         self._revision += 1
         return self
 
@@ -163,6 +165,7 @@ class FunctionRegistry:
     def clear(self):
         if self._defs:
             self._defs.clear()
+            self._symbolic_names = None
             self._revision += 1
         self._plugin_exports.clear()
         self._dependency_exports.clear()
@@ -179,6 +182,7 @@ class FunctionRegistry:
         self.plugin_dependencies = other.plugin_dependencies
         self._plugin_exports = dict(other._plugin_exports)
         self._dependency_exports = {}
+        self._symbolic_names = None
         self._revision += 1
 
     def merge(self, other):
@@ -187,6 +191,7 @@ class FunctionRegistry:
                 raise ValueError("Function already registered: " + name)
         self._defs.update(other._defs)
         if other._defs:
+            self._symbolic_names = None
             self._revision += 1
         return self
 
@@ -213,11 +218,15 @@ class FunctionRegistry:
     dependency = plugin
 
     def symbolic_names(self):
-        names = []
-        for name in self._defs:
-            if not (_is_alpha(name[0]) or name[0] == "_"):
-                names.append(name)
-        names.sort(key=len, reverse=True)
+        names = self._symbolic_names
+        if names is None:
+            pending = []
+            for name in self._defs:
+                if not (_is_alpha(name[0]) or name[0] == "_"):
+                    pending.append(name)
+            pending.sort(key=len, reverse=True)
+            names = tuple(pending)
+            self._symbolic_names = names
         return names
 
 

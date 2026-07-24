@@ -43,27 +43,6 @@ def test_assignment_marks_context_for_persistence():
     assert screen.context.consume_dirty() is True
 
 
-def test_calculator_snapshot_restores_input_and_history_progressively():
-    screen = CalculatorScreen(None, registry=build_registry(), variables={})
-    screen.input_box.set_str("x+1")
-    screen.input_box.cursor_pos = 2
-    screen.history = [("2+3", 5.0), ("4*6", 24.0)]
-    state = screen.snapshot_state()
-
-    screen.reset_state()
-    assert screen.input_box.get_str() == ""
-    assert screen.history == []
-
-    screen.restore_state(state)
-    assert screen.input_box.get_str() == "x+1"
-    assert screen.history == []
-
-    assert screen.settle_step()
-    assert screen.history == [("2+3", 5.0)]
-    assert screen.settle_step() == 2
-    assert screen.history == [("2+3", 5.0), ("4*6", 24.0)]
-
-
 def test_held_delete_requests_redraw_without_a_new_edge(monkeypatch):
     now = [1_000]
     monkeypatch.setattr("ui.inputbox.time.ticks_ms", lambda: now[0])
