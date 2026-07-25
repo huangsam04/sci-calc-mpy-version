@@ -83,6 +83,9 @@ def _validate_ref(ref):
         raise ValueError("invalid slot manifest digest")
 
 
+validate_ref = _validate_ref
+
+
 def _roles_overlap(confirmed, trial, retired):
     names = []
     for ref in (confirmed, trial):

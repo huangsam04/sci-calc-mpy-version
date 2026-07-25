@@ -120,6 +120,16 @@
 - [ ] BootSupervisor 设备链条仍未落地：新 `boot.py`/`internal_main.py`
   薄壳、boot 记录（boot_id/选中槽证据）、slot 资源相对路径（字体等）
   与 production mpremote Adapter 未完成；未接触 COM6 写入。
+- [x] boot 证据记录已完成（`source/bootlog.py`）：与 selector 同款双固定
+  记录帧（magic/schema/generation/SHA-256），record generation 即单调
+  boot_id；每次启动在 exec 之前写入选中槽、selector_generation 与
+  trial selection_generation；telemetry 失败永不阻塞启动。supervise
+  顺序固定为 read → consume → boot record → exec。17 个 supervisor
+  测试 + 14 个 bootlog codec 测试；`bootlog.py` 已入 bootstrap 锚点
+  （锚点共 9 项，SOURCE 计划 67 资产，MPY source 14）。
+- [ ] BootSupervisor 设备链条仍未落地：新 `boot.py`/`internal_main.py`
+  薄壳、slot 资源相对路径（字体等）与 production mpremote Adapter
+  未完成；未接触 COM6 写入。
 - [ ] 首次接管 COM6 不能把“无 confirmed manifest”解释为可覆盖旧根目录。
   只能在只读 SHA 与审计基线 1.3.0 库存完全匹配后建立 legacy adoption，
   否则 fail closed；空设备 first-install 行为不授权覆盖现有未知路径。

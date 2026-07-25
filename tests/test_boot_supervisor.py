@@ -31,13 +31,15 @@ def _decide(selector, existing=("A", "B")):
 
 class _Environment:
     def __init__(self, selector, existing=("A", "B"), exec_error=None,
-                 store_error=None):
+                 store_error=None, boot_record_error=None):
         self._selector = selector
         self._existing = existing
         self._exec_error = exec_error
         self._store_error = store_error
+        self._boot_record_error = boot_record_error
         self.calls = []
         self.written = []
+        self.boot_records = []
 
     def read_selector(self):
         self.calls.append("read_selector")
@@ -48,6 +50,21 @@ class _Environment:
         if self._store_error is not None:
             raise self._store_error
         self.written.append(selector)
+        return bootsel.SelectorData(
+            42,
+            selector.confirmed,
+            selector.trial,
+            selector.trial_generation,
+            selector.trial_consumed,
+            selector.retired,
+            selector.confirmation_pending,
+        )
+
+    def write_boot_record(self, entry):
+        self.calls.append(("boot_record", entry))
+        if self._boot_record_error is not None:
+            raise self._boot_record_error
+        self.boot_records.append(entry)
 
     def slot_exists(self, name):
         return name in self._existing
@@ -159,6 +176,60 @@ def test_supervise_consumes_the_trial_before_executing_the_slot():
     assert ("exec", "/sd/.slots/B/launch.py") in env.calls
     assert env.calls.index("write_selector") < env.calls.index(
         ("exec", "/sd/.slots/B/launch.py"))
+
+
+def test_supervise_records_the_trial_boot_before_executing():
+    env = _Environment(_selector(
+        generation=3, confirmed=CONFIRMED, trial=TRIAL, trial_generation=3))
+
+    bootsupervisor.supervise(env)
+
+    assert len(env.boot_records) == 1
+    entry = env.boot_records[0]
+    assert entry.generation == 0
+    assert entry.selector_generation == 42
+    assert entry.selection_generation == 3
+    assert entry.selected == TRIAL
+    exec_index = env.calls.index(("exec", "/sd/.slots/B/launch.py"))
+    record_index = next(
+        index for index, call in enumerate(env.calls)
+        if isinstance(call, tuple) and call[0] == "boot_record")
+    assert env.calls.index("write_selector") < record_index < exec_index
+
+
+def test_supervise_records_a_confirmed_boot_without_a_selection():
+    env = _Environment(_selector(generation=5, confirmed=CONFIRMED))
+
+    bootsupervisor.supervise(env)
+
+    assert len(env.boot_records) == 1
+    entry = env.boot_records[0]
+    assert entry.selector_generation == 5
+    assert entry.selection_generation is None
+    assert entry.selected == CONFIRMED
+
+
+def test_supervise_records_a_recovery_boot_with_no_selection():
+    env = _Environment(None)
+
+    bootsupervisor.supervise(env)
+
+    assert len(env.boot_records) == 1
+    entry = env.boot_records[0]
+    assert entry.selector_generation == 0
+    assert entry.selection_generation is None
+    assert entry.selected is None
+
+
+def test_boot_record_failure_never_blocks_a_boot():
+    env = _Environment(
+        _selector(confirmed=CONFIRMED),
+        boot_record_error=OSError("evidence write failed"))
+
+    bootsupervisor.supervise(env)
+
+    assert ("exec", "/sd/.slots/A/launch.py") in env.calls
+    assert not env.boot_records
 
 
 def test_supervise_exec_failure_purges_before_recovery():

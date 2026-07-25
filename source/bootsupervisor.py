@@ -6,6 +6,7 @@
 # The environment adapter supplies every side effect (selector store, slot
 # probe, sys.path, module purge, GC, exec and recovery), which keeps this
 # module testable on the host and thin on the device.
+import bootlog
 import bootsel
 
 ACTION_SLOT = "slot"
@@ -80,12 +81,26 @@ def supervise(environment):
     selector = environment.read_selector()
     plan = decide(selector, environment.slot_exists)
 
+    selector_generation = 0 if selector is None else selector.generation
     if plan.consume is not None:
         try:
-            environment.write_selector(plan.consume)
+            stored = environment.write_selector(plan.consume)
         except Exception as error:
             _recover(environment, error)
             return plan
+        selector_generation = stored.generation
+
+    # Boot evidence is telemetry: it must never block an otherwise
+    # bootable release. A missing record simply fails the host smoke.
+    entry = bootlog.BootEntry(
+        0,
+        selector_generation,
+        plan.selection_generation,
+        plan.slot_ref if plan.action == ACTION_SLOT else None)
+    try:
+        environment.write_boot_record(entry)
+    except Exception:
+        pass
 
     if plan.action != ACTION_SLOT:
         _recover(environment, RuntimeError(plan.reason))
