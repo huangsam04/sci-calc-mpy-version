@@ -122,7 +122,7 @@ def test_mpy_plan_fails_closed_when_a_selected_output_is_empty():
         plan_release(snapshot, mode="mpy")
 
 
-def test_recovery_display_source_is_planned_for_internal_and_sd_release_zones():
+def test_display_driver_is_a_bootstrap_anchor_and_a_slot_managed_asset():
     snapshot = ReleaseTreeSnapshot.from_files((
         ("display/ssd1322.py", b"# display driver\n"),
         ("version.py", b'VERSION = "1.3.0"\n'),
@@ -131,13 +131,23 @@ def test_recovery_display_source_is_planned_for_internal_and_sd_release_zones():
     plan = plan_release(snapshot, mode="source")
 
     display_assets = tuple(
-        (asset.key, asset.zone, asset.relative_path)
+        (asset.key, asset.zone, asset.role, asset.relative_path)
         for asset in plan.assets
         if asset.source_path == "display/ssd1322.py"
     )
     assert display_assets == (
-        ("internal:display/ssd1322", "internal", "display/ssd1322.py"),
-        ("sd:display/ssd1322", "sd", "display/ssd1322.py"),
+        (
+            "bootstrap:display.ssd1322",
+            "internal",
+            "bootstrap_fixed",
+            "display/ssd1322.py",
+        ),
+        (
+            "sd:display/ssd1322",
+            "sd",
+            "managed_release",
+            "display/ssd1322.py",
+        ),
     )
 
 
@@ -295,7 +305,7 @@ def test_plan_rejects_duplicate_logical_keys_created_by_classification():
         plan_release(snapshot, mode="source")
 
 
-def test_recovery_payload_stays_internal_source_in_both_build_modes():
+def test_recovery_payload_is_a_bootstrap_anchor_in_both_build_modes():
     files = (
         ("recovery.py", b"# recovery\n"),
         ("version.py", b'VERSION = "1.3.0"\n'),
@@ -314,12 +324,19 @@ def test_recovery_payload_stays_internal_source_in_both_build_modes():
 
     for plan in (source_plan, mpy_plan):
         recovery_assets = tuple(
-            (asset.key, asset.kind, asset.zone, asset.relative_path)
+            (asset.key, asset.kind, asset.zone, asset.role,
+             asset.relative_path)
             for asset in plan.assets
             if asset.source_path == "recovery.py"
         )
         assert recovery_assets == (
-            ("internal:recovery", "source", "internal", "recovery.py"),
+            (
+                "bootstrap:recovery",
+                "source",
+                "internal",
+                "bootstrap_fixed",
+                "recovery.py",
+            ),
         )
 
 
@@ -386,10 +403,9 @@ def test_current_source_tree_has_one_explicit_release_classification(tmp_path):
         mode="source",
     )
 
-    assert len(plan.assets) == 65
+    assert len(plan.assets) == 66
     assert Counter((asset.zone, asset.role) for asset in plan.assets) == {
-        ("internal", "bootstrap_fixed"): 3,
-        ("internal", "managed_release"): 4,
+        ("internal", "bootstrap_fixed"): 8,
         ("sd", "managed_release"): 52,
         ("sd", "seed_if_absent"): 2,
         ("host", "host_only"): 4,
@@ -397,16 +413,27 @@ def test_current_source_tree_has_one_explicit_release_classification(tmp_path):
     assert Counter(
         asset.kind for asset in plan.assets if asset.role != "host_only"
     ) == {
-        "source": 56,
+        "source": 57,
         "font": 3,
         "seed": 2,
     }
-    bootsel = next(
-        asset for asset in plan.assets if asset.key == "internal:bootsel")
-    assert bootsel.zone == "internal"
-    assert bootsel.role == "managed_release"
-    assert bootsel.kind == "source"
-    assert bootsel.relative_path == "bootsel.py"
+    for key, relative_path in (
+            ("bootstrap:bootsel", "bootsel.py"),
+            ("bootstrap:bootsupervisor", "bootsupervisor.py"),
+            ("bootstrap:recovery", "recovery.py"),
+            ("bootstrap:display.mono_palette", "display/mono_palette.py"),
+            ("bootstrap:display.ssd1322", "display/ssd1322.py")):
+        anchor = next(
+            asset for asset in plan.assets if asset.key == key)
+        assert anchor.zone == "internal"
+        assert anchor.role == "bootstrap_fixed"
+        assert anchor.kind == "source"
+        assert anchor.relative_path == relative_path
+    for key in ("sd:display/mono_palette", "sd:display/ssd1322"):
+        slot_copy = next(
+            asset for asset in plan.assets if asset.key == key)
+        assert slot_copy.zone == "sd"
+        assert slot_copy.role == "managed_release"
 
 
 def test_current_mpy_plan_selects_exactly_one_format_per_device_module(
@@ -423,6 +450,7 @@ def test_current_mpy_plan_selects_exactly_one_format_per_device_module(
     always_source = {
         "boot.py",
         "bootsel.py",
+        "bootsupervisor.py",
         "internal_main.py",
         "launch.py",
         "recovery.py",
@@ -445,15 +473,16 @@ def test_current_mpy_plan_selects_exactly_one_format_per_device_module(
     assert Counter(
         asset.kind for asset in plan.assets if asset.role != "host_only"
     ) == {
-        "source": 12,
+        "source": 13,
         "mpy": 44,
         "font": 3,
         "seed": 2,
     }
     bootsel = next(
-        asset for asset in plan.assets if asset.key == "internal:bootsel")
+        asset for asset in plan.assets if asset.key == "bootstrap:bootsel")
     assert bootsel.zone == "internal"
     assert bootsel.kind == "source"
+    assert bootsel.role == "bootstrap_fixed"
     sd_modules = [
         asset.relative_path.rsplit(".", 1)[0]
         for asset in plan.assets

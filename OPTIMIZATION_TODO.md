@@ -104,6 +104,22 @@
   codec 接入 `_boot.py → boot.py → main.py` 启动链）+ production
   Adapter；候选必须报告实际 selector `release_id`，不得把 fake smoke
   当作设备证据。
+- [x] BootSupervisor 决策模块已完成（`source/bootsupervisor.py`，
+  MicroPython/CPython 双运行时）：`decide()` 纯函数覆盖无 selector、
+  confirmed、trial 未消费/已消费、confirmation_pending、slot 缺失回退与
+  一次性消费标记；`supervise(environment)` 编排 consume-before-exec、
+  严格 `sys.path=[slot_root, ".frozen", "/lib"]`，并在 recovery 前固定
+  purge 模块 → `gc.collect()` → 单 display owner 交接（COM6 实测证据
+  驱动）。13 个行为测试经注入 environment 验证全部顺序。
+- [x] trusted boot base 已整体重分类为 `bootstrap_fixed`：`boot.py`、
+  `internal_main.py`、`sdcard.py`、`bootsel.py`、`bootsupervisor.py`、
+  `recovery.py`、`display/mono_palette.py`、`display/ssd1322.py` 共 8 项；
+  普通发布只验证不升级。display 驱动保留 SD managed 副本供槽内 app
+  使用。当前树 SOURCE 计划 66 资产（bootstrap 8 + sd managed 52 +
+  seed 2 + host 4），MPY 计划 source 13 / mpy 44。
+- [ ] BootSupervisor 设备链条仍未落地：新 `boot.py`/`internal_main.py`
+  薄壳、boot 记录（boot_id/选中槽证据）、slot 资源相对路径（字体等）
+  与 production mpremote Adapter 未完成；未接触 COM6 写入。
 - [ ] 首次接管 COM6 不能把“无 confirmed manifest”解释为可覆盖旧根目录。
   只能在只读 SHA 与审计基线 1.3.0 库存完全匹配后建立 legacy adoption，
   否则 fail closed；空设备 first-install 行为不授权覆盖现有未知路径。

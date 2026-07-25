@@ -15,8 +15,15 @@ SOURCE_ABI_TAG = "source"
 MPY_ABI_TAG = "micropython-v1.29.0-preview:mpy-v6.3:xtensawin"
 _BOOTSTRAP_PATHS = {
     "boot.py": ("bootstrap:boot", "boot.py"),
+    "bootsel.py": ("bootstrap:bootsel", "bootsel.py"),
+    "bootsupervisor.py": ("bootstrap:bootsupervisor", "bootsupervisor.py"),
     "internal_main.py": ("bootstrap:main", "main.py"),
+    "recovery.py": ("bootstrap:recovery", "recovery.py"),
     "sdcard.py": ("bootstrap:sdcard", "sdcard.py"),
+    "display/mono_palette.py": (
+        "bootstrap:display.mono_palette", "display/mono_palette.py"),
+    "display/ssd1322.py": (
+        "bootstrap:display.ssd1322", "display/ssd1322.py"),
 }
 _INTERNAL_DISPLAY_PATHS = frozenset((
     "display/mono_palette.py",
@@ -154,22 +161,21 @@ def _asset(key, source_path, local_path, content, zone, relative_path, kind,
     )
 
 
-def _source_asset(path, content, mode, build_files):
-    if not path.endswith(".py"):
-        raise ValueError("unclassified source file: " + path)
-    bootstrap = _BOOTSTRAP_PATHS.get(path)
-    if bootstrap is not None:
-        return _asset(
-            bootstrap[0],
-            path,
-            "source/" + path,
-            content,
-            "internal",
-            bootstrap[1],
-            SOURCE_MODE,
-            "bootstrap_fixed",
-        )
+def _bootstrap_asset(path, content):
+    bootstrap = _BOOTSTRAP_PATHS[path]
+    return _asset(
+        bootstrap[0],
+        path,
+        "source/" + path,
+        content,
+        "internal",
+        bootstrap[1],
+        SOURCE_MODE,
+        "bootstrap_fixed",
+    )
 
+
+def _sd_asset(path, content, mode, build_files):
     logical_path = path[:-3]
     if (mode == SOURCE_MODE or path == "launch.py"
             or path.startswith("functions/")):
@@ -203,6 +209,14 @@ def _source_asset(path, content, mode, build_files):
     )
 
 
+def _source_asset(path, content, mode, build_files):
+    if not path.endswith(".py"):
+        raise ValueError("unclassified source file: " + path)
+    if path in _BOOTSTRAP_PATHS:
+        return _bootstrap_asset(path, content)
+    return _sd_asset(path, content, mode, build_files)
+
+
 def _source_assets(path, content, mode, build_files):
     if path == "runtime_scenarios_host.py":
         return (_asset(
@@ -214,18 +228,6 @@ def _source_assets(path, content, mode, build_files):
             path,
             "host_source",
             "host_only",
-        ),)
-
-    if path in ("bootsel.py", "recovery.py"):
-        return (_asset(
-            "internal:" + path[:-3],
-            path,
-            "source/" + path,
-            content,
-            "internal",
-            path,
-            SOURCE_MODE,
-            "managed_release",
         ),)
 
     seed_key = _SEED_PATHS.get(path)
@@ -273,22 +275,11 @@ def _source_assets(path, content, mode, build_files):
             ),
         )
 
-    sd_or_bootstrap = _source_asset(path, content, mode, build_files)
     if path not in _INTERNAL_DISPLAY_PATHS:
-        return (sd_or_bootstrap,)
-    logical_path = path[:-3]
+        return (_source_asset(path, content, mode, build_files),)
     return (
-        _asset(
-            "internal:" + logical_path,
-            path,
-            "source/" + path,
-            content,
-            "internal",
-            path,
-            SOURCE_MODE,
-            "managed_release",
-        ),
-        sd_or_bootstrap,
+        _bootstrap_asset(path, content),
+        _sd_asset(path, content, mode, build_files),
     )
 
 
