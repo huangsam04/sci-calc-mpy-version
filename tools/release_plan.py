@@ -216,9 +216,9 @@ def _source_assets(path, content, mode, build_files):
             "host_only",
         ),)
 
-    if path == "recovery.py":
+    if path in ("bootsel.py", "recovery.py"):
         return (_asset(
-            "internal:recovery",
+            "internal:" + path[:-3],
             path,
             "source/" + path,
             content,

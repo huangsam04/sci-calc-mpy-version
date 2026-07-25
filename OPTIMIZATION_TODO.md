@@ -92,10 +92,18 @@
   自洽、ref 与 slot image 一致；`_cold_boot` 先校验，损坏即 fail closed，
   不猜版本。`PhaseFailure`/`ReleaseFailure` 已移入 `release_protocol`，
   Adapter 不再反向依赖编排层。
-- [ ] 当前 A/B 仍是 host in-memory Adapter，尚不能证明 internal 双记录
-  selector codec、真实 VFS、真实 cold boot 或 mpremote 传输。下一结构门
-  是 stable BootSupervisor + 双记录 selector + production Adapter；候选
-  必须报告实际 selector `release_id`，不得把 fake smoke 当作设备证据。
+- [x] 双固定记录 selector codec 已完成（`source/bootsel.py`，MicroPython/
+  CPython 双运行时同一代码）：magic/schema/generation/flags/SHA-256 摘要，
+  写入永远落到非赢家记录并 read-back，任意截断/位翻转/垃圾写入只能读出
+  旧有效或新有效状态，双损 fail closed；25 个 codec 行为测试覆盖逐字节
+  截断、逐字节位翻转、结构垃圾、torn-write 恢复与 read-back 失败。
+  `bootsel.py` 已分类为 internal managed_release 且始终 SOURCE_MODE；
+  当前树两种模式计划均为 65 个资产（61 设备 + 4 host-only）。
+- [ ] 当前 A/B 仍是 host in-memory Adapter，尚不能证明真实 VFS、真实
+  cold boot 或 mpremote 传输。下一结构门是 stable BootSupervisor（把
+  codec 接入 `_boot.py → boot.py → main.py` 启动链）+ production
+  Adapter；候选必须报告实际 selector `release_id`，不得把 fake smoke
+  当作设备证据。
 - [ ] 首次接管 COM6 不能把“无 confirmed manifest”解释为可覆盖旧根目录。
   只能在只读 SHA 与审计基线 1.3.0 库存完全匹配后建立 legacy adoption，
   否则 fail closed；空设备 first-install 行为不授权覆盖现有未知路径。

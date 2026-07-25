@@ -386,10 +386,10 @@ def test_current_source_tree_has_one_explicit_release_classification(tmp_path):
         mode="source",
     )
 
-    assert len(plan.assets) == 64
+    assert len(plan.assets) == 65
     assert Counter((asset.zone, asset.role) for asset in plan.assets) == {
         ("internal", "bootstrap_fixed"): 3,
-        ("internal", "managed_release"): 3,
+        ("internal", "managed_release"): 4,
         ("sd", "managed_release"): 52,
         ("sd", "seed_if_absent"): 2,
         ("host", "host_only"): 4,
@@ -397,10 +397,16 @@ def test_current_source_tree_has_one_explicit_release_classification(tmp_path):
     assert Counter(
         asset.kind for asset in plan.assets if asset.role != "host_only"
     ) == {
-        "source": 55,
+        "source": 56,
         "font": 3,
         "seed": 2,
     }
+    bootsel = next(
+        asset for asset in plan.assets if asset.key == "internal:bootsel")
+    assert bootsel.zone == "internal"
+    assert bootsel.role == "managed_release"
+    assert bootsel.kind == "source"
+    assert bootsel.relative_path == "bootsel.py"
 
 
 def test_current_mpy_plan_selects_exactly_one_format_per_device_module(
@@ -416,6 +422,7 @@ def test_current_mpy_plan_selects_exactly_one_format_per_device_module(
 
     always_source = {
         "boot.py",
+        "bootsel.py",
         "internal_main.py",
         "launch.py",
         "recovery.py",
@@ -438,11 +445,15 @@ def test_current_mpy_plan_selects_exactly_one_format_per_device_module(
     assert Counter(
         asset.kind for asset in plan.assets if asset.role != "host_only"
     ) == {
-        "source": 11,
+        "source": 12,
         "mpy": 44,
         "font": 3,
         "seed": 2,
     }
+    bootsel = next(
+        asset for asset in plan.assets if asset.key == "internal:bootsel")
+    assert bootsel.zone == "internal"
+    assert bootsel.kind == "source"
     sd_modules = [
         asset.relative_path.rsplit(".", 1)[0]
         for asset in plan.assets
