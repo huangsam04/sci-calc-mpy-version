@@ -66,6 +66,39 @@
   只经 `run_session(operation)`；trusted manifest SHA、精确 managed cleanup、
   seed-if-absent、用户/未知文件字节保护、唯一 confirmed/boot release 以及
   每次 session 的一次 finally reset/close 均由行为测试验证。
+- [x] D-2 fake-device 事务矩阵已扩展到 133 个 apply 测试、与计划层合计
+  158 个定向测试：首次 SOURCE/MPY 安装、模式双向切换、计划/manifest
+  结构预检、stage 首/中/末写入和精确 verify、trial smoke 的 release/version/
+  mode/ABI/resident/root/唯一 8 KiB framebuffer、promote 前后故障与回执丢失
+  reconciliation、durable cleanup debt、observer、KeyboardInterrupt，以及
+  rollback/reset/close primary-secondary 顺序。新增：`apply_release` 拒绝
+  身份不匹配的 selection ticket；25 个故障注入点 × clean/erased-retired
+  两种起始状态的 50 例断电穷举（单点断电后同计划重试必须恢复到
+  confirmed=新发布、retired 清空、用户字节不变、session 计数自洽）。
+  当前完整主机门为 `417 passed in 14.17s`；双轴 review 由主代理完成
+  （review 子代理因外部服务 429/503 不可用），本批已提交，尚未接触 COM6。
+- [x] fake 已改为 selector 单一事实源 + SD A/B slot，不再用 flat dict
+  冒充事务：一次 `run_session` 恰好 finally reset/close，完整成功路径固定
+  三个物理 session，并在 trial 与 confirmed 两次 reset 后分别读取独立
+  `ColdBootObservation`。SOURCE/MPY 旧扩展只存在于 retired slot，无法在
+  active slot 形成 shadow；finalize 失败只留下可信 `SlotRef`，不再保存或
+  删除裸用户路径。
+- [x] selector arm/promote 的提交前、提交后应答丢失与 read-back 失败均有
+  primary/secondary 行为测试；promote 正常返回也必须 read-back。retired
+  slot 在删除后、清 selector 前掉电可由同计划重试幂等恢复。
+- [x] selector 不变量集中在 `_validate_selector_state`：record/generation/
+  retired/confirmation 类型、A/B 槽名、confirmed/trial/retired 角色互斥、
+  retired 唯一、trial metadata 无 orphan、consumed/unconsumed generation
+  自洽、ref 与 slot image 一致；`_cold_boot` 先校验，损坏即 fail closed，
+  不猜版本。`PhaseFailure`/`ReleaseFailure` 已移入 `release_protocol`，
+  Adapter 不再反向依赖编排层。
+- [ ] 当前 A/B 仍是 host in-memory Adapter，尚不能证明 internal 双记录
+  selector codec、真实 VFS、真实 cold boot 或 mpremote 传输。下一结构门
+  是 stable BootSupervisor + 双记录 selector + production Adapter；候选
+  必须报告实际 selector `release_id`，不得把 fake smoke 当作设备证据。
+- [ ] 首次接管 COM6 不能把“无 confirmed manifest”解释为可覆盖旧根目录。
+  只能在只读 SHA 与审计基线 1.3.0 库存完全匹配后建立 legacy adoption，
+  否则 fail closed；空设备 first-install 行为不授权覆盖现有未知路径。
 
 ## 0. 不可回退的设备合同
 

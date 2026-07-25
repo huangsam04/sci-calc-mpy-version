@@ -396,6 +396,61 @@ def _validated_manifest(manifest_bytes):
     return manifest
 
 
+def validate_release_plan(plan):
+    """Reject any plan object that diverges from its canonical manifest."""
+    if (type(plan) is not ReleasePlan
+            or type(plan.assets) is not tuple
+            or type(plan.manifest_bytes) is not bytes):
+        raise ValueError("release plan must be deeply immutable")
+    if any(
+            type(asset) is not ReleaseAsset
+            or type(asset.payload) is not bytes
+            for asset in plan.assets):
+        raise ValueError("release plan must be deeply immutable")
+    actual_manifest_sha256 = hashlib.sha256(
+        bytes(plan.manifest_bytes)).hexdigest()
+    if actual_manifest_sha256 != plan.manifest_sha256:
+        raise ValueError("release plan manifest digest mismatch")
+    manifest = _validated_manifest(plan.manifest_bytes)
+    if (plan.schema != manifest["schema"]
+            or plan.app_version != manifest["app_version"]
+            or plan.mode != manifest["mode"]
+            or plan.abi_tag != manifest["abi_tag"]
+            or plan.release_id != manifest["release_id"]):
+        raise ValueError("release plan identity does not match manifest")
+
+    _validate_release_assets(plan.assets)
+    allowed_roles = {
+        "bootstrap_fixed",
+        "host_only",
+        "managed_release",
+        "seed_if_absent",
+    }
+    for asset in plan.assets:
+        if asset.role not in allowed_roles:
+            raise ValueError("invalid release plan asset role")
+        payload = bytes(asset.payload)
+        if (len(payload) != asset.size
+                or hashlib.sha256(payload).hexdigest() != asset.sha256):
+            raise ValueError(
+                "release plan asset digest mismatch: " + asset.key)
+
+    expected_assets = [
+        _asset_record(asset)
+        for asset in plan.assets
+        if asset.role in ("bootstrap_fixed", "managed_release")
+    ]
+    expected_seeds = [
+        _asset_record(asset)
+        for asset in plan.assets
+        if asset.role == "seed_if_absent"
+    ]
+    if (manifest["assets"] != expected_assets
+            or manifest["seeds"] != expected_seeds):
+        raise ValueError("release plan assets do not match manifest")
+    return manifest
+
+
 def cleanup_candidates(
         previous_manifest_bytes, expected_manifest_sha256, current_plan):
     """Return only previously-owned managed paths absent from the next plan."""
