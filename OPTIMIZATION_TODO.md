@@ -40,7 +40,7 @@
 - [x] pytest 只使用项目内 `.pytest_tmp/<32hex GUID>`；显式 CLI/环境
   `basetemp` 会在 pytest 删除前被拒绝。`check.ps1` 隔离并恢复
   `PYTEST_ADDOPTS`，device tool 编译门拒绝零匹配、非零退出、缺失或空产物。
-- [x] 当前完整主机门：`280 passed in 12.09s`，CPython、PowerShell AST
+- [x] 当前完整主机门：`286 passed in 11.87s`，CPython、PowerShell AST
   7/7、全部 source 与 4 个 device tool 的 MicroPython 编译通过；
   最近 10 分钟 GUID 临时目录残留 `0`。
 - [ ] 真机七场景 controller 尚未实现。当前每场景还是一个总
@@ -62,6 +62,10 @@
 - [ ] D-2 事务执行层与稳定 BootSupervisor 仍未完成；在 fake-device 的
   stage/hash/trial/smoke/promote/rollback/finally-reset 矩阵通过前，
   现有 `deploy.ps1` 和任何直接写 COM6 的命令继续禁止。
+- [x] D-2 fake-device 首条 happy path 已通过：`apply_release(plan, adapter)`
+  只经 `run_session(operation)`；trusted manifest SHA、精确 managed cleanup、
+  seed-if-absent、用户/未知文件字节保护、唯一 confirmed/boot release 以及
+  每次 session 的一次 finally reset/close 均由行为测试验证。
 
 ## 0. 不可回退的设备合同
 
