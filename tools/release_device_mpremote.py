@@ -528,23 +528,36 @@ class _MpremoteSession:
 class MpremoteReleaseAdapter:
     """Applies releases through one connect/reset/close session per phase."""
 
-    def __init__(self, device_factory, probe_source=None):
+    def __init__(self, device_factory, probe_source=None, boot_wait_s=8.0,
+                 sleep=None):
         self._device_factory = device_factory
         if probe_source is None:
             probe_source = (
                 Path(__file__).parent / "device_boot_probe.py"
             ).read_text(encoding="utf-8")
         self._probe_source = probe_source
+        self._boot_wait_s = boot_wait_s
+        if sleep is None:
+            import time
+            sleep = time.sleep
+        self._sleep = sleep
+        self._needs_boot_wait = False
 
     def run_session(self, operation):
+        if self._needs_boot_wait:
+            self._sleep(self._boot_wait_s)
+            self._needs_boot_wait = False
         device = self._device_factory()
         device.connect()
         session = _MpremoteSession(device, self._probe_source)
-        return run_guarded_session(
-            lambda: operation(session),
-            session._reset_device,
-            session._close,
-        )
+        try:
+            return run_guarded_session(
+                lambda: operation(session),
+                session._reset_device,
+                session._close,
+            )
+        finally:
+            self._needs_boot_wait = True
 
 
 class MpremoteDevice:

@@ -247,8 +247,25 @@ def _adapter_and_twin(tmp_path, probe):
     twin = _DeviceTwin(tmp_path, probe)
     twin._probe_source_text = "probe-source"
     adapter = mpadapter.MpremoteReleaseAdapter(
-        lambda: twin, probe_source="probe-source")
+        lambda: twin, probe_source="probe-source", boot_wait_s=0)
     return adapter, twin
+
+
+def test_adapter_waits_for_boot_only_between_sessions(tmp_path):
+    sleeps = []
+    twin = _DeviceTwin(tmp_path, lambda boot: _smoke_lines("1.4.0"))
+    twin._probe_source_text = "probe-source"
+    adapter = mpadapter.MpremoteReleaseAdapter(
+        lambda: twin,
+        probe_source="probe-source",
+        boot_wait_s=7.5,
+        sleep=sleeps.append,
+    )
+    _seed_confirmed_device(twin, _plan("1.3.0", legacy=True))
+
+    apply_release(_plan("1.4.0"), adapter)
+
+    assert sleeps == [7.5, 7.5]
 
 
 def _seed_confirmed_device(twin, plan, extra_files=()):

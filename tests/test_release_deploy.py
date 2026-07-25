@@ -86,7 +86,7 @@ def test_deploy_sequence_adopts_then_applies_end_to_end(tmp_path):
         project_root=project_root,
         baseline_hashes=_baseline_hashes(),
         adapter_factory=lambda factory: MpremoteReleaseAdapter(
-            factory, probe_source=probe_source),
+            factory, probe_source=probe_source, boot_wait_s=0),
         boot_wait_s=0,
         emit=lines.append,
     )
