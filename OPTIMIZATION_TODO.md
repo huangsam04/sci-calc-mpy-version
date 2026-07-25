@@ -107,6 +107,24 @@
 - [ ] 首次接管 COM6 不能把“无 confirmed manifest”解释为可覆盖旧根目录。
   只能在只读 SHA 与审计基线 1.3.0 库存完全匹配后建立 legacy adoption，
   否则 fail closed；空设备 first-install 行为不授权覆盖现有未知路径。
+- [x] 2026-07-25 COM6 只读 VFS 探针（`tools/device_vfs_probe.py`，编译门
+  通过，finally reset 执行，零写入）已取得 adoption 关键证据：
+  - 固件为定制 MicroPython `v1.28.0`（2026-04-06 构建）；
+    `sys.implementation` 无 `.mpy` 字段，MPY ABI 只能由真实 import smoke
+    判定；LFS2 与 FAT 支持均在内。
+  - internal root 为 2 MiB 分区（`bsize=4096, blocks=512, bfree=319`，
+    约 1.24 MiB 空闲），与 LFS2 特征一致；SD 为约 1 GiB FAT，几乎全空，
+    A/B 双槽空间充足。
+  - 六个 internal 启动锚点文件与仓库当前源字节逐一 SHA-256 相等：
+    `boot.py`、`main.py`(=`internal_main.py`)、`sdcard.py`、`recovery.py`、
+    `display/mono_palette.py`、`display/ssd1322.py`。1.3.0 审计基线的
+    trusted boot base 在 COM6 上完整无损，legacy adoption 哈希条件满足。
+  - internal flash 还残留一份完整旧源码树（`calc/`、`screens/`、
+    `test_parser.py` 等未知哈希路径）：只读政策下不删除；新启动链的严格
+    `sys.path` 必须在不依赖删除的情况下消除 shadow。
+  - SD 当前为 MPY 模式部署（`main.mpy` 等）加源码包目录、`.sci-calc`
+    未知目录、`settings.json(.bak)`/`vars.json` 用户数据；均不得进入
+    清理集合。探针时 `gc.mem_free()` 在 app 运行态为 8,832–11,872 B。
 
 ## 0. 不可回退的设备合同
 
