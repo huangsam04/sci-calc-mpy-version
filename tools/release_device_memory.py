@@ -6,13 +6,12 @@ import json
 
 from tools.release_protocol import (
     ColdBootObservation,
-    PhaseFailure,
-    ReleaseFailure,
     ReleaseSmokeResult,
     SelectionTicket,
     SelectorRecord,
     SlotImage,
     SlotRef,
+    run_guarded_session,
 )
 
 
@@ -820,47 +819,8 @@ class InMemoryReleaseAdapter:
             session_number,
         )
 
-        result = None
-        operation_error = None
-        reset_error = None
-        close_error = None
-        try:
-            try:
-                result = operation(session)
-            except BaseException as error:
-                operation_error = error
-            finally:
-                try:
-                    session._reset_device()
-                except BaseException as error:
-                    reset_error = error
-        finally:
-            try:
-                session._close()
-            except BaseException as error:
-                close_error = error
-
-        if operation_error is not None:
-            if isinstance(operation_error, ReleaseFailure):
-                secondary = list(operation_error.secondary)
-                if reset_error is not None:
-                    secondary.append(PhaseFailure("reset", reset_error))
-                if close_error is not None:
-                    secondary.append(PhaseFailure("close", close_error))
-                if len(secondary) != len(operation_error.secondary):
-                    raise ReleaseFailure(
-                        operation_error.phase,
-                        operation_error.primary,
-                        secondary,
-                    ) from operation_error
-            raise operation_error
-
-        if reset_error is not None:
-            secondary = ()
-            if close_error is not None:
-                secondary = (PhaseFailure("close", close_error),)
-            raise ReleaseFailure(
-                "reset", reset_error, secondary) from reset_error
-        if close_error is not None:
-            raise ReleaseFailure("close", close_error) from close_error
-        return result
+        return run_guarded_session(
+            lambda: operation(session),
+            session._reset_device,
+            session._close,
+        )

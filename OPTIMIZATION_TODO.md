@@ -145,6 +145,19 @@
   approot 解析。用户 add-on 的 `/sd/Add-ons` 约定留待 D-3 双目录扫描。
 - [ ] production mpremote Adapter、adoption 首次可信写入与 COM6 事务
   发布未完成；未接触 COM6 写入。
+- [x] production mpremote Adapter 已完成
+  （`tools/release_device_mpremote.py`）：selector/bootlog 记录以
+  hexlified codec 帧为线缆格式（设备与主机用同一代码验证同一字节），
+  绑定语义的 selector 写入以字段字面量传输、设备端 store 统一校验与
+  分配 generation；staging 落在 `/sd/.staging`，设备端 SHA-256 全量
+  验证通过后 rename 进候选槽；smoke 由 bootlog 记录 + 扩展 boot
+  probe（新增 BOOT_MODE/BOOT_ABI_VIPER 证据）合成，`abi_tag` 仅在
+  mode 与 viper 证据齐备时映射。session 失败归并逻辑已抽入
+  `release_protocol.run_guarded_session`，fake 与 production 共用。
+  6 个孪生端到端测试（真实文件 + 真实 codec + supervisor 启动语义）
+  覆盖 happy path、trial/confirmed smoke 回滚、staging 污染、bootstrap
+  篡改、reset 失败重试。
+- [ ] adoption 首次可信写入与 COM6 事务发布未完成；未接触 COM6 写入。
 - [ ] 首次接管 COM6 不能把“无 confirmed manifest”解释为可覆盖旧根目录。
   只能在只读 SHA 与审计基线 1.3.0 库存完全匹配后建立 legacy adoption，
   否则 fail closed；空设备 first-install 行为不授权覆盖现有未知路径。

@@ -41,12 +41,16 @@ def test_boot_probe_reports_version_root_and_buffer_contract():
         "runtime_ready": True,
         "root_visible": True,
         "buffers": (("main", 8192, 12345),),
+        "build_mode": "source",
+        "viper_ok": True,
     }
     assert lines == [
         "BOOT_VERSION " + VERSION,
         "BOOT_RUNTIME_READY True",
         "BOOT_ROOT_VISIBLE True",
         "BOOT_BUFFERS main:8192:12345",
+        "BOOT_MODE source",
+        "BOOT_ABI_VIPER ok",
     ]
 
 

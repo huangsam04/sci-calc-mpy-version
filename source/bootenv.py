@@ -14,6 +14,12 @@ _SLOT_BASE = "/sd/.slots"
 _MANIFEST_NAME = "release.manifest"
 _SELECTOR_PATHS = ("/sys/sel.0", "/sys/sel.1")
 _BOOTLOG_PATHS = ("/sys/boot.0", "/sys/boot.1")
+
+SLOT_BASE = _SLOT_BASE
+MANIFEST_NAME = _MANIFEST_NAME
+SELECTOR_PATHS = _SELECTOR_PATHS
+BOOTLOG_PATHS = _BOOTLOG_PATHS
+
 _SLOT_PACKAGES = (
     "anim", "approot", "benchmarks", "calc", "diagnostics", "display",
     "functions", "input", "launch", "main", "performance",
