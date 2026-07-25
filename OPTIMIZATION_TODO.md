@@ -125,6 +125,14 @@
   - SD 当前为 MPY 模式部署（`main.mpy` 等）加源码包目录、`.sci-calc`
     未知目录、`settings.json(.bak)`/`vars.json` 用户数据；均不得进入
     清理集合。探针时 `gc.mem_free()` 在 app 运行态为 8,832–11,872 B。
+- [x] D-7 前置证据（late-failure 注入）已在 COM6 取得
+  （`tools/device_recovery_peak_probe.py`，零写入，finally reset）：
+  常驻 app 持有显示时进入 1.3.0 recovery 路径 **必然 MemoryError**
+  （注入前空闲 22,096 B、import recovery 后 21,392 B、`show_recovery`
+  仍 OOM）。现有 `internal_main.py` 只移除 `/sd` 路径和个别模块，不清
+  slot 模块也不 GC。结论：新 BootSupervisor 在进入 recovery 前必须 purge
+  slot 模块并 `gc.collect()`，保证始终只有一个 display owner；recovery
+  不得与常驻 app 的第二份 8 KiB framebuffer 竞争。
 
 ## 0. 不可回退的设备合同
 
