@@ -6,8 +6,8 @@
 # The environment adapter supplies every side effect (selector store, slot
 # probe, sys.path, module purge, GC, exec and recovery), which keeps this
 # module testable on the host and thin on the device.
-import bootlog
-import bootsel
+# Codec imports stay lazy so the boot chain can be fully released before
+# the slot application starts; see internal_main.py.
 
 ACTION_SLOT = "slot"
 ACTION_RECOVERY = "recovery"
@@ -28,6 +28,7 @@ class BootPlan:
 
 
 def _consume_marker(selector):
+    import bootsel
     return bootsel.SelectorData(
         0,
         selector.confirmed,
@@ -77,17 +78,15 @@ def _recover(environment, error):
     environment.show_recovery(error)
 
 
-def supervise(environment):
+def prepare(environment):
+    """Decide the boot target and return (plan, exec path) or raise."""
+    import bootlog
     selector = environment.read_selector()
     plan = decide(selector, environment.slot_exists)
 
     selector_generation = 0 if selector is None else selector.generation
     if plan.consume is not None:
-        try:
-            stored = environment.write_selector(plan.consume)
-        except Exception as error:
-            _recover(environment, error)
-            return plan
+        stored = environment.write_selector(plan.consume)
         selector_generation = stored.generation
 
     # Boot evidence is telemetry: it must never block an otherwise
@@ -103,15 +102,23 @@ def supervise(environment):
         pass
 
     if plan.action != ACTION_SLOT:
-        _recover(environment, RuntimeError(plan.reason))
-        return plan
+        raise RuntimeError(plan.reason)
 
     slot_root = environment.slot_root(plan.slot_ref.name)
     environment.set_sys_path(
         (slot_root,) + _SLOT_SYS_PATH_TAIL)
     environment.purge_slot_modules()
+    return plan, slot_root + "/" + _LAUNCH_NAME
+
+
+def supervise(environment):
     try:
-        environment.exec_file(slot_root + "/" + _LAUNCH_NAME)
+        plan, target = prepare(environment)
+    except Exception as error:
+        _recover(environment, error)
+        return None
+    try:
+        environment.exec_file(target)
     except Exception as error:
         _recover(environment, error)
     return plan

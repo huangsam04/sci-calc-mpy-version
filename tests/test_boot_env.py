@@ -100,12 +100,40 @@ class _HarnessEnvironment(bootenv.BootEnvironment):
         super().__init__(*args, **kwargs)
         self.exec_calls = []
         self.recovery_calls = []
+        self.sequence = []
 
     def exec_file(self, path):
         self.exec_calls.append(path)
 
     def show_recovery(self, error):
+        self.sequence.append(("recovery", str(error)))
         self.recovery_calls.append(str(error))
+
+    def set_sys_path(self, entries):
+        self.sequence.append(("sys_path", tuple(entries)))
+        super().set_sys_path(entries)
+
+    def purge_slot_modules(self):
+        self.sequence.append("purge")
+
+    def collect_garbage(self):
+        self.sequence.append("gc")
+
+
+def test_recover_runs_the_single_display_handoff_in_order(tmp_path):
+    harness = _HarnessEnvironment(**_paths(tmp_path))
+    original_path = sys.path[:]
+    try:
+        harness.recover(RuntimeError("slot died"))
+    finally:
+        sys.path[:] = original_path
+
+    assert harness.sequence == [
+        ("sys_path", ("/lib", "/")),
+        "purge",
+        "gc",
+        ("recovery", "slot died"),
+    ]
 
 
 def test_supervise_boots_an_armed_trial_through_the_real_chain(tmp_path):

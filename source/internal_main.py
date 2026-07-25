@@ -6,7 +6,27 @@ try:
     import bootenv
     import bootsupervisor
 
-    bootsupervisor.supervise(bootenv.environment())
+    environment = bootenv.environment()
+    try:
+        plan, target = bootsupervisor.prepare(environment)
+    except Exception as prepare_error:
+        environment.recover(prepare_error)
+    else:
+        # The boot chain must not stay resident while the slot application
+        # runs: dropping these modules returns their heap to the app.
+        # They are re-imported from internal flash on the next cold boot.
+        import gc
+        import sys
+
+        for module_name in ("bootsupervisor", "bootsel", "bootlog"):
+            sys.modules.pop(module_name, None)
+        bootsupervisor = None
+        plan = None
+        gc.collect()
+        try:
+            environment.exec_file(target)
+        except Exception as exec_error:
+            environment.recover(exec_error)
 except Exception as error:
     print("SCI-CALC boot supervisor failed: " + str(error))
     try:

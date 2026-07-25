@@ -1,24 +1,25 @@
 # Device boot environment adapter for the boot supervisor.
 # Wires the real filesystem, selector store, boot log, sys.path, module
 # purge, GC, execfile and recovery display into one environment object.
-# Only gc/os/sys plus the boot codecs are imported, so the module also
-# loads on CPython for host behaviour tests.
+# Codec imports stay lazy and no store instances are retained, so the boot
+# chain can be fully released before the slot application starts.
+# Only gc/os/sys are imported at module level, which also keeps the module
+# loadable on CPython for host behaviour tests.
 import gc
 import os
 import sys
-
-import bootlog
-import bootsel
 
 _SLOT_BASE = "/sd/.slots"
 _MANIFEST_NAME = "release.manifest"
 _SELECTOR_PATHS = ("/sys/sel.0", "/sys/sel.1")
 _BOOTLOG_PATHS = ("/sys/boot.0", "/sys/boot.1")
+_RECOVERY_SYS_PATH = ("/lib", "/")
 
 SLOT_BASE = _SLOT_BASE
 MANIFEST_NAME = _MANIFEST_NAME
 SELECTOR_PATHS = _SELECTOR_PATHS
 BOOTLOG_PATHS = _BOOTLOG_PATHS
+RECOVERY_SYS_PATH = _RECOVERY_SYS_PATH
 
 _SLOT_PACKAGES = (
     "anim", "approot", "benchmarks", "calc", "diagnostics", "display",
@@ -48,17 +49,20 @@ class BootEnvironment:
                  manifest_name=_MANIFEST_NAME):
         self._slot_base = slot_base
         self._manifest_name = manifest_name
-        self._selector_store = bootsel.SelectorStore(*selector_paths)
-        self._bootlog_store = bootlog.BootLogStore(*bootlog_paths)
+        self._selector_paths = selector_paths
+        self._bootlog_paths = bootlog_paths
 
     def read_selector(self):
-        return self._selector_store.read()
+        import bootsel
+        return bootsel.SelectorStore(*self._selector_paths).read()
 
     def write_selector(self, selector):
-        return self._selector_store.write(selector)
+        import bootsel
+        return bootsel.SelectorStore(*self._selector_paths).write(selector)
 
     def write_boot_record(self, entry):
-        return self._bootlog_store.write(entry)
+        import bootlog
+        return bootlog.BootLogStore(*self._bootlog_paths).write(entry)
 
     def slot_root(self, name):
         return self._slot_base + "/" + name
@@ -88,6 +92,12 @@ class BootEnvironment:
             show_recovery(error)
         except Exception as recovery_error:
             print("SCI-CALC recovery failed: " + str(recovery_error))
+
+    def recover(self, error):
+        self.set_sys_path(_RECOVERY_SYS_PATH)
+        self.purge_slot_modules()
+        self.collect_garbage()
+        self.show_recovery(error)
 
 
 def environment(**kwargs):
