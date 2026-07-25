@@ -109,7 +109,12 @@ def _append_error(report, name, detail):
     print("Plugin error " + name + ": " + detail)
 
 
-def load_function_files(registry, enabled_files=None, func_dir="/sd/functions"):
+def _default_func_dir():
+    from approot import app_root
+    return app_root() + "/functions"
+
+
+def load_function_files(registry, enabled_files=None, func_dir=None):
     """Register selected add-ons and recursively load their dependencies.
 
     Add-ons declare dependencies with ``DEPENDENCIES = ("other",)``.  A
@@ -118,6 +123,8 @@ def load_function_files(registry, enabled_files=None, func_dir="/sd/functions"):
     while it is registering.  Each add-on is still staged independently, so a
     failure never partially modifies the live registry.
     """
+    if func_dir is None:
+        func_dir = _default_func_dir()
     report = LoadReport()
     try:
         filenames = _plugin_files(func_dir)
@@ -217,10 +224,12 @@ def load_function_files(registry, enabled_files=None, func_dir="/sd/functions"):
     return report
 
 
-def describe_function_files(func_dir="/sd/functions"):
+def describe_function_files(func_dir=None):
     """Return display names for each discoverable add-on's registered functions."""
+    if func_dir is None:
+        func_dir = _default_func_dir()
     descriptions = {}
-    files = list_function_files() if func_dir == "/sd/functions" else list_function_files(func_dir)
+    files = list_function_files(func_dir)
     for name, _ in files:
         registry = FunctionRegistry()
         report = load_function_files(registry, [name], func_dir)
@@ -228,12 +237,13 @@ def describe_function_files(func_dir="/sd/functions"):
     return descriptions
 
 
-def describe_plugin_dependencies(func_dir="/sd/functions", files=None):
+def describe_plugin_dependencies(func_dir=None, files=None):
     """Inspect dependency metadata without registering any callbacks live."""
+    if func_dir is None:
+        func_dir = _default_func_dir()
     descriptions = {}
     if files is None:
-        files = (list_function_files() if func_dir == "/sd/functions"
-                 else list_function_files(func_dir))
+        files = list_function_files(func_dir)
     for name, filename in files:
         path = _join(func_dir, filename)
         try:
@@ -244,7 +254,9 @@ def describe_plugin_dependencies(func_dir="/sd/functions", files=None):
     return descriptions
 
 
-def list_function_files(func_dir="/sd/functions"):
+def list_function_files(func_dir=None):
+    if func_dir is None:
+        func_dir = _default_func_dir()
     try:
         files = _plugin_files(func_dir)
         return [(name[:-3], name) for name in sorted(files)]

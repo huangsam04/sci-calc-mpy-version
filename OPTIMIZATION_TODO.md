@@ -130,6 +130,21 @@
 - [ ] BootSupervisor 设备链条仍未落地：新 `boot.py`/`internal_main.py`
   薄壳、slot 资源相对路径（字体等）与 production mpremote Adapter
   未完成；未接触 COM6 写入。
+- [x] 设备启动链薄壳已落地：`boot.py` 只挂载 SD、不再触碰 sys.path
+  （消除 SD 文件 shadow trusted base 的路径）；`internal_main.py` 变为
+  supervisor 薄壳，last-resort recovery 前固定 purge + GC。
+  `source/bootenv.py` 提供真实 environment Adapter（selector/bootlog
+  双记录存储、`/sd/.slots/<name>` 布局、`release.manifest` 探针、
+  模块 purge 清单、execfile、recovery 交接）；host 集成测试经真实
+  codec + 文件系统验证 armed trial 完整启动链。purge 测试曾污染共享
+  进程 sys.modules（runtime_handle 常驻注册丢失），已由 autouse
+  fixture 隔离。
+- [x] slot 资源相对路径已落地：`source/approot.py` 以 `sys.path[0]`
+  解析应用根（slot root 或 /sd 回退）；字体与内置 functions 目录均经
+  approot 解析，`calc/loader.py` 四个 `func_dir` 默认值改为惰性
+  approot 解析。用户 add-on 的 `/sd/Add-ons` 约定留待 D-3 双目录扫描。
+- [ ] production mpremote Adapter、adoption 首次可信写入与 COM6 事务
+  发布未完成；未接触 COM6 写入。
 - [ ] 首次接管 COM6 不能把“无 confirmed manifest”解释为可覆盖旧根目录。
   只能在只读 SHA 与审计基线 1.3.0 库存完全匹配后建立 legacy adoption，
   否则 fail closed；空设备 first-install 行为不授权覆盖现有未知路径。

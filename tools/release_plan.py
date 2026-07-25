@@ -15,6 +15,7 @@ SOURCE_ABI_TAG = "source"
 MPY_ABI_TAG = "micropython-v1.29.0-preview:mpy-v6.3:xtensawin"
 _BOOTSTRAP_PATHS = {
     "boot.py": ("bootstrap:boot", "boot.py"),
+    "bootenv.py": ("bootstrap:bootenv", "bootenv.py"),
     "bootlog.py": ("bootstrap:bootlog", "bootlog.py"),
     "bootsel.py": ("bootstrap:bootsel", "bootsel.py"),
     "bootsupervisor.py": ("bootstrap:bootsupervisor", "bootsupervisor.py"),

@@ -357,14 +357,20 @@ def main(run_loop=True, runtime_mode="resident", publish_runtime=True):
         raise  # can't run without keyboard
     metrics.mark_boot("keyboard")
 
-    # Fonts (fallback: built-in 8x8 font via draw_text8x8)
+    # Fonts (fallback: built-in 8x8 font via draw_text8x8). Font files are
+    # slot-managed assets and resolve against the application root.
     try:
-        font_main = XglcdFont("/sd/fonts/Bally7x9.xglcd", 7, 9)
+        from approot import app_root
+        font_dir = app_root() + "/fonts"
+    except Exception:
+        font_dir = "/sd/fonts"
+    try:
+        font_main = XglcdFont(font_dir + "/Bally7x9.xglcd", 7, 9)
     except Exception as e:
         _boot_fail(display, 3, 8, "Fonts", e)
         font_main = None
     try:
-        font_small = XglcdFont("/sd/fonts/Neato5x7.xglcd", 5, 7)
+        font_small = XglcdFont(font_dir + "/Neato5x7.xglcd", 5, 7)
     except Exception:
         font_small = None
     metrics.mark_boot("fonts")

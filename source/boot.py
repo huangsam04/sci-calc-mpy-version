@@ -1,6 +1,6 @@
-"""Internal Flash boot.py: mount the application SD card and then exit."""
-import os
-import sys
+# Internal Flash boot.py: mount the application SD card and then exit.
+# The boot supervisor owns sys.path from here on; /sd must never sit on the
+# global import path or stale card files could shadow the trusted base.
 import vfs
 from machine import Pin, SPI
 import sdcard
@@ -13,7 +13,5 @@ try:
                  sck=Pin(18), mosi=Pin(23), miso=Pin(19))
     sd = sdcard.SDCard(sd_spi, Pin(4), baudrate=10_000_000)
     vfs.mount(sd, "/sd")
-    if "/sd" not in sys.path:
-        sys.path.insert(0, "/sd")
 except Exception as error:
     print("SD mount failed: " + str(error))

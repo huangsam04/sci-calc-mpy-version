@@ -163,8 +163,11 @@ def test_shipped_fonts_load_despite_legacy_non_utf8_comments():
 def test_boot_uses_generated_binary_font_assets():
     main_source = (SOURCE / "main.py").read_text(encoding="utf-8")
 
-    assert "/sd/fonts/Bally7x9.xglcd" in main_source
-    assert "/sd/fonts/Neato5x7.xglcd" in main_source
+    # Font files are slot-managed assets and must resolve against the
+    # application root, not a hardcoded flat /sd path.
+    assert "app_root()" in main_source
+    assert "/Bally7x9.xglcd" in main_source
+    assert "/Neato5x7.xglcd" in main_source
 
 
 def test_boot_presents_core_frame_before_run_loop_can_return():

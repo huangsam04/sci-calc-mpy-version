@@ -403,21 +403,22 @@ def test_current_source_tree_has_one_explicit_release_classification(tmp_path):
         mode="source",
     )
 
-    assert len(plan.assets) == 67
+    assert len(plan.assets) == 69
     assert Counter((asset.zone, asset.role) for asset in plan.assets) == {
-        ("internal", "bootstrap_fixed"): 9,
-        ("sd", "managed_release"): 52,
+        ("internal", "bootstrap_fixed"): 10,
+        ("sd", "managed_release"): 53,
         ("sd", "seed_if_absent"): 2,
         ("host", "host_only"): 4,
     }
     assert Counter(
         asset.kind for asset in plan.assets if asset.role != "host_only"
     ) == {
-        "source": 58,
+        "source": 60,
         "font": 3,
         "seed": 2,
     }
     for key, relative_path in (
+            ("bootstrap:bootenv", "bootenv.py"),
             ("bootstrap:bootsel", "bootsel.py"),
             ("bootstrap:bootlog", "bootlog.py"),
             ("bootstrap:bootsupervisor", "bootsupervisor.py"),
@@ -450,6 +451,7 @@ def test_current_mpy_plan_selects_exactly_one_format_per_device_module(
 
     always_source = {
         "boot.py",
+        "bootenv.py",
         "bootlog.py",
         "bootsel.py",
         "bootsupervisor.py",
@@ -475,8 +477,8 @@ def test_current_mpy_plan_selects_exactly_one_format_per_device_module(
     assert Counter(
         asset.kind for asset in plan.assets if asset.role != "host_only"
     ) == {
-        "source": 14,
-        "mpy": 44,
+        "source": 15,
+        "mpy": 45,
         "font": 3,
         "seed": 2,
     }
@@ -492,7 +494,7 @@ def test_current_mpy_plan_selects_exactly_one_format_per_device_module(
         and asset.kind in ("source", "mpy")
         and asset.role == "managed_release"
     ]
-    assert len(sd_modules) == len(set(sd_modules)) == 49
+    assert len(sd_modules) == len(set(sd_modules)) == 50
 
 
 def test_cleanup_uses_the_previous_owned_manifest_not_a_remote_listing():
