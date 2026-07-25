@@ -83,12 +83,16 @@ VERIFY_SLOT_CODE = (
     "        if rec.get('role')!='managed_release': continue\n"
     "        if rec.get('zone')!='sd': continue\n"
     "        try:\n"
-    "            with open(root+'/'+rec['path'],'rb') as f:"
-    " data=f.read()\n"
-    "            hh=hashlib.sha256()\n"
-    "            hh.update(data)\n"
-    "            if len(data)!=rec['size'] and not bad:"
+    "            import os\n"
+    "            if os.stat(root+'/'+rec['path'])[6]!=rec['size']"
+    " and not bad:"
     " bad='HASH '+rec['path']\n"
+    "            hh=hashlib.sha256()\n"
+    "            with open(root+'/'+rec['path'],'rb') as f:\n"
+    "                while True:\n"
+    "                    c=f.read(512)\n"
+    "                    if not c: break\n"
+    "                    hh.update(c)\n"
     "            if binascii.hexlify(hh.digest()).decode()"
     "!=rec['sha256'] and not bad: bad='HASH '+rec['path']\n"
     "        except OSError:\n"
@@ -584,7 +588,8 @@ class MpremoteDevice:
         except Exception as error:
             raise OSError(
                 "device exec failed: " + str(error)) from error
-        return b"".join(chunks).decode("utf-8", errors="replace")
+        raw = b"".join(chunks).replace(b"\x04", b"")
+        return raw.decode("utf-8", errors="replace")
 
     def read_file(self, path):
         try:
