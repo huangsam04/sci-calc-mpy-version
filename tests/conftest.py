@@ -1,7 +1,45 @@
 import pathlib
+import re
+import shutil
 import sys
 import types
 import time
+import uuid
+
+import pytest
+
+
+PROJECT = pathlib.Path(__file__).parents[1].resolve()
+PYTEST_TEMP_ROOT = PROJECT / ".pytest_tmp"
+_GUID_NAME = re.compile(r"[0-9a-f]{32}")
+
+
+def _cleanup_project_temp(session_temp):
+    if session_temp.parent != PYTEST_TEMP_ROOT:
+        raise RuntimeError("refusing pytest cleanup outside the project temp root")
+    if _GUID_NAME.fullmatch(session_temp.name) is None:
+        raise RuntimeError("refusing pytest cleanup for a non-GUID directory")
+    if not session_temp.exists():
+        return
+    if session_temp.resolve().parent != PYTEST_TEMP_ROOT.resolve():
+        raise RuntimeError("refusing pytest cleanup through a redirected path")
+    shutil.rmtree(session_temp)
+
+
+@pytest.hookimpl(tryfirst=True)
+def pytest_configure(config):
+    if config.option.basetemp is not None:
+        raise pytest.UsageError(
+            "caller-supplied pytest basetemp is forbidden; "
+            "SCI-CALC creates a unique project-local directory")
+
+    PYTEST_TEMP_ROOT.mkdir(exist_ok=True)
+    if PYTEST_TEMP_ROOT.resolve() != PYTEST_TEMP_ROOT:
+        raise RuntimeError("project pytest temp root must not be redirected")
+
+    session_temp = PYTEST_TEMP_ROOT / uuid.uuid4().hex
+    config.option.basetemp = str(session_temp)
+    config.add_cleanup(lambda: _cleanup_project_temp(session_temp))
 
 
 SOURCE = pathlib.Path(__file__).parents[1] / "source"

@@ -1,7 +1,16 @@
-from pathlib import Path
+import sys
+import types
 
+import pytest
+
+import benchmarks
 from benchmarks import run
 from performance import PerformanceMetrics
+from runtime_acceptance import (
+    RuntimeHandle,
+    get_resident_runtime,
+    set_resident_runtime,
+)
 
 
 class FakeNav:
@@ -9,12 +18,15 @@ class FakeNav:
         self.current = root
         self.presents = 0
         self.settles = 0
+        self.visited = []
+        self.memory = type("Memory", (), {"_buffers": {}})()
 
     def reset(self, root):
         self.current = root
 
     def go_to(self, target):
         self.current = target
+        self.visited.append(target)
 
     def go_back(self):
         self.current = "root"
@@ -50,6 +62,14 @@ def test_performance_metrics_reports_phase_latency_frame_and_gc_summaries():
 
 def test_default_diagnostic_window_fits_the_device_memory_budget():
     assert PerformanceMetrics().sample_limit == 16
+
+
+def test_performance_metrics_records_data_without_owning_runtime_identity():
+    metrics = PerformanceMetrics()
+
+    assert not hasattr(metrics, "_runtime")
+    assert not hasattr(metrics, "bind_runtime")
+    assert not hasattr(metrics, "runtime")
 
 
 def test_frame_summary_keeps_every_frame_beyond_raw_sample_limit():
@@ -100,27 +120,79 @@ def test_latency_and_gc_metrics_keep_fixed_storage_across_long_runs():
     assert metrics.snapshot()["input_to_present_us"]["count"] == 0
 
 
-def test_device_benchmark_runner_exercises_five_navigation_rounds_without_writes():
+def test_device_benchmark_runner_exercises_five_complete_navigation_rounds():
     metrics = PerformanceMetrics(sample_limit=16)
     root = "root"
     nav = FakeNav(root)
+    targets = ("plot", "calculator")
+    runtime = RuntimeHandle(nav, root, targets, mode="in_memory")
     metrics.start_boot(0)
     metrics.mark_boot("ready", 1)
-    metrics.bind_runtime(nav, root, ("plot", "calculator"))
     lines = []
 
-    report = run(metrics=metrics, cycles=5, frame_pace_ms=0,
-                 gc_runs=1, emit=lines.append)
+    report = run(
+        runtime=runtime, metrics=metrics, cycles=5, emit=lines.append)
 
-    assert report["navigation_cycles"] == 5
-    assert report["warmup_navigations"] == 4
-    assert report["input_to_present_us"]["count"] == 5
-    assert report["frame_us"]["count"] == 10
-    assert nav.presents == 14
-    assert nav.settles == 14
+    assert report.rounds_completed == 5
+    assert report.scenarios_completed == 10
+    assert nav.visited == list(targets) * 6  # one warm-up plus five measured
+    assert nav.presents == 24
+    assert nav.settles == 24
     assert any(
         line.startswith("BENCH input_to_present_p95_us=") for line in lines)
     assert any(line.startswith("BENCH loop_step_p95_us=") for line in lines)
+
+
+def test_resident_benchmark_keeps_one_warmup_and_five_measured_rounds():
+    root = "root"
+    nav = FakeNav(root)
+    runtime = RuntimeHandle(
+        nav, root, ("plot",), mode="resident")
+
+    set_resident_runtime(runtime)
+    try:
+        report = run(runtime=runtime, cycles=5, emit=None)
+        resident_after = get_resident_runtime()
+    finally:
+        set_resident_runtime(None)
+
+    assert report.mode == "resident"
+    assert report.rounds_completed == 5
+    assert nav.visited == ["plot"] * 6
+    assert resident_after is runtime
+
+
+def test_benchmark_runner_cannot_hide_a_failed_warmup():
+    class FailingWarmupNav(FakeNav):
+        def __init__(self, root):
+            super().__init__(root)
+            self.fail_next_enter = True
+
+        def go_to(self, target):
+            if self.fail_next_enter:
+                self.fail_next_enter = False
+                raise MemoryError
+            super().go_to(target)
+
+    root = "root"
+    runtime = RuntimeHandle(
+        FailingWarmupNav(root), root, ("plot",), mode="in_memory")
+
+    with pytest.raises(RuntimeError, match="warmup"):
+        run(runtime=runtime, cycles=1, emit=None)
+
+
+@pytest.mark.parametrize("cycles", (0, -1))
+def test_benchmark_rejects_nonpositive_cycles_before_warmup(cycles):
+    root = "root"
+    nav = FakeNav(root)
+    runtime = RuntimeHandle(
+        nav, root, ("plot",), mode="benchmark")
+
+    with pytest.raises(ValueError, match="cycles"):
+        run(runtime=runtime, cycles=cycles, emit=None)
+
+    assert nav.visited == []
 
 
 def test_benchmark_runner_builds_a_standalone_runtime_when_app_state_is_absent():
@@ -128,39 +200,47 @@ def test_benchmark_runner_builds_a_standalone_runtime_when_app_state_is_absent()
     root = "root"
     nav = FakeNav(root)
     builds = []
+    runtime = RuntimeHandle(nav, root, ("plot",), mode="benchmark")
 
-    def build_runtime(active_metrics):
-        builds.append(active_metrics)
-        active_metrics.bind_runtime(nav, root, ("plot",))
+    def build_runtime():
+        builds.append(True)
+        return runtime
 
-    report = run(metrics=metrics, cycles=1, frame_pace_ms=0,
-                 gc_runs=1, emit=None, build_runtime=build_runtime)
+    resident = RuntimeHandle(
+        FakeNav(root), root, ("resident",), mode="resident")
+    set_resident_runtime(resident)
+    try:
+        report = run(metrics=metrics, cycles=1, frame_pace_ms=0,
+                     gc_runs=1, emit=None, build_runtime=build_runtime)
+    finally:
+        set_resident_runtime(None)
 
-    assert builds == [metrics]
-    assert report["navigation_cycles"] == 1
-
-
-def test_standalone_benchmark_reuses_the_already_presented_runtime():
-    source = (Path(__file__).parents[1] / "source" / "benchmarks.py").read_text(
-        encoding="utf-8")
-
-    runtime = source.index("def _build_runtime")
-    build = source.index("main(run_loop=False)", runtime)
-    bind = source.index("metrics.bind_runtime(nav, root, targets)", runtime)
-
-    assert build < bind
-    assert "transition" not in source[runtime:source.index("def run", runtime)]
-    assert "from screens.function_panel import FunctionPanel" not in source[
-        runtime:source.index("def run", runtime)]
+    assert builds == [True]
+    assert report.rounds_completed == 1
 
 
-def test_device_interaction_acceptance_reuses_resident_framebuffer():
-    source = (
-        Path(__file__).parents[1]
-        / "tools" / "device_interaction_acceptance.py"
-    ).read_text(encoding="utf-8")
+def test_public_benchmark_builder_does_not_publish_a_benchmark_as_resident(
+        monkeypatch):
+    root = "root"
+    resident = RuntimeHandle(
+        FakeNav(root), root, ("resident",), mode="resident")
+    built = RuntimeHandle(
+        FakeNav(root), root, ("plot",), mode="benchmark")
+    calls = []
+    main_module = types.ModuleType("main")
 
-    assert "SAMPLE_COUNT = 5" in source
-    assert "metrics.runtime()" in source
-    assert "_init_display" not in source
-    assert "Renderer(" not in source
+    def fake_main(**kwargs):
+        calls.append(kwargs)
+        return built
+
+    main_module.main = fake_main
+    monkeypatch.setitem(sys.modules, "main", main_module)
+    set_resident_runtime(resident)
+
+    assert benchmarks.build_runtime() is built
+    assert calls == [{
+        "run_loop": False,
+        "runtime_mode": "benchmark",
+        "publish_runtime": False,
+    }]
+    assert get_resident_runtime() is resident

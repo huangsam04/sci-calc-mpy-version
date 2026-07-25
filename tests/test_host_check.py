@@ -1,0 +1,203 @@
+import os
+from pathlib import Path
+import re
+import shutil
+import subprocess
+import sys
+
+import pytest
+
+
+PROJECT = Path(__file__).parents[1]
+PYTEST_TEMP_ROOT = PROJECT / ".pytest_tmp"
+TEMP_PROBE = PROJECT / "tests" / "_support" / "pytest_temp_probe.py"
+CHECK_SCRIPT = PROJECT / "check.ps1"
+CHECK_SUPPORT = PROJECT / "tools" / "host_check_support.ps1"
+ENV_PROBE = PROJECT / "tests" / "_support" / "host_check_env_probe.ps1"
+DEVICE_COMPILE_PROBE = (
+    PROJECT / "tests" / "_support" / "device_compile_probe.ps1")
+
+
+def _run_temp_probe(*, fail=False):
+    environment = os.environ.copy()
+    environment["PYTHONDONTWRITEBYTECODE"] = "1"
+    if fail:
+        environment["SCI_CALC_PYTEST_PROBE_FAIL"] = "1"
+    environment.pop("PYTEST_ADDOPTS", None)
+
+    return subprocess.run(
+        [sys.executable, "-m", "pytest", "-s", str(TEMP_PROBE)],
+        cwd=PROJECT,
+        env=environment,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
+def _reported_session_temp(result):
+    marker = "SCI_CALC_PYTEST_BASE="
+    line = next(
+        (item for item in result.stdout.splitlines() if item.startswith(marker)),
+        None,
+    )
+    assert line is not None, result.stdout
+    return Path(line[len(marker) :]).resolve()
+
+
+def _assert_project_temp_was_cleaned(session_temp):
+    assert session_temp.parent == PYTEST_TEMP_ROOT.resolve()
+    assert re.fullmatch(r"[0-9a-f]{32}", session_temp.name)
+    assert not session_temp.exists()
+
+
+def test_direct_pytest_uses_and_cleans_a_unique_project_temp_directory():
+    result = _run_temp_probe()
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    _assert_project_temp_was_cleaned(_reported_session_temp(result))
+
+
+def test_failed_direct_pytest_still_cleans_its_project_temp_directory():
+    result = _run_temp_probe(fail=True)
+
+    assert result.returncode == 1, result.stdout + result.stderr
+    _assert_project_temp_was_cleaned(_reported_session_temp(result))
+
+
+@pytest.mark.parametrize("source", ("environment", "command_line"))
+def test_direct_pytest_rejects_a_caller_supplied_basetemp_without_deleting_it(
+        tmp_path, source):
+    supplied = tmp_path / ("caller-basetemp-" + source)
+    supplied.mkdir()
+    sentinel = supplied / "must-survive.txt"
+    sentinel.write_text("preserve", encoding="utf-8")
+    environment = os.environ.copy()
+    environment["PYTHONDONTWRITEBYTECODE"] = "1"
+    environment.pop("PYTEST_ADDOPTS", None)
+    command = [sys.executable, "-m", "pytest", "-s", str(TEMP_PROBE)]
+    if source == "environment":
+        environment["PYTEST_ADDOPTS"] = "--basetemp=" + str(supplied)
+    else:
+        command.append("--basetemp=" + str(supplied))
+
+    result = subprocess.run(
+        command,
+        cwd=PROJECT,
+        env=environment,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode != 0
+    assert sentinel.read_text(encoding="utf-8") == "preserve"
+    assert "caller-supplied pytest basetemp is forbidden" in (
+        result.stdout + result.stderr)
+
+
+def test_host_check_reuses_the_direct_pytest_temp_policy():
+    script = CHECK_SCRIPT.read_text(encoding="utf-8")
+
+    assert "GetTempPath" not in script
+    assert "$PytestTemp" not in script
+    assert "--basetemp" not in script
+
+
+def test_host_check_isolates_and_restores_ambient_pytest_addopts():
+    powershell = shutil.which("pwsh")
+    assert powershell is not None
+    environment = os.environ.copy()
+    environment["PYTEST_ADDOPTS"] = "--basetemp=caller-owned"
+
+    result = subprocess.run(
+        [
+            powershell,
+            "-NoProfile",
+            "-File",
+            str(ENV_PROBE),
+            "-SupportScript",
+            str(CHECK_SUPPORT),
+        ],
+        cwd=PROJECT,
+        env=environment,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert result.stdout.splitlines() == [
+        "PYTEST_ADDOPTS_INSIDE <unset>",
+        "PYTEST_ADDOPTS_AFTER --basetemp=caller-owned",
+    ]
+
+
+def test_host_check_mpy_compiles_every_device_tool():
+    script = CHECK_SCRIPT.read_text(encoding="utf-8")
+
+    assert "Invoke-DeviceToolCompilation" in script
+    assert 'Join-Path $ProjectRoot "tools"' in script
+    assert 'Join-Path $BuildRoot "device-tools"' in script
+
+
+@pytest.mark.parametrize(
+    (
+        "with_source",
+        "create_output",
+        "extra_arguments",
+        "expected_error",
+    ),
+    (
+        (False, False, (), "No device tools matched"),
+        (True, False, (), "did not create its output"),
+        (
+            True,
+            False,
+            ("-CompilerExitCode", "7"),
+            "mpy-cross failed",
+        ),
+        (
+            True,
+            False,
+            ("-CreateEmptyOutput",),
+            "empty output",
+        ),
+    ),
+)
+def test_device_tool_compile_gate_rejects_missing_inputs_or_outputs(
+        tmp_path, with_source, create_output, extra_arguments,
+        expected_error):
+    powershell = shutil.which("pwsh")
+    assert powershell is not None
+    tools = tmp_path / "tools"
+    output = tmp_path / "build"
+    tools.mkdir()
+    if with_source:
+        (tools / "device_probe.py").write_text("pass\n", encoding="utf-8")
+
+    command = [
+        powershell,
+        "-NoProfile",
+        "-File",
+        str(DEVICE_COMPILE_PROBE),
+        "-SupportScript",
+        str(CHECK_SUPPORT),
+        "-ToolsRoot",
+        str(tools),
+        "-OutputRoot",
+        str(output),
+    ]
+    if create_output:
+        command.append("-CreateOutput")
+    command.extend(extra_arguments)
+    result = subprocess.run(
+        command,
+        cwd=PROJECT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode != 0
+    assert expected_error in result.stdout

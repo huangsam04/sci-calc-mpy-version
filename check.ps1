@@ -8,10 +8,9 @@ $Python = Join-Path $WorkspaceRoot ".venv\python.exe"
 $MpyCross = Join-Path $WorkspaceRoot "micropython\mpy-cross\build\mpy-cross.exe"
 $BuildRoot = Join-Path $ProjectRoot ".mpy-build"
 $FontBuild = Join-Path $BuildRoot "fonts"
-# A unique system temp base avoids a stale or ACL-protected test directory
-# from a previous run causing unrelated test failures.
-$PytestTemp = Join-Path ([System.IO.Path]::GetTempPath()) (
-    "sci-calc-pytest-" + [guid]::NewGuid().ToString("N"))
+$HostCheckSupport = Join-Path $ProjectRoot "tools\host_check_support.ps1"
+
+. $HostCheckSupport
 
 if (-not (Test-Path -LiteralPath $MpyCross)) {
     throw "Missing MicroPython 1.29 mpy-cross: build it from ..\micropython\mpy-cross first"
@@ -26,8 +25,10 @@ if ($MpyVersion -notmatch "v1\.29\.0-preview") {
     --output-dir $FontBuild
 if ($LASTEXITCODE -ne 0) { throw "compact font asset generation failed" }
 
-& $Python -m pytest (Join-Path $ProjectRoot "tests") ("--basetemp=" + $PytestTemp)
-if ($LASTEXITCODE -ne 0) { throw "pytest failed" }
+Invoke-WithIsolatedPytestAddopts {
+    & $Python -m pytest (Join-Path $ProjectRoot "tests")
+    if ($LASTEXITCODE -ne 0) { throw "pytest failed" }
+}
 
 & $Python -m compileall -q (Join-Path $ProjectRoot "source")
 if ($LASTEXITCODE -ne 0) { throw "CPython syntax compilation failed" }
@@ -41,5 +42,11 @@ Get-ChildItem -LiteralPath (Join-Path $ProjectRoot "source") -Recurse -Filter "*
     & $MpyCross -march=xtensawin -o $Output $_.FullName
     if ($LASTEXITCODE -ne 0) { throw "mpy-cross failed: $Relative" }
 }
+
+$DeviceToolBuild = Join-Path $BuildRoot "device-tools"
+Invoke-DeviceToolCompilation `
+    -ToolsRoot (Join-Path $ProjectRoot "tools") `
+    -OutputRoot $DeviceToolBuild `
+    -MpyCross $MpyCross
 
 Write-Host "All host and MicroPython compatibility checks passed."

@@ -1,7 +1,15 @@
 from pathlib import Path
+import sys
+import types
 
 import main
+import pytest
 from display.xglcd_font import XglcdFont
+from runtime_handle import (
+    RuntimeHandle,
+    get_resident_runtime,
+    set_resident_runtime,
+)
 
 
 SOURCE = Path(__file__).parents[1] / "source"
@@ -32,6 +40,110 @@ class SplashDisplay:
 
     def present(self):
         self.present_count += 1
+
+
+class _BootDisplay:
+    height = 64
+
+    def set_brightness(self, value):
+        pass
+
+
+class _BootRegistry:
+    angle_mode = 0
+    plugin_functions = {}
+    plugin_dependencies = {}
+    plugin_errors = ()
+
+
+class _BootScreen:
+    def __init__(self, *args, **kwargs):
+        self.input_box = object()
+
+    def activate(self):
+        pass
+
+    def add_screen(self, label, screen):
+        pass
+
+    def set_load_errors(self, errors):
+        pass
+
+    def set_display_digits(self, value):
+        pass
+
+
+class _BootStorage:
+    def request_settings(self, settings):
+        pass
+
+
+class _BootNav:
+    def __init__(self, display, font_small, registry):
+        self.current = None
+        self.memory = type("Memory", (), {"_buffers": {}})()
+        self.renderer = type(
+            "Renderer", (), {
+                "display": display,
+                "_visible_screen": None,
+            })()
+
+    def register_screens(self, screens):
+        pass
+
+    def boot(self, root):
+        self.current = root
+        root.activate()
+
+    def present_current(self):
+        self.renderer._visible_screen = self.current
+
+
+def _install_minimal_boot_adapters(
+        monkeypatch, metrics, display_power=object):
+    keyboard = types.ModuleType("input.keyboard")
+    keyboard.Keyboard = lambda: object()
+    keyboard.get_key_label = lambda *args: ""
+    storage = types.ModuleType("utils.storage")
+    storage.load_settings = lambda: {
+        "angle_mode": 0,
+        "enabled_functions": (),
+        "brightness": 100,
+        "display_digits": 4,
+    }
+    storage.load_vars = lambda: {}
+    storage.DeferredStorage = _BootStorage
+    power = types.ModuleType("utils.power")
+    power.AWAKE = 1
+    power.WOKE = 2
+    power.DisplayPower = display_power
+    screen_names = (
+        ("screens.main_menu", "MainMenu"),
+        ("screens.calculator", "CalculatorScreen"),
+        ("screens.about", "AboutScreen"),
+        ("screens.letter_panel", "LetterPanel"),
+        ("screens.function_picker", "FunctionPicker"),
+        ("screens.variable_panel", "VariablePanel"),
+        ("screens.function_panel", "FunctionPanel"),
+        ("screens.plot", "PlotScreen"),
+        ("screens.settings", "SettingsScreen"),
+        ("screens.stopwatch", "StopwatchScreen"),
+    )
+
+    monkeypatch.setitem(sys.modules, "input.keyboard", keyboard)
+    monkeypatch.setitem(sys.modules, "utils.storage", storage)
+    monkeypatch.setitem(sys.modules, "utils.power", power)
+    for module_name, class_name in screen_names:
+        module = types.ModuleType(module_name)
+        setattr(module, class_name, _BootScreen)
+        monkeypatch.setitem(sys.modules, module_name, module)
+    monkeypatch.setattr(main, "_init_display", _BootDisplay)
+    monkeypatch.setattr(main, "_boot_progress", lambda *args: None)
+    monkeypatch.setattr(main, "XglcdFont", lambda *args: object())
+    monkeypatch.setattr(
+        main, "_reload_functions", lambda settings: _BootRegistry())
+    monkeypatch.setattr(main, "Nav", _BootNav)
+    monkeypatch.setattr(main, "metrics", metrics)
 
 
 def test_shipped_fonts_load_despite_legacy_non_utf8_comments():
@@ -68,6 +180,92 @@ def test_boot_presents_core_frame_before_run_loop_can_return():
     assert "transition_buffers" not in main_source
     assert "ui.residency" not in main_source
     assert "lazy_screen" not in main_source
+
+
+def test_boot_publishes_an_explicit_runtime_handle_not_metrics_state():
+    main_source = (SOURCE / "main.py").read_text(encoding="utf-8")
+
+    handle = main_source.index("RuntimeHandle(")
+    ready = main_source.index('metrics.mark_boot("ui_ready")', handle)
+    return_gate = main_source.index("if not run_loop:", ready)
+    diagnostic_publish = main_source.index(
+        "set_resident_runtime(runtime)", return_gate)
+    returned = main_source.index("return runtime", return_gate)
+    power = main_source.index("power = DisplayPower(", returned)
+    handler = main_source.index("def _handle_event(", power)
+    resident_publish = main_source.index(
+        "set_resident_runtime(runtime)", handler)
+
+    assert (handle < ready < return_gate < diagnostic_publish < returned
+            < power < handler < resident_publish)
+    assert "metrics.bind_runtime" not in main_source
+    assert "from runtime_handle import RuntimeHandle" in main_source
+    assert "from runtime_acceptance import RuntimeHandle" not in main_source
+
+
+def test_failed_startup_clears_the_previous_resident_runtime(monkeypatch):
+    previous = RuntimeHandle(object(), object(), (), mode="resident")
+    set_resident_runtime(previous)
+
+    def fail_display_init():
+        raise RuntimeError("display startup failed")
+
+    monkeypatch.setattr(main, "_init_display", fail_display_init)
+    try:
+        with pytest.raises(RuntimeError, match="display startup failed"):
+            main.main(run_loop=False)
+
+        assert get_resident_runtime() is None
+    finally:
+        set_resident_runtime(None)
+
+
+def test_late_startup_failure_cannot_publish_a_partial_runtime(monkeypatch):
+    class Metrics:
+        def start_boot(self):
+            pass
+
+        def mark_boot(self, phase):
+            if phase == "ui_ready":
+                raise RuntimeError("late startup failed")
+
+    _install_minimal_boot_adapters(monkeypatch, Metrics())
+
+    previous = RuntimeHandle(object(), object(), (), mode="resident")
+    set_resident_runtime(previous)
+    try:
+        with pytest.raises(RuntimeError, match="late startup failed"):
+            main.main(run_loop=False)
+
+        assert get_resident_runtime() is None
+    finally:
+        set_resident_runtime(None)
+
+
+def test_power_setup_failure_cannot_publish_a_partial_runtime(monkeypatch):
+    class Metrics:
+        def start_boot(self):
+            pass
+
+        def mark_boot(self, phase):
+            pass
+
+    class FailingPower:
+        def __init__(self, display, timeout_ms):
+            raise RuntimeError("power startup failed")
+
+    _install_minimal_boot_adapters(
+        monkeypatch, Metrics(), display_power=FailingPower)
+
+    previous = RuntimeHandle(object(), object(), (), mode="resident")
+    set_resident_runtime(previous)
+    try:
+        with pytest.raises(RuntimeError, match="power startup failed"):
+            main.main(run_loop=True)
+
+        assert get_resident_runtime() is None
+    finally:
+        set_resident_runtime(None)
 
 
 def test_boot_progress_avoids_artificial_animation_delay(monkeypatch):

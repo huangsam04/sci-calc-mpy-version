@@ -1,174 +1,141 @@
-"""Five-round real-device monitor for blocking time and minimum heap."""
-import gc
+"""Device Adapter for the five-round resident-target acceptance tracer."""
 import sys
-import time
 
 
 if "/sd" not in sys.path:
     sys.path.insert(0, "/sd")
 
-from performance import metrics
-from ui.element import SETTLE_COLLECT, SETTLE_MORE, SETTLE_REDRAW
+
+TOTAL_ROUNDS = 5
+MODE_RELEASE = "release"
+MODE_BENCHMARK = "benchmark"
+SCENARIO_NAME = "resident_target_tracer"
 
 
-TOTAL_ROUND_TRIPS = 5
-MAX_BLOCKING_STEP_US = 32_000
-MIN_HEAP_FREE_BYTES = 8 * 1024
-MAX_HEAP_DRIFT_BYTES = 4 * 1024
-MAX_SETTLE_STEPS = 256
+def _resident_runtime():
+    from runtime_acceptance import get_resident_runtime
+
+    return get_resident_runtime()
 
 
-def _heap_free():
-    reporter = getattr(gc, "mem_free", None)
-    return reporter() if reporter is not None else -1
+def _benchmark_runtime():
+    from benchmarks import build_runtime
+
+    return build_runtime(mode=MODE_BENCHMARK)
 
 
-def _minimum(current, candidate):
-    if current < 0:
-        return candidate
-    if candidate < 0:
-        return current
-    return min(current, candidate)
-
-
-def _settle(nav):
-    step_max = 0
-    heap_min = _heap_free()
-    for step in range(MAX_SETTLE_STEPS):
-        started = time.ticks_us()
-        flags = nav.settle_current()
-        if flags & SETTLE_COLLECT:
-            gc.collect()
-        if flags & SETTLE_REDRAW:
-            nav.present_current()
-        elapsed = time.ticks_diff(time.ticks_us(), started)
-        step_max = max(step_max, elapsed)
-        heap_min = _minimum(heap_min, _heap_free())
-        if not flags & SETTLE_MORE:
-            return step + 1, step_max, heap_min
-    raise RuntimeError("Page settle work exceeded its fixed bound")
-
-
-def _navigate(nav, target, forward):
-    started = time.ticks_us()
-    if forward:
-        nav.go_to(target)
-    else:
-        nav.go_back()
-    nav.present_current()
-    nav_elapsed = time.ticks_diff(time.ticks_us(), started)
-    settle_steps, settle_max, heap_min = _settle(nav)
-    if not forward:
-        started = time.ticks_us()
-        nav.collect_pending()
-        settle_max = max(
-            settle_max, time.ticks_diff(time.ticks_us(), started))
-        heap_min = _minimum(heap_min, _heap_free())
-    return nav_elapsed, settle_steps, settle_max, heap_min
-
-
-def run(runtime=None):
+def _resolve_runtime(runtime, mode):
+    if mode not in (MODE_RELEASE, MODE_BENCHMARK):
+        raise ValueError("Unknown runtime monitor mode: " + str(mode))
     if runtime is None:
-        runtime = metrics.runtime()
+        runtime = (
+            _resident_runtime()
+            if mode == MODE_RELEASE
+            else _benchmark_runtime())
     if runtime is None:
-        from benchmarks import _build_runtime
-        _build_runtime(metrics)
-        runtime = metrics.runtime()
-    if runtime is None:
-        raise RuntimeError("SCI-CALC runtime build failed")
+        if mode == MODE_RELEASE:
+            raise RuntimeError("Release mode requires a resident runtime")
+        raise RuntimeError("Benchmark runtime build failed")
 
-    nav, root, targets = runtime
-    if nav.current is not root:
-        nav.reset(root)
-        nav.present_current()
-    if getattr(nav.renderer, "_visible_screen", None) is not root:
-        raise RuntimeError("Boot progress 8/8 was not replaced by the root UI")
+    runtime_mode = getattr(runtime, "mode", None)
+    expected_mode = "resident" if mode == MODE_RELEASE else MODE_BENCHMARK
+    if runtime_mode != expected_mode:
+        raise RuntimeError(
+            mode + " mode requires a " + expected_mode + " runtime")
+    if not getattr(runtime, "targets", ()):
+        raise RuntimeError("Runtime monitor has no resident targets")
+    return runtime
 
-    gc.collect()
-    heap_before = _heap_free()
-    heap_min = heap_before
-    blocking_max = 0
-    failures = 0
-    completed = 0
-    buffers_before = tuple(sorted(nav.memory._buffers))
-    print("MONITOR_START rounds=" + str(TOTAL_ROUND_TRIPS)
-          + " heap_free=" + str(heap_before)
-          + " heap_alloc=" + str(gc.mem_alloc())
-          + " targets=" + str(len(targets)))
 
-    for round_index in range(TOTAL_ROUND_TRIPS):
-        target = targets[round_index % len(targets)]
-        title = getattr(target, "transition_title",
-                        target.__class__.__name__)
-        try:
-            if title == "Plot":
-                target.expr = "x^2"
-                target.input_box.set_str("x^2", immediate=True)
-            forward_us, forward_steps, forward_settle_us, forward_heap = (
-                _navigate(nav, target, True))
-            back_us, back_steps, back_settle_us, back_heap = (
-                _navigate(nav, target, False))
-            if title == "Plot":
-                target.expr = ""
-                target.input_box.clear_str()
-            completed += 1
-            screen_max = max(
-                forward_us, back_us, forward_settle_us, back_settle_us)
-            blocking_max = max(blocking_max, screen_max)
-            heap_min = _minimum(
-                heap_min, _minimum(forward_heap, back_heap))
-            print("MONITOR_SCREEN round=" + str(round_index + 1)
-                  + " name=" + title
-                  + " forward_us=" + str(forward_us)
-                  + " back_us=" + str(back_us)
-                  + " forward_settle_steps=" + str(forward_steps)
-                  + " back_settle_steps=" + str(back_steps)
-                  + " settle_max_us="
-                  + str(max(forward_settle_us, back_settle_us))
-                  + " heap_min=" + str(
-                      _minimum(forward_heap, back_heap)))
-        except MemoryError as error:
-            failures += 1
-            print("MONITOR_MEMORY_ERROR round=" + str(round_index + 1)
-                  + " name=" + title
-                  + " detail=" + (str(error) or "unknown allocation"))
-            nav.reset(root)
-            nav.present_current()
+def _target_name(target):
+    return getattr(
+        target, "transition_title", target.__class__.__name__)
 
-    if nav.current is not root:
-        nav.reset(root)
-        nav.present_current()
-    gc.collect()
-    heap_after = _heap_free()
-    heap_delta = heap_after - heap_before
-    buffers_after = tuple(sorted(nav.memory._buffers))
-    acceptance = []
-    if completed != TOTAL_ROUND_TRIPS:
-        acceptance.append("completed=" + str(completed))
-    if failures:
-        acceptance.append("memory_errors=" + str(failures))
-    if blocking_max > MAX_BLOCKING_STEP_US:
-        acceptance.append("blocking_step_us=" + str(blocking_max))
-    if heap_min < MIN_HEAP_FREE_BYTES:
-        acceptance.append("heap_min=" + str(heap_min))
-    if abs(heap_delta) > MAX_HEAP_DRIFT_BYTES:
-        acceptance.append("heap_delta=" + str(heap_delta))
-    if buffers_after != buffers_before:
-        acceptance.append("buffer_set_changed")
 
-    print("MONITOR_END heap_free=" + str(heap_after)
-          + " heap_delta=" + str(heap_delta)
-          + " heap_min=" + str(heap_min)
-          + " blocking_max_us=" + str(blocking_max)
-          + " failures=" + str(failures)
-          + " buffers=" + ",".join(buffers_after))
-    if acceptance:
-        print("MONITOR_ACCEPTANCE FAIL " + ",".join(acceptance))
+def _scenario(runtime):
+    from runtime_acceptance import VISIT_TARGET
+
+    steps = []
+    for index, target in enumerate(runtime.targets):
+        steps.append((_target_name(target), VISIT_TARGET, index))
+    return (SCENARIO_NAME, TOTAL_ROUNDS, tuple(steps))
+
+
+def _buffer_text(buffers):
+    if not buffers:
+        return "-"
+    return ";".join(
+        name + ":" + str(length) + ":" + str(identity)
+        for name, length, identity in buffers)
+
+
+def _emit_start(report, emit):
+    emit("MONITOR_START mode=" + report.mode
+         + " rounds=" + str(report.rounds_expected)
+         + " heap_before=" + str(report.heap_before)
+         + " buffers=" + _buffer_text(report.buffers_before))
+
+
+def _emit_step(event, report, emit):
+    emit("MONITOR_STEP event=" + str(event)
+         + " round=" + str(report.round_index + 1)
+         + " name=" + str(report.step_name)
+         + " phase=" + str(report.phase)
+         + " step_us=" + str(report.step_us)
+         + " heap_free=" + str(report.step_heap_free)
+         + " heap_min=" + str(report.heap_min)
+         + " buffers=" + _buffer_text(report.step_buffers))
+
+
+def _emit_end(report, emit):
+    emit("MONITOR_END mode=" + report.mode
+         + " rounds_completed=" + str(report.rounds_completed)
+         + " scenarios_completed=" + str(report.scenarios_completed)
+         + " runtime_steps=" + str(report.runtime_steps)
+         + " memory_errors=" + str(report.memory_errors)
+         + " errors=" + str(report.errors)
+         + " heap_after=" + str(report.heap_after)
+         + " heap_delta=" + str(report.heap_delta)
+         + " heap_min=" + str(report.heap_min)
+         + " blocking_max_us=" + str(report.blocking_max_us)
+         + " buffer_peak_bytes=" + str(report.buffer_peak_bytes)
+         + " buffer_changes=" + str(report.buffer_change_count)
+         + " buffers_before=" + _buffer_text(report.buffers_before)
+         + " buffers_after=" + _buffer_text(report.buffers_after))
+    emit("MONITOR_ACCEPTANCE "
+         + ("PASS" if report.accepted else "FAIL")
+         + " failure_mask=" + str(report.failure_mask))
+
+
+def _observer(emit):
+    from runtime_acceptance import (
+        RUN_END, RUN_ERROR, RUN_MEMORY_ERROR, RUN_START, RUN_STEP)
+
+    def observe(event, report):
+        if event == RUN_START:
+            _emit_start(report, emit)
+        elif event in (RUN_STEP, RUN_MEMORY_ERROR, RUN_ERROR):
+            _emit_step(event, report, emit)
+        elif event == RUN_END:
+            _emit_end(report, emit)
+
+    return observe
+
+
+def run(runtime=None, mode=MODE_RELEASE, emit=print):
+    """Run the target tracer without claiming the full seven-scenario gate."""
+    from runtime_acceptance import run as run_acceptance
+
+    runtime = _resolve_runtime(runtime, mode)
+    report = None
+    try:
+        report = run_acceptance(
+            runtime, _scenario(runtime), _observer(emit))
+    finally:
+        runtime.reset_root(present=True)
+    if not report.accepted:
         raise RuntimeError("Device runtime acceptance failed")
-    print("MONITOR_ACCEPTANCE PASS rounds=" + str(TOTAL_ROUND_TRIPS)
-          + " blocking_max_us=" + str(blocking_max)
-          + " heap_delta=" + str(heap_delta)
-          + " heap_min=" + str(heap_min))
+    return report
 
 
 if __name__ == "__main__":

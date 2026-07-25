@@ -1,141 +1,138 @@
-"""Read-only five-round navigation benchmark for the immediate UI."""
-import gc
-import time
+"""Navigation benchmark Adapter over the shared runtime acceptance seam."""
 
 from performance import metrics as _metrics
-from ui.element import SETTLE_COLLECT, SETTLE_MORE, SETTLE_REDRAW
+from runtime_acceptance import (
+    PHASE_ENTER,
+    RUN_STEP,
+    VISIT_TARGET,
+    RuntimeHandle,
+    get_resident_runtime,
+    run as run_acceptance,
+)
 
 
 BENCHMARK_ROUNDS = 5
-MAX_SETTLE_STEPS = 256
+SCENARIO_NAME = "navigation"
 
 
-def _heap_free():
-    reporter = getattr(gc, "mem_free", None)
-    return reporter() if reporter is not None else -1
+class _MetricsObserver:
+    """Translate acceptance events into bounded PerformanceMetrics samples."""
+
+    __slots__ = ("metrics",)
+
+    def __init__(self, metrics):
+        self.metrics = metrics
+
+    def __call__(self, event, report):
+        if event != RUN_STEP:
+            return
+        self.metrics.record_frame(report.step_us)
+        if report.phase == PHASE_ENTER:
+            self.metrics.record_input_to_present(report.step_us)
 
 
-def _collect(metrics):
-    started = time.ticks_us()
-    gc.collect()
-    elapsed = time.ticks_diff(time.ticks_us(), started)
-    metrics.record_gc(elapsed)
-    return elapsed
+def _target_name(target):
+    return getattr(
+        target, "transition_title", target.__class__.__name__)
 
 
-def _present(nav, metrics, started, record):
-    nav.present_current()
-    elapsed = time.ticks_diff(time.ticks_us(), started)
-    if record:
-        metrics.record_frame(elapsed)
-    return elapsed
+def navigation_scenario(runtime, rounds=BENCHMARK_ROUNDS):
+    """Build one immutable matrix; every round visits every target."""
+    if not runtime.targets:
+        raise RuntimeError("Benchmark runner has no navigation targets")
+    steps = []
+    for index, target in enumerate(runtime.targets):
+        steps.append((_target_name(target), VISIT_TARGET, index))
+    return (SCENARIO_NAME, max(0, int(rounds)), tuple(steps))
 
 
-def _settle(nav, metrics, frame_pace_ms, record):
-    steps = 0
-    while steps < MAX_SETTLE_STEPS:
-        started = time.ticks_us()
-        flags = nav.settle_current()
-        if flags & SETTLE_COLLECT:
-            gc.collect()
-        if flags & SETTLE_REDRAW:
-            nav.present_current()
-        elapsed = time.ticks_diff(time.ticks_us(), started)
-        if record and flags:
-            metrics.record_frame(elapsed)
-        steps += 1
-        if not flags & SETTLE_MORE:
-            return steps
-        if frame_pace_ms:
-            time.sleep_ms(frame_pace_ms)
-    raise RuntimeError("Page settle work exceeded its fixed bound")
-
-
-def _navigate(nav, target, forward, metrics, frame_pace_ms, record):
-    if record and forward:
-        metrics.record_input()
-    started = time.ticks_us()
-    if forward:
-        nav.go_to(target)
-    else:
-        nav.go_back()
-    _present(nav, metrics, started, record)
-    steps = _settle(nav, metrics, frame_pace_ms, record)
-    collector = getattr(nav, "collect_pending", None)
-    if not forward and collector is not None:
-        started = time.ticks_us()
-        collected = collector()
-        if record and collected:
-            metrics.record_frame(
-                time.ticks_diff(time.ticks_us(), started))
-    return steps
-
-
-def _emit_report(report, emit):
+def _emit_report(report, metrics_report, emit):
     phases = ",".join(
         name + ":" + str(elapsed)
-        for name, elapsed in report["boot_phases_ms"])
+        for name, elapsed in metrics_report["boot_phases_ms"])
     emit("BENCH boot_phases_ms=" + phases)
     emit("BENCH input_to_present_p95_us="
-         + str(report["input_to_present_us"]["p95_us"])
+         + str(metrics_report["input_to_present_us"]["p95_us"])
          + " input_to_present_max_us="
-         + str(report["input_to_present_us"]["max_us"]))
-    emit("BENCH loop_step_p95_us=" + str(report["frame_us"]["p95_us"])
-         + " loop_step_max_us=" + str(report["frame_us"]["max_us"]))
-    emit("BENCH heap_before=" + str(report["heap_before"])
-         + " heap_after=" + str(report["heap_after"])
-         + " heap_delta=" + str(report["heap_delta"]))
+         + str(metrics_report["input_to_present_us"]["max_us"]))
+    emit("BENCH loop_step_p95_us="
+         + str(metrics_report["frame_us"]["p95_us"])
+         + " loop_step_max_us="
+         + str(metrics_report["frame_us"]["max_us"]))
+    emit("BENCH heap_before=" + str(report.heap_before)
+         + " heap_after=" + str(report.heap_after)
+         + " heap_delta=" + str(report.heap_delta)
+         + " heap_min=" + str(report.heap_min)
+         + " blocking_max_us=" + str(report.blocking_max_us))
+    emit("BENCH acceptance=" + ("PASS" if report.accepted else "FAIL")
+         + " failure_mask=" + str(report.failure_mask))
 
 
-def _build_runtime(metrics):
+def build_runtime(mode="benchmark"):
+    """Construct an explicit non-resident runtime for intentional benchmarks."""
     from main import main
 
-    nav, root, targets = main(run_loop=False)
-    metrics.bind_runtime(nav, root, targets)
+    runtime = main(
+        run_loop=False, runtime_mode=mode, publish_runtime=False)
+    if not isinstance(runtime, RuntimeHandle):
+        raise RuntimeError("Benchmark runtime builder returned no handle")
+    if runtime.mode != mode:
+        raise RuntimeError("Benchmark runtime mode mismatch")
+    return runtime
 
 
-def run(cycles=BENCHMARK_ROUNDS, frame_pace_ms=0, gc_runs=1, emit=print,
-        metrics=_metrics, build_runtime=None):
-    """Measure five round trips unless an explicit smaller host case is used."""
-    runtime = metrics.runtime()
+def _build_warmup_view(runtime):
+    if runtime.mode not in ("resident", "release"):
+        return runtime
+    return RuntimeHandle(
+        runtime.nav,
+        runtime.root,
+        runtime.targets,
+        mode="benchmark",
+        version=runtime.version,
+        optional_buffers=runtime.optional_buffers,
+        optional_buffer_target=runtime.optional_buffer_target,
+        scenario_adapter=runtime.scenario_adapter,
+    )
+
+
+def run(runtime=None, cycles=BENCHMARK_ROUNDS, emit=print, metrics=_metrics,
+        frame_pace_ms=0, gc_runs=1, build_runtime=None):
+    """Warm once, then measure a complete target matrix for every round."""
+    cycles = int(cycles)
+    if cycles <= 0:
+        raise ValueError("Benchmark cycles must be positive")
+    if frame_pace_ms:
+        raise ValueError("Frame pacing is not part of runtime acceptance")
+    if int(gc_runs) != 1:
+        raise ValueError("Runtime acceptance owns its GC baseline")
+
+    if runtime is None and build_runtime is not None:
+        runtime = build_runtime()
     if runtime is None:
-        (build_runtime or _build_runtime)(metrics)
-        runtime = metrics.runtime()
+        runtime = get_resident_runtime()
     if runtime is None:
-        raise RuntimeError("Benchmark runtime builder did not bind navigation")
-    nav, root, targets = runtime
-    if not targets:
-        raise RuntimeError("Benchmark runner has no navigation targets")
-    if nav.current is not root:
-        nav.reset(root)
+        runtime = globals()["build_runtime"]()
+    if not isinstance(runtime, RuntimeHandle):
+        raise TypeError("Benchmark runtime must be a RuntimeHandle")
+    if runtime.mode in ("resident", "release") and cycles != BENCHMARK_ROUNDS:
+        raise ValueError(
+            "Resident/release benchmark requires exactly 5 cycles")
 
-    warmup_navigations = 0
-    for target in targets:
-        _navigate(nav, target, True, metrics, frame_pace_ms, False)
-        _navigate(nav, target, False, metrics, frame_pace_ms, False)
-        warmup_navigations += 2
-
+    warmup_runtime = _build_warmup_view(runtime)
+    warmup_report = run_acceptance(
+        warmup_runtime, navigation_scenario(warmup_runtime, 1))
+    if not warmup_report.accepted:
+        raise RuntimeError("Benchmark warmup acceptance failed")
+    del warmup_report
+    del warmup_runtime
     metrics.reset_run()
-    _collect(metrics)
-    heap_before = _heap_free()
-    for _ in range(max(1, gc_runs) - 1):
-        _collect(metrics)
-
-    rounds = max(0, int(cycles))
-    for index in range(rounds):
-        target = targets[index % len(targets)]
-        _navigate(nav, target, True, metrics, frame_pace_ms, True)
-        _navigate(nav, target, False, metrics, frame_pace_ms, True)
-
-    _collect(metrics)
-    heap_after = _heap_free()
-    report = metrics.snapshot()
-    report["navigation_cycles"] = rounds
-    report["warmup_navigations"] = warmup_navigations
-    report["heap_before"] = heap_before
-    report["heap_after"] = heap_after
-    report["heap_delta"] = (heap_after - heap_before
-                            if heap_before >= 0 and heap_after >= 0 else -1)
+    report = run_acceptance(
+        runtime,
+        navigation_scenario(runtime, cycles),
+        _MetricsObserver(metrics),
+    )
+    metrics_report = metrics.snapshot()
     if emit is not None:
-        _emit_report(report, emit)
+        _emit_report(report, metrics_report, emit)
     return report

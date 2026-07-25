@@ -326,7 +326,11 @@ class Nav:
         root.activate()
 
 
-def main(run_loop=True):
+def main(run_loop=True, runtime_mode="resident", publish_runtime=True):
+    from runtime_handle import RuntimeHandle, set_resident_runtime
+    if publish_runtime:
+        set_resident_runtime(None)
+
     # ============================================================
     # Phase 1: Display FIRST — show splash immediately
     # ============================================================
@@ -478,15 +482,28 @@ def main(run_loop=True):
     runtime_targets = (
         calc_screen, plot_screen, func_panel, stopwatch, settings_screen)
     nav.register_screens(runtime_targets)
+    from ui.memory import plot_curve_buffer_size
+    runtime = RuntimeHandle(
+        nav,
+        main_menu,
+        runtime_targets,
+        mode=runtime_mode,
+        version=VERSION,
+        optional_buffers=(
+            ("plot_curve", plot_curve_buffer_size(display.height)),
+        ),
+        optional_buffer_target=plot_screen,
+    )
     try:
         _present_first_ui_frame(nav, main_menu)
     except Exception as e:
         _draw_crash(display, e)
         raise
-    metrics.bind_runtime(nav, main_menu, runtime_targets)
     metrics.mark_boot("ui_ready")
     if not run_loop:
-        return nav, main_menu, runtime_targets
+        if publish_runtime:
+            set_resident_runtime(runtime)
+        return runtime
     _frame = 0
     _last_render = time.ticks_ms()
     _last_input = _last_render
@@ -553,6 +570,8 @@ def main(run_loop=True):
             nav.go_to(result, event)
         return event is not None or result is not None
 
+    if publish_runtime:
+        set_resident_runtime(runtime)
     while True:
         try:
             kb.scan()

@@ -122,35 +122,101 @@ DEFAULT_COMMANDS = (
     "EVAL -2^2",
 )
 
+DIAGNOSTIC_ACTION = 1
 
-def run(commands=None):
-    """Run commands on real device files and print a machine-readable verdict."""
-    session = DiagnosticSession()
+
+def _verify_session(session):
     failures = 0
-    for command in commands or DEFAULT_COMMANDS:
-        try:
-            session.execute(command)
-        except Exception as error:
-            failures += 1
-            print("TRACE cmd=ERROR input=" + command + " error=" + str(error))
-
     labels = [label for label, _ in session.menu.menu.items]
     if not any("Calculator" in label for label in labels):
         failures += 1
-        print("CHECK FAIL main menu labels")
+        session.emit("CHECK FAIL main menu labels")
     if session.panel_items:
         ids = [item[0] for item in session.panel_items]
         if len(ids) != len(set(ids)):
             failures += 1
-            print("CHECK FAIL duplicate panel ids")
+            session.emit("CHECK FAIL duplicate panel ids")
         for index, item in enumerate(session.panel_items):
             label = session.panel_labels[index]
             if item[2] and item[0] == "basic" and "Arithmetic" not in label:
                 failures += 1
-                print("CHECK FAIL ambiguous built-in basic label")
+                session.emit("CHECK FAIL ambiguous built-in basic label")
             if not item[2] and "Add-on:" not in label:
                 failures += 1
-                print("CHECK FAIL ambiguous add-on label " + item[0])
-    print("SELFTEST " + ("PASS" if failures == 0 else "FAIL")
-          + " failures=" + str(failures))
+                session.emit("CHECK FAIL ambiguous add-on label " + item[0])
     return failures
+
+
+class _DiagnosticNav:
+    __slots__ = ("session",)
+
+    def __init__(self, session):
+        self.session = session
+
+    @property
+    def current(self):
+        return self.session.current
+
+    def reset(self, root):
+        self.session.current = root
+        root.activate()
+
+    def present_current(self):
+        pass
+
+
+class _DiagnosticScenarioAdapter:
+    __slots__ = ("session", "commands", "failures")
+
+    def __init__(self, session, commands):
+        self.session = session
+        self.commands = commands
+        self.failures = 0
+
+    def perform(self, handle, action, argument):
+        if action != DIAGNOSTIC_ACTION:
+            raise ValueError("Unknown diagnostic scenario action")
+        for command in self.commands:
+            try:
+                self.session.execute(command)
+            except MemoryError:
+                raise
+            except Exception as error:
+                self.failures += 1
+                self.session.emit(
+                    "TRACE cmd=ERROR input=" + command
+                    + " error=" + str(error))
+        self.failures += _verify_session(self.session)
+        if self.failures:
+            raise RuntimeError("Diagnostic checks failed")
+
+
+def _run_diagnostic_commands(runtime, round_index):
+    runtime.perform(DIAGNOSTIC_ACTION, round_index)
+
+
+def run(commands=None, emit=print):
+    """Run device-file diagnostics through the shared acceptance runner."""
+    from runtime_acceptance import (
+        RUN_ACTION, RuntimeHandle, run as run_acceptance)
+
+    session = DiagnosticSession(emit)
+    adapter = _DiagnosticScenarioAdapter(
+        session, commands or DEFAULT_COMMANDS)
+    runtime = RuntimeHandle(
+        _DiagnosticNav(session),
+        session.menu,
+        (),
+        mode="diagnostic",
+        scenario_adapter=adapter,
+    )
+    scenario = (
+        "diagnostics",
+        1,
+        (("commands", RUN_ACTION, _run_diagnostic_commands),),
+    )
+    report = run_acceptance(runtime, scenario)
+    failures = adapter.failures + report.memory_errors
+    emit("SELFTEST " + ("PASS" if report.accepted else "FAIL")
+         + " failures=" + str(failures))
+    return report

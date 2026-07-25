@@ -40,7 +40,6 @@ class PerformanceMetrics:
         # constrained ESP32 heap is rendering a page.
         self._input_to_present_us = _FixedSampleWindow(self.sample_limit)
         self._gc_us = _FixedSampleWindow(self.sample_limit)
-        self._runtime = None
 
     def _now_ms(self):
         return time.ticks_ms()
@@ -115,6 +114,10 @@ class PerformanceMetrics:
     def record_input(self, now=None):
         self._input_started = self._now_us() if now is None else now
 
+    def record_input_to_present(self, elapsed_us):
+        """Record a completed edge-to-visible latency from an external runner."""
+        self._append(self._input_to_present_us, elapsed_us)
+
     def record_frame(self, elapsed_us, now=None):
         self._record_frame(elapsed_us)
         if self._input_started is not None:
@@ -125,12 +128,6 @@ class PerformanceMetrics:
 
     def record_gc(self, elapsed_us):
         self._append(self._gc_us, elapsed_us)
-
-    def bind_runtime(self, nav, root, targets):
-        self._runtime = (nav, root, tuple(targets))
-
-    def runtime(self):
-        return self._runtime
 
     def _summary(self, samples):
         count = samples.count

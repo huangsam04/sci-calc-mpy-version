@@ -1,3 +1,4 @@
+import diagnostics
 from diagnostics import DiagnosticSession
 from utils import storage
 
@@ -18,3 +19,17 @@ def test_serial_diagnostic_session_traces_input_navigation_and_results(tmp_path)
     assert any("page=MainMenu" in line for line in output)
     assert any("expr=2+3*4 result=14" in line for line in output)
     assert any("id=basic" in line and "Arithmetic" in line for line in output)
+
+
+def test_diagnostic_matrix_returns_the_shared_acceptance_verdict(tmp_path):
+    storage.configure_storage(str(tmp_path))
+    output = []
+
+    report = diagnostics.run(commands=("STATUS",), emit=output.append)
+
+    assert report.scenario_name == "diagnostics"
+    assert report.mode == "diagnostic"
+    assert report.rounds_completed == 1
+    assert report.scenarios_completed == 1
+    assert report.accepted
+    assert output[-1] == "SELFTEST PASS failures=0"
