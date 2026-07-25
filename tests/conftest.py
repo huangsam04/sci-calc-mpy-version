@@ -43,6 +43,7 @@ def pytest_configure(config):
 
 
 SOURCE = pathlib.Path(__file__).parents[1] / "source"
+sys.path.insert(0, str(PROJECT))
 sys.path.insert(0, str(SOURCE))
 
 micropython = types.ModuleType("micropython")

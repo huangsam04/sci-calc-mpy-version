@@ -40,7 +40,7 @@
 - [x] pytest 只使用项目内 `.pytest_tmp/<32hex GUID>`；显式 CLI/环境
   `basetemp` 会在 pytest 删除前被拒绝。`check.ps1` 隔离并恢复
   `PYTEST_ADDOPTS`，device tool 编译门拒绝零匹配、非零退出、缺失或空产物。
-- [x] 当前完整主机门：`258 passed in 12.17s`，CPython、PowerShell AST
+- [x] 当前完整主机门：`280 passed in 12.09s`，CPython、PowerShell AST
   7/7、全部 source 与 4 个 device tool 的 MicroPython 编译通过；
   最近 10 分钟 GUID 临时目录残留 `0`。
 - [ ] 真机七场景 controller 尚未实现。当前每场景还是一个总
@@ -55,6 +55,13 @@
 - [ ] 下一实施入口改为 D-2 / E-P0-4 `ReleasePlan`：先完成本地全量构建、
   受管 manifest、staging SHA、失败 rollback 和无条件 reset，之后才允许
   把新验收面写入 COM6。现有 `deploy.ps1` 仍禁止发布。
+- [x] D-2 纯计划层已完成：SOURCE/MPY 对当前 59 个 source 文件产生唯一、
+  不可变的 64 条分类；canonical manifest 固定 ABI/hash/size，host-only
+  不进入 device identity，settings/vars 仅 seed，清理只信任校验后的旧
+  managed manifest，并按 `(zone, path)` 处理 `.py/.mpy` 切换。
+- [ ] D-2 事务执行层与稳定 BootSupervisor 仍未完成；在 fake-device 的
+  stage/hash/trial/smoke/promote/rollback/finally-reset 矩阵通过前，
+  现有 `deploy.ps1` 和任何直接写 COM6 的命令继续禁止。
 
 ## 0. 不可回退的设备合同
 
