@@ -119,12 +119,21 @@ class _DeviceTwin:
     def exists(self, path):
         return self._map(path).exists()
 
+    def makedirs(self, path):
+        self._map(path).mkdir(parents=True, exist_ok=True)
+
     def remove_tree(self, path):
         shutil.rmtree(self._map(path), ignore_errors=True)
 
     def rename(self, src, dst):
         import os
-        os.rename(self._map(src), self._map(dst))
+        mapped_dst = self._map(dst)
+        if mapped_dst.exists():
+            if mapped_dst.is_dir():
+                shutil.rmtree(mapped_dst)
+            else:
+                mapped_dst.unlink()
+        os.rename(self._map(src), mapped_dst)
 
     def exec(self, code, **params):
         assert self._connected
@@ -183,6 +192,12 @@ class _DeviceTwin:
             return "OK"
         if code is mpadapter.RENAME_CODE:
             self.rename(params["src"], params["dst"])
+            return "OK"
+        if "mkdir" in code:
+            import re
+            match = re.search(r"os\.mkdir\('([^']+)'\)", code)
+            if match:
+                self._map(match.group(1)).mkdir(parents=True, exist_ok=True)
             return "OK"
         if code == self._probe_source_text:
             return self._probe(self._last_boot)

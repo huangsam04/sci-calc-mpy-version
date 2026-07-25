@@ -323,6 +323,7 @@ class _MpremoteSession:
             raise ValueError("no staged release to activate")
         selector = self._read_selector()
         slot_name = self._staged_slot
+        self._device.makedirs(bootenv.SLOT_BASE)
         self._device.remove_tree(self._slot_root(slot_name))
         self._device.rename(_STAGING_ROOT, self._slot_root(slot_name))
         stored = self._write_selector(bootsel.SelectorData(
@@ -595,6 +596,9 @@ class MpremoteDevice:
 
     def exists(self, path):
         return self._transport.fs_exists(path)
+
+    def makedirs(self, path):
+        self._mkdirs(path)
 
     def remove_tree(self, path):
         self.exec(RMTREE_CODE, path=path)
