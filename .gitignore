@@ -1,6 +1,7 @@
 .pytest_cache/
 .pytest_tmp/
 .mpy-build/
+.mpy-build-quarantine/
 source/**/__pycache__/
 tests/**/__pycache__/
 tools/**/__pycache__/

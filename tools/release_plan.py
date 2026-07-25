@@ -46,6 +46,21 @@ _VERSION_RE = re.compile(
 )
 
 
+def is_compiled_in_mpy(path):
+    """True when the mpy plan expects a compiled output for *path*."""
+    if not path.endswith(".py"):
+        return False
+    if path in _INTERNAL_DISPLAY_PATHS:
+        return True
+    if path in _BOOTSTRAP_PATHS or path == "launch.py":
+        return False
+    if path.startswith("functions/") or path == "runtime_scenarios_host.py":
+        return False
+    if path in _SEED_PATHS or path in _FONT_OUTPUTS:
+        return False
+    return True
+
+
 def _normalize_path(path):
     normalized = str(path).replace("\\", "/")
     parts = normalized.split("/")
