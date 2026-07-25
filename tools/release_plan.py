@@ -96,6 +96,7 @@ class ReleasePlan:
     release_id: str
     assets: tuple
     manifest_bytes: bytes
+    manifest_sha256: str
 
 
 def _read_tree(root, required):
@@ -303,6 +304,21 @@ def _asset_record(asset):
     }
 
 
+def _validate_release_assets(assets):
+    keys = set()
+    paths = set()
+    for asset in assets:
+        if asset.key in keys:
+            raise ValueError("release asset key collision: " + asset.key)
+        keys.add(asset.key)
+        location = (asset.zone, asset.relative_path.casefold())
+        if location in paths:
+            raise ValueError(
+                "release asset path collision: "
+                + asset.zone + ":" + asset.relative_path)
+        paths.add(location)
+
+
 def _canonical_json(value):
     return json.dumps(
         value,
@@ -380,8 +396,13 @@ def _validated_manifest(manifest_bytes):
     return manifest
 
 
-def cleanup_candidates(previous_manifest_bytes, current_plan):
+def cleanup_candidates(
+        previous_manifest_bytes, expected_manifest_sha256, current_plan):
     """Return only previously-owned managed paths absent from the next plan."""
+    actual_manifest_sha256 = hashlib.sha256(
+        bytes(previous_manifest_bytes)).hexdigest()
+    if actual_manifest_sha256 != expected_manifest_sha256:
+        raise ValueError("trusted release manifest hash mismatch")
     previous = _validated_manifest(previous_manifest_bytes)
     protected = {("sd", "settings.json"), ("sd", "vars.json")}
     previous_paths = set()
@@ -392,12 +413,16 @@ def cleanup_candidates(previous_manifest_bytes, current_plan):
             raise ValueError("protected user path in managed manifest")
         if asset["role"] == "managed_release":
             previous_paths.add(location)
-    current_paths = {
-        (asset.zone, asset.relative_path)
+    current_owned_paths = {
+        (asset.zone, asset.relative_path.casefold())
         for asset in current_plan.assets
-        if asset.role == "managed_release"
+        if asset.role in ("bootstrap_fixed", "managed_release")
     }
-    return tuple(sorted(previous_paths - current_paths))
+    return tuple(sorted(
+        location
+        for location in previous_paths
+        if (location[0], location[1].casefold()) not in current_owned_paths
+    ))
 
 
 def plan_release(snapshot, mode):
@@ -414,6 +439,7 @@ def plan_release(snapshot, mode):
         ),
         key=lambda asset: asset.key,
     ))
+    _validate_release_assets(assets)
     owned_assets = tuple(
         asset
         for asset in assets
@@ -435,6 +461,7 @@ def plan_release(snapshot, mode):
     release_id = hashlib.sha256(_canonical_json(release_payload)).hexdigest()
     manifest = dict(release_payload)
     manifest["release_id"] = release_id
+    manifest_bytes = _canonical_json(manifest)
     return ReleasePlan(
         schema=SCHEMA_VERSION,
         app_version=app_version,
@@ -442,5 +469,6 @@ def plan_release(snapshot, mode):
         abi_tag=abi_tag,
         release_id=release_id,
         assets=assets,
-        manifest_bytes=_canonical_json(manifest),
+        manifest_bytes=manifest_bytes,
+        manifest_sha256=hashlib.sha256(manifest_bytes).hexdigest(),
     )

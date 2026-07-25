@@ -80,6 +80,19 @@ def test_mpy_manifest_pins_the_device_abi_in_release_identity():
     assert manifest["abi_tag"] == plan.abi_tag
 
 
+def test_plan_carries_the_manifest_hash_for_a_trusted_activation_record():
+    plan = plan_release(
+        ReleaseTreeSnapshot.from_files((
+            ("version.py", b'VERSION = "1.3.0"\n'),
+        )),
+        mode="source",
+    )
+
+    assert plan.manifest_sha256 == hashlib.sha256(
+        plan.manifest_bytes
+    ).hexdigest()
+
+
 def test_mpy_plan_fails_closed_when_a_selected_output_is_missing():
     snapshot = ReleaseTreeSnapshot.from_files(
         (
@@ -266,6 +279,22 @@ def test_plan_rejects_an_empty_generated_font():
         plan_release(snapshot, mode="source")
 
 
+def test_plan_rejects_duplicate_logical_keys_created_by_classification():
+    snapshot = ReleaseTreeSnapshot.from_files(
+        (
+            ("fonts/Bally7x9.c", b"legacy font source"),
+            ("fonts/Bally7x9.py", b"# conflicting module\n"),
+            ("version.py", b'VERSION = "1.3.0"\n'),
+        ),
+        build_files=(
+            ("fonts/Bally7x9.xglcd", b"XGF1-compiled-font"),
+        ),
+    )
+
+    with pytest.raises(ValueError, match="release asset key collision"):
+        plan_release(snapshot, mode="source")
+
+
 def test_recovery_payload_stays_internal_source_in_both_build_modes():
     files = (
         ("recovery.py", b"# recovery\n"),
@@ -443,9 +472,32 @@ def test_cleanup_uses_the_previous_owned_manifest_not_a_remote_listing():
         mode="source",
     )
 
-    assert cleanup_candidates(previous.manifest_bytes, current) == (
+    assert cleanup_candidates(
+        previous.manifest_bytes,
+        previous.manifest_sha256,
+        current,
+    ) == (
         ("sd", "legacy.py"),
     )
+
+
+def test_cleanup_rejects_a_manifest_not_named_by_the_trusted_activation_hash():
+    previous = plan_release(
+        ReleaseTreeSnapshot.from_files((
+            ("legacy.py", b"# old managed asset\n"),
+            ("version.py", b'VERSION = "1.3.0"\n'),
+        )),
+        mode="source",
+    )
+    current = plan_release(
+        ReleaseTreeSnapshot.from_files((
+            ("version.py", b'VERSION = "1.3.0"\n'),
+        )),
+        mode="source",
+    )
+
+    with pytest.raises(ValueError, match="trusted release manifest hash"):
+        cleanup_candidates(previous.manifest_bytes, "0" * 64, current)
 
 
 def test_cleanup_rejects_a_manifest_that_claims_user_settings():
@@ -485,7 +537,11 @@ def test_cleanup_rejects_a_manifest_that_claims_user_settings():
         mode="source",
     )
     with pytest.raises(ValueError, match="protected user path"):
-        cleanup_candidates(hostile_bytes, current)
+        cleanup_candidates(
+            hostile_bytes,
+            hashlib.sha256(hostile_bytes).hexdigest(),
+            current,
+        )
 
 
 def test_mode_switch_cleanup_removes_old_module_extensions_by_path():
@@ -508,7 +564,34 @@ def test_mode_switch_cleanup_removes_old_module_extensions_by_path():
         mode="mpy",
     )
 
-    assert cleanup_candidates(source_plan.manifest_bytes, mpy_plan) == (
+    assert cleanup_candidates(
+        source_plan.manifest_bytes,
+        source_plan.manifest_sha256,
+        mpy_plan,
+    ) == (
         ("sd", "main.py"),
         ("sd", "version.py"),
     )
+
+
+def test_cleanup_never_deletes_a_case_folded_current_owned_path():
+    previous = plan_release(
+        ReleaseTreeSnapshot.from_files((
+            ("Foo.py", b"# old spelling\n"),
+            ("version.py", b'VERSION = "1.3.0"\n'),
+        )),
+        mode="source",
+    )
+    current = plan_release(
+        ReleaseTreeSnapshot.from_files((
+            ("foo.py", b"# new spelling\n"),
+            ("version.py", b'VERSION = "1.3.0"\n'),
+        )),
+        mode="source",
+    )
+
+    assert cleanup_candidates(
+        previous.manifest_bytes,
+        previous.manifest_sha256,
+        current,
+    ) == ()
