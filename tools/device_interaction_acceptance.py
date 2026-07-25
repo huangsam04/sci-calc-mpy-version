@@ -119,18 +119,22 @@ class _InteractionActions:
             self._active_keyboard, event)
 
     @staticmethod
-    def _settle_and_present(runtime):
-        from ui.element import SETTLE_COLLECT, SETTLE_MORE
+    def quiet_settle(runtime, round_index):
+        from ui.element import SETTLE_COLLECT, SETTLE_MORE, SETTLE_REDRAW
 
         nav = runtime.nav
+        redraw = False
         for _ in range(MAX_SETTLE_STEPS):
             flags = nav.settle_current()
             if flags & SETTLE_COLLECT:
                 gc.collect()
+            if flags & SETTLE_REDRAW:
+                redraw = True
             if not flags & SETTLE_MORE:
-                nav.present_current()
+                if redraw:
+                    nav.present_current()
                 return
-        raise RuntimeError("Input settle work exceeded its fixed bound")
+        raise RuntimeError("Quiet settle work exceeded its fixed bound")
 
     def menu_edges(self, runtime, round_index):
         root = runtime.root
@@ -153,7 +157,7 @@ class _InteractionActions:
         if menu.cursor_pos == cursor_before:
             raise AssertionError(
                 "Captured menu edge did not move the visible cursor")
-        self._settle_and_present(runtime)
+        runtime.nav.present_current()
 
     def open_calculator(self, runtime, round_index):
         self.calculator.input_box.clear_str()
@@ -174,7 +178,7 @@ class _InteractionActions:
                 "Captured Calculator edges were not all dispatched")
         if self.calculator.input_box.get_str() != "12345":
             raise AssertionError("Five-digit captured edge batch was lost")
-        self._settle_and_present(runtime)
+        runtime.nav.present_current()
 
     def close_calculator(self, runtime, round_index):
         self.calculator.input_box.set_str(
@@ -202,7 +206,7 @@ class _InteractionObserver:
                 + " tool=interaction_screen_tracer"
                 + " mode=" + report.mode
                 + " rounds=" + str(report.rounds_expected)
-                + " coverage=captured_edge_to_screen_update_settle_present"
+                + " coverage=captured_edge_to_screen_update_present"
                 + " main_dispatch=not_measured"
                 + " scan_debounce=contract_only"
                 + " scan_interval_us=" + str(SCAN_INTERVAL * 1000)
@@ -258,11 +262,17 @@ def _scenario(actions):
         TOTAL_ROUNDS,
         (
             ("menu_edge_to_present", RUN_ACTION, actions.menu_edges),
+            ("menu_quiet_settle", RUN_ACTION, actions.quiet_settle),
             ("calculator_open", RUN_ACTION, actions.open_calculator),
             (
                 "calculator_edge_to_present",
                 RUN_ACTION,
                 actions.calculator_edges,
+            ),
+            (
+                "calculator_quiet_settle",
+                RUN_ACTION,
+                actions.quiet_settle,
             ),
             ("calculator_close", RUN_ACTION, actions.close_calculator),
         ),
@@ -270,7 +280,7 @@ def _scenario(actions):
 
 
 def run(runtime=None, mode=MODE_RELEASE, emit=print):
-    """Trace captured edges through screen update/settle/render/present."""
+    """Trace captured edges through screen update and visible presentation."""
     from main import _drain_input_batch
     from runtime_acceptance import run as run_acceptance
 

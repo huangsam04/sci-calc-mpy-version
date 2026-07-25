@@ -202,6 +202,14 @@ class _InteractionNav(_Nav):
         return 0
 
 
+class _CollectRequestedInteractionNav(_InteractionNav):
+    def settle_current(self):
+        from ui.element import SETTLE_COLLECT
+
+        super().settle_current()
+        return SETTLE_COLLECT
+
+
 _ROOT = object()
 
 
@@ -345,7 +353,7 @@ def test_interaction_release_mode_requires_a_resident_runtime():
         set_resident_runtime(previous)
 
 
-def test_interaction_times_captured_edges_through_update_settle_and_present():
+def test_interaction_presents_captured_edges_before_quiet_settle_work():
     log = []
     root = _InteractionRoot(log)
     calculator = _CalculatorTarget(log)
@@ -363,16 +371,45 @@ def test_interaction_times_captured_edges_through_update_settle_and_present():
     )
 
     first_root_update = log.index("update:root")
+    root_present = log.index("present:root", first_root_update)
     root_settle = log.index("settle:root", first_root_update)
-    root_present = log.index("present:root", root_settle)
     first_calc_update = log.index("update:calculator")
+    calc_present = log.index("present:calculator", first_calc_update)
     calc_settle = log.index("settle:calculator", first_calc_update)
-    calc_present = log.index("present:calculator", calc_settle)
-    assert first_root_update < root_settle < root_present
-    assert first_calc_update < calc_settle < calc_present
+    assert first_root_update < root_present < root_settle
+    assert first_calc_update < calc_present < calc_settle
     assert log.count("update:root") == 5
     assert log.count("update:calculator") == 25
     assert report.rounds_completed == 5
+
+
+def test_interaction_defers_requested_gc_until_after_visible_commit(
+        monkeypatch):
+    log = []
+    root = _InteractionRoot(log)
+    calculator = _CalculatorTarget(log)
+    runtime = RuntimeHandle(
+        _CollectRequestedInteractionNav(root, log),
+        root,
+        (calculator,),
+        mode="benchmark",
+    )
+    monkeypatch.setattr(
+        device_interaction_acceptance.gc,
+        "collect",
+        lambda: log.append("gc"),
+    )
+
+    device_interaction_acceptance.run(
+        runtime=runtime,
+        mode="benchmark",
+        emit=lambda _line: None,
+    )
+
+    first_update = log.index("update:root")
+    first_present = log.index("present:root", first_update)
+    first_gc = log.index("gc", first_update)
+    assert first_update < first_present < first_gc
 
 
 def test_interaction_rejects_a_dispatched_menu_edge_that_does_not_move_cursor():
@@ -441,7 +478,7 @@ def test_interaction_screen_tracer_reports_its_narrow_measurement_scope():
     assert "tool=interaction_screen_tracer" in lines[0]
     assert "mode=benchmark" in lines[0]
     assert (
-        "coverage=captured_edge_to_screen_update_settle_present"
+        "coverage=captured_edge_to_screen_update_present"
         in lines[0]
     )
     assert "main_dispatch=not_measured" in lines[0]

@@ -31,6 +31,9 @@
 - [x] boot probe 现在强制 resident 版本等于设备 `VERSION`、root 可见，
   且根页 buffer 必须恰好为唯一 `main:8192:<valid identity>`；probe 只加载
   轻量 `runtime_handle`。
+- [x] interaction tool 仍明确是窄 `screen tracer`：只测已捕获边沿到
+  screen update/present；`main_dispatch=not_measured`、扫描/去抖仅检查合同。
+  输入像素提交先于独立 quiet-settle/GC step，按键路径不再同步回收。
 - [x] 一键 orchestrator 已有 fake-mpremote 行为测试，覆盖 stage 非零、
   reset 非零、双失败、缺脚本和每阶段 `finally reset`；旧窄 monitor 被诚实
   命名为 `runtime_target_tracer`，不冒充七场景矩阵。
