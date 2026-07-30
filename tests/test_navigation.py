@@ -1,7 +1,12 @@
 import ui.renderer
 import ui.sidebar
 
-from main import Nav, _drain_input_batch, _present_first_ui_frame
+from calc.functions import build_registry
+from main import (Nav, _drain_input_batch, _navigate_registered_page,
+                  _present_first_ui_frame)
+from screens.calculator import CalculatorScreen
+from screens.function_panel import FunctionPanel
+from screens.main_menu import MainMenu
 
 
 class RendererStub:
@@ -130,6 +135,45 @@ def test_navigation_exposes_followup_input_immediately_without_page_motion(
     assert nav.poll_event(keyboard) == (3, 0, False)
     assert nav.poll_event(keyboard) == (3, 1, False)
     assert not hasattr(nav, "is_transitioning")
+
+
+def test_main_menu_routes_calculator_and_function_panel_registered_pages(
+        monkeypatch):
+    nav = _nav(monkeypatch)
+    root = MainMenu()
+    calculator = CalculatorScreen(
+        None, registry=build_registry(), variables={})
+    plot = ScreenStub()
+    function_panel = FunctionPanel(
+        None, {"enabled_functions": ["basic"]})
+    root.add_screen("Calculator", calculator)
+    root.add_screen("Plot", plot)
+    root.add_screen("Function Panel", function_panel)
+    nav.register_screens((root, calculator, plot, function_panel))
+    nav.boot(root)
+
+    result = root.update(None, (3, 3, False))
+    assert _navigate_registered_page(
+        nav, root, result, (3, 3, False)) is True
+    assert nav.current is calculator
+
+    nav.go_back()
+
+    assert root.update(None, (3, 1, False)) == "REDRAW"
+    assert root.update(None, (3, 1, False)) == "REDRAW"
+    result = root.update(None, (3, 3, False))
+    assert _navigate_registered_page(
+        nav, root, result, (3, 3, False)) is True
+    assert nav.current is function_panel
+
+    nav.go_back()
+
+    assert root.update(None, (1, 1, False)) == "REDRAW"
+    assert root.update(None, (1, 1, False)) == "REDRAW"
+    result = root.update(None, (3, 3, False))
+    assert _navigate_registered_page(
+        nav, root, result, (3, 3, False)) is True
+    assert nav.current is calculator
 
 
 def test_navigation_commits_target_without_hardware_brightness_fade(

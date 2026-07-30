@@ -106,6 +106,22 @@ def _drain_input_batch(nav, keyboard, handler):
     return count
 
 
+def _navigate_registered_page(nav, current, result, event):
+    """Enter a resident page returned by the current screen.
+
+    Calculator and Function Panel deliberately use compact standalone screen
+    classes, so their navigation contract is registration identity rather than
+    inheritance from UIElement.
+    """
+    if result is current:
+        return False
+    for screen in nav._managed:
+        if result is screen:
+            nav.go_to(screen, event)
+            return True
+    return False
+
+
 def _page_update_requested(keyboard, event):
     """Keep menu direction hold-repeat alive without repeating calculator input."""
     return (event is not None
@@ -965,8 +981,7 @@ def main(run_loop=True, runtime_mode="resident", publish_runtime=True):
     # ============================================================
     # Phase 3: Main loop
     # ============================================================
-    from ui.element import (
-        SETTLE_COLLECT, SETTLE_MORE, SETTLE_REDRAW, UIElement)
+    from ui.element import SETTLE_COLLECT, SETTLE_MORE, SETTLE_REDRAW
 
     try:
         _present_first_ui_frame(nav, main_menu)
@@ -1063,8 +1078,8 @@ def main(run_loop=True, runtime_mode="resident", publish_runtime=True):
             nav.go_to(func_picker, event)
         elif result == "VARIABLE_PANEL":
             nav.go_to(var_panel, event)
-        elif isinstance(result, UIElement) and result is not cur:
-            nav.go_to(result, event)
+        elif _navigate_registered_page(nav, cur, result, event):
+            pass
         changed = result is not None
         if changed:
             _input_visual_changed = True
