@@ -1,5 +1,6 @@
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -51,6 +52,10 @@ class _Report:
         self.bounded_session_restored = True
         self.blocking_round = 0
         self.blocking_step = 1
+        self.heap_step_name = "plot_pipeline"
+        self.heap_phase = 1
+        self.heap_round = 2
+        self.heap_step = 17
 
 
 def test_device_application_acceptance_runs_the_shared_five_round_matrix(
@@ -74,7 +79,62 @@ def test_device_application_acceptance_runs_the_shared_five_round_matrix(
     assert lines[-1] == (
         "APPLICATION_RESULT PASS memory_errors=0 errors=0 failure_mask=0")
     assert "framebuffer_bytes=8192" in lines[-2]
+    assert "heap_step_name=plot_pipeline" in lines[-2]
+    assert "heap_phase=1 heap_round=2 heap_step=17" in lines[-2]
     assert runtime.display.sleep_count == 2
+
+
+def test_device_application_summary_keeps_the_lowest_heap_step_identity():
+    summary = device_application_acceptance._Summary()
+    report = SimpleNamespace(
+        step_us=100,
+        step_heap_free=15000,
+        step_name="calculator_history",
+        phase=1,
+        round_index=0,
+        runtime_steps=2,
+    )
+    summary.observe(2, report)
+    report.step_heap_free = 9000
+    report.step_name = "plot_pipeline"
+    report.phase = 1
+    report.round_index = 2
+    report.runtime_steps = 17
+    summary.observe(2, report)
+    report.step_heap_free = 11000
+    report.step_name = "stopwatch_laps"
+    report.runtime_steps = 23
+    summary.observe(2, report)
+
+    assert summary.heap_min == 9000
+    assert summary.heap_step_name == "plot_pipeline"
+    assert summary.heap_phase == 1
+    assert summary.heap_round == 2
+    assert summary.heap_step == 17
+
+
+def test_device_application_summary_labels_boundary_heap_samples():
+    summary = device_application_acceptance._Summary()
+    report = SimpleNamespace(
+        heap_before=8000,
+        heap_after=7000,
+        step_us=100,
+        step_heap_free=9000,
+        step_name="calculator_history",
+        phase=1,
+        round_index=0,
+        runtime_steps=1,
+    )
+
+    summary.observe(1, report)
+    summary.observe(2, report)
+    summary.observe(5, report)
+
+    assert summary.heap_min == 7000
+    assert summary.heap_step_name == "acceptance_end"
+    assert summary.heap_phase == 0
+    assert summary.heap_round == 0
+    assert summary.heap_step == 1
 
 
 def test_device_application_acceptance_binds_transient_fixture_before_runtime(

@@ -33,7 +33,8 @@ class _Summary:
         "heap_after", "heap_delta", "blocking_max_us",
         "buffer_peak_bytes", "failure_mask", "step_name", "phase",
         "bounded_close_attempts", "bounded_session_restored",
-        "primary_error", "blocking_round", "blocking_step")
+        "primary_error", "blocking_round", "blocking_step",
+        "heap_step_name", "heap_phase", "heap_round", "heap_step")
 
     def __init__(self):
         self.accepted = False
@@ -55,14 +56,38 @@ class _Summary:
         self.primary_error = None
         self.blocking_round = -1
         self.blocking_step = 0
+        self.heap_step_name = None
+        self.heap_phase = 0
+        self.heap_round = -1
+        self.heap_step = 0
 
     def observe(self, event, report):
-        if 2 <= event <= 4 and report.step_us > self.blocking_max_us:
-            self.blocking_max_us = report.step_us
-            self.blocking_round = report.round_index
-            self.blocking_step = report.runtime_steps
-            self.step_name = report.step_name
-            self.phase = report.phase
+        heap_free = -1
+        heap_name = None
+        heap_phase = 0
+        if event == 1:
+            heap_free = report.heap_before
+            heap_name = "acceptance_start"
+        elif event == 5:
+            heap_free = report.heap_after
+            heap_name = "acceptance_end"
+        if 2 <= event <= 4:
+            if report.step_us > self.blocking_max_us:
+                self.blocking_max_us = report.step_us
+                self.blocking_round = report.round_index
+                self.blocking_step = report.runtime_steps
+                self.step_name = report.step_name
+                self.phase = report.phase
+            heap_free = report.step_heap_free
+            heap_name = report.step_name
+            heap_phase = report.phase
+        if heap_free >= 0 and (
+                self.heap_min < 0 or heap_free < self.heap_min):
+            self.heap_min = heap_free
+            self.heap_step_name = heap_name
+            self.heap_phase = heap_phase
+            self.heap_round = report.round_index
+            self.heap_step = report.runtime_steps
 
 
 def _resident_runtime():
@@ -181,7 +206,11 @@ def run(runtime=None, emit=print):
             + " bounded_session_restored="
             + str(report.bounded_session_restored)
             + " blocking_round=" + str(report.blocking_round)
-            + " blocking_step=" + str(report.blocking_step))
+            + " blocking_step=" + str(report.blocking_step)
+            + " heap_step_name=" + str(report.heap_step_name)
+            + " heap_phase=" + str(report.heap_phase)
+            + " heap_round=" + str(report.heap_round)
+            + " heap_step=" + str(report.heap_step))
         if not report.accepted:
             primary = report.primary_error
             emit(

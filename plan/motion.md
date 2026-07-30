@@ -4,6 +4,8 @@
 
 ## 共同合同
 
+门禁复测（2026-07-31，release `f8a6badf6054926605642a5bac6725b57e2ce876c6221a0c7b8381152687b9f9`）：统一验收测得最低空闲堆 `9888 B`，低于 `12288 B`；`MemoryError=0`、普通错误 `0`、最大同步 step `22.774 ms`，固定像素/工作缓冲峰值 `8296 B`（8192 B framebuffer + 104 B Plot workspace）。输出中的 `calculator_history phase=5` 只定位最慢 step，不能作为最低堆归因。因此当前禁止启用两项动效；下一小批次先在现有验收输出中补齐最低堆 capability/phase/round/step，再只调查定位出的一个热点，不降低门槛，也不预写动效代码。失败后验收载荷已清理并确认 OLED 休眠。
+
 - [ ] 始终一个 8192 B GS4 framebuffer，新增像素缓冲 0 B；复用 `FrameScheduler`、`DamageMap`、`Renderer` 和 SSD1322 固定命令缓冲。
 - [ ] 全部动效状态复用固定标量槽位且合计不超过 64 B；稳态逐帧堆分配为 0；按键和逐帧路径不调用 `gc.collect()` / `gc.mem_free()`。
 - [ ] 普通输入边沿到可见提交不超过 20 ms；单个同步 step 和动画帧不超过 32 ms；页面过渡总时长保持 120--160 ms。

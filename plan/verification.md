@@ -18,6 +18,8 @@
 
 ## COM5 统一验收
 
+最新候选（2026-07-31）：快速增量部署成功，耗时 `31.355 s`，release ID `f8a6badf6054926605642a5bac6725b57e2ce876c6221a0c7b8381152687b9f9`。统一验收的 boot probe 通过（版本 1.4.0、resident/root ready、单一 8192 B framebuffer、104 B Plot workspace、MPY/Viper ABI 正确）；application matrix 因最低堆 `9888 B < 12288 B` 按门槛停止，`MemoryError=0`、普通错误 `0`、最大 step `22.774 ms`。临时 support/stage 载荷已删除，OLED 已休眠。当前输出只能把 `calculator_history phase=5` 归因给最慢 step；下一批先补齐最低堆位置数据，再选择一个热点，不得把该轮勾为通过。
+
 - [ ] 确认运行模块来自预期 frozen/SD 位置，版本和 manifest 一致，用户文件未丢失，framebuffer 始终为同一个 8192 B 对象。
 - [ ] 最大用户状态连续五轮覆盖入口、计算、函数面板、绘图、Stopwatch、Settings、辅助面板、错误恢复和快速往返；`MemoryError=0`，堆不持续下降。
 - [ ] 全过程最低空闲堆不小于 12 KiB；逐帧分配为 0；普通输入到提交不超过 20 ms；step/动画帧不超过 32 ms；页面过渡为 120--160 ms。
