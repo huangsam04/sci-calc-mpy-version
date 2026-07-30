@@ -20,15 +20,22 @@ class _Nav:
         self.stack = [root]
         self.memory = object()
         self.pages = pages
-        self.released = []
+        self.lifecycle = []
         self.present_calls = 0
 
-    def acquire_scenario_page(self, page_id):
-        return self.pages[page_id]
+    def open(self, page_id):
+        page = self.pages[page_id]
+        self.stack.append(page)
+        self.current = page
+        self.lifecycle.append(("open", page_id))
+        return page
 
-    def release_scenario_page(self, page_id, page):
-        self.released.append((page_id, page))
-        return True
+    def back(self):
+        if len(self.stack) > 1:
+            self.stack.pop()
+        self.current = self.stack[-1]
+        self.lifecycle.append(("back", None))
+        return self.current
 
     def reset(self, root):
         self.current = root

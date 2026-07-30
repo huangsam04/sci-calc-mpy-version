@@ -26,22 +26,27 @@ class _PoisonedNav:
         self.stack = [root]
         self.memory = object()
         self.pages = pages
-        self.released = []
-        self.page_transaction = _PageTransaction()
+        self.lifecycle = []
+
+    @property
+    def current(self):
+        return self.stack[-1]
 
     @property
     def _managed(self):
         raise AssertionError("controller must not inspect nav._managed")
 
-    def open_page_scenario_transaction(self):
-        return self.page_transaction
+    def open(self, page_id):
+        page = self.pages[page_id]
+        self.stack.append(page)
+        self.lifecycle.append(("open", page_id))
+        return page
 
-    def acquire_scenario_page(self, page_id):
-        return self.pages[page_id]
-
-    def release_scenario_page(self, page_id, page):
-        self.released.append((page_id, page))
-        return True
+    def back(self):
+        if len(self.stack) > 1:
+            self.stack.pop()
+        self.lifecycle.append(("back", None))
+        return self.current
 
 
 class _PoisonedRuntime(RuntimeHandle):
@@ -210,20 +215,6 @@ class _Stopwatch:
         return lease
 
 
-class _PageTransaction:
-    def __init__(self):
-        self.actions = []
-        self.closed = False
-
-    def step(self, action):
-        self.actions.append(action)
-        return True
-
-    def close(self):
-        self.closed = True
-        return True
-
-
 class _FixtureSnapshot:
     directory = "/sd/.slots/A/functions"
     files = (
@@ -319,8 +310,16 @@ def _binding():
     plot = _Plot()
     function_panel = object()
     stopwatch = _Stopwatch()
+    pages = {
+        1: calculator,
+        2: plot,
+        3: function_panel,
+        4: stopwatch,
+    }
+    for page_id in range(5, 10):
+        pages[page_id] = object()
     nav = _PoisonedNav(
-        root, {1: calculator, 2: plot, 3: function_panel, 4: stopwatch})
+        root, pages)
     binding = ApplicationBinding(
         nav, root, object(), object(), object())
     runtime = _PoisonedRuntime(
@@ -395,11 +394,16 @@ def test_real_resident_controller_runs_one_bounded_matrix_with_public_primitives
     assert plugins[0].cancelled is True
     assert plugins[1].closed is True
     assert stopwatch.leases[0].closed is True
-    assert nav.page_transaction.actions == list(range(1, 10))
-    assert nav.page_transaction.closed is True
+    page_lifecycle = []
+    for page_id in range(1, 10):
+        if page_id >= 7:
+            page_lifecycle.append(("open", 1))
+        page_lifecycle.extend((("open", page_id), ("back", None)))
+        if page_id >= 7:
+            page_lifecycle.append(("back", None))
+    assert nav.lifecycle[-len(page_lifecycle):] == page_lifecycle
 
     assert session.close() is True
-    assert nav.page_transaction.closed is True
     assert controller.open_bounded_session(runtime, ("calculator_history",)).close() is True
 
 

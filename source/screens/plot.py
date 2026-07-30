@@ -72,7 +72,6 @@ class _CurveJob:
 
 
 PlotScenarioTransaction = None
-PlotPageScenarioTransaction = None
 
 
 def _float_compatible(node):
@@ -250,16 +249,6 @@ class PlotScreen(UIElement):
         if transaction_type is None:
             from screens.plot_scenario import (
                 PlotScenarioTransaction as transaction_type)
-        return transaction_type(self)
-
-    def open_page_scenario_transaction(self):
-        'Reserve one bounded lease for ordinary Plot activation.'
-        if self._state[1][2] is not None:
-            raise RuntimeError('Plot scenario transaction is already active')
-        transaction_type = PlotPageScenarioTransaction
-        if transaction_type is None:
-            from screens.plot_scenario import (
-                PlotPageScenarioTransaction as transaction_type)
         return transaction_type(self)
 
     def blocks_global_shortcuts(self):

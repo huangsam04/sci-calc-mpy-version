@@ -29,7 +29,6 @@ _TIMER_DIGIT_SEGMENTS = (
 
 
 _StopwatchScenarioLease = None
-_StopwatchPageScenarioLease = None
 
 
 class StopwatchScreen(UIElement):
@@ -120,17 +119,6 @@ class StopwatchScreen(UIElement):
         if lease_type is None:
             from screens.stopwatch_scenario import (
                 StopwatchScenarioLease as lease_type)
-        return lease_type(self)
-
-    def open_page_scenario_transaction(self):
-        """Open the controller-only one-step Stopwatch page activation lease."""
-        if (self._runtime[1][1] is not None
-                or self._runtime[1][2] is not None):
-            raise RuntimeError("Stopwatch page scenario transaction is already active")
-        lease_type = _StopwatchPageScenarioLease
-        if lease_type is None:
-            from screens.stopwatch_scenario import (
-                StopwatchPageScenarioLease as lease_type)
         return lease_type(self)
 
     # ── timer logic ─────────────────────────────────────────────

@@ -52,31 +52,21 @@ def _finish_probe(transaction):
     raise AssertionError("bounded Plot probe did not reach a terminal state")
 
 
-def test_target_lazily_imports_both_plot_scenario_transactions(monkeypatch):
+def test_target_lazily_imports_plot_scenario_transaction(monkeypatch):
     class LazyScenarioTransaction:
-        def __init__(self, screen):
-            self.screen = screen
-
-    class LazyPageTransaction:
         def __init__(self, screen):
             self.screen = screen
 
     lazy_module = types.ModuleType("screens.plot_scenario")
     lazy_module.PlotScenarioTransaction = LazyScenarioTransaction
-    lazy_module.PlotPageScenarioTransaction = LazyPageTransaction
     monkeypatch.setitem(sys.modules, "screens.plot_scenario", lazy_module)
     monkeypatch.setattr(plot_module, "PlotScenarioTransaction", None)
-    monkeypatch.setattr(plot_module, "PlotPageScenarioTransaction", None)
     scenario_screen = _screen()
-    page_screen = _screen()
 
     scenario = scenario_screen.open_scenario_transaction()
-    page = page_screen.open_page_scenario_transaction()
 
     assert type(scenario) is LazyScenarioTransaction
     assert scenario.screen is scenario_screen
-    assert type(page) is LazyPageTransaction
-    assert page.screen is page_screen
 
 
 def test_scenario_transaction_releases_derived_curve_runtime_without_snapshot():
@@ -482,97 +472,6 @@ def test_scenario_close_with_primary_promotes_cleanup_memory_error(
     assert screen._state[1][2] is None
 
 
-def test_page_scenario_close_with_primary_keeps_step_oom_and_releases_retry(
-        monkeypatch):
-    screen = _screen()
-    transaction = screen.open_page_scenario_transaction()
-    primary = MemoryError("injected Plot page action OOM")
-    cleanup = MemoryError("injected Plot page restore OOM")
-    clear_presented = PlotScreen._clear_presented_editor_state
-    restore_attempts = []
-
-    def fail_step(_screen):
-        raise primary
-
-    monkeypatch.setattr(PlotScreen, "_activate_visible_state", fail_step)
-    with pytest.raises(MemoryError) as action_raised:
-        transaction.step()
-
-    assert action_raised.value is primary
-
-    def fail_first_restore(active_screen):
-        restore_attempts.append(True)
-        if len(restore_attempts) == 1:
-            raise cleanup
-        return clear_presented(active_screen)
-
-    monkeypatch.setattr(
-        PlotScreen, "_clear_presented_editor_state", fail_first_restore)
-    with pytest.raises(MemoryError) as first_close:
-        transaction.close_with_primary(primary)
-
-    assert first_close.value is primary
-    assert transaction._closed is False
-    assert transaction._screen is screen
-    assert transaction._input_str == "x^2"
-    assert screen._state[1][2] is transaction
-
-    with pytest.raises(MemoryError) as retry_close:
-        transaction.close_with_primary(primary)
-
-    assert retry_close.value is primary
-    assert restore_attempts == [True, True]
-    assert transaction._closed is True
-    assert transaction._screen is None
-    assert transaction._input_str is None
-    assert transaction._overlay_y is None
-    assert screen._state[1][2] is None
-
-
-def test_page_scenario_close_with_primary_promotes_cleanup_oom_and_retries(
-        monkeypatch):
-    screen = _screen()
-    transaction = screen.open_page_scenario_transaction()
-    primary = RuntimeError("injected Plot page action error")
-    cleanup = MemoryError("injected Plot page restore OOM")
-    clear_presented = PlotScreen._clear_presented_editor_state
-    restore_attempts = []
-
-    def fail_step(_screen):
-        raise primary
-
-    monkeypatch.setattr(PlotScreen, "_activate_visible_state", fail_step)
-    with pytest.raises(RuntimeError) as action_raised:
-        transaction.step()
-
-    assert action_raised.value is primary
-
-    def fail_first_restore(active_screen):
-        restore_attempts.append(True)
-        if len(restore_attempts) == 1:
-            raise cleanup
-        return clear_presented(active_screen)
-
-    monkeypatch.setattr(
-        PlotScreen, "_clear_presented_editor_state", fail_first_restore)
-    with pytest.raises(MemoryError) as first_close:
-        transaction.close_with_primary(primary)
-
-    assert first_close.value is cleanup
-    assert transaction._closed is False
-    assert transaction._screen is screen
-    assert transaction._input_str == "x^2"
-    assert screen._state[1][2] is transaction
-
-    assert transaction.close() is True
-    assert restore_attempts == [True, True]
-    assert transaction._closed is True
-    assert transaction._screen is None
-    assert transaction._input_str is None
-    assert transaction._overlay_y is None
-    assert screen._state[1][2] is None
-
-
 @pytest.mark.parametrize(
     "field",
     ("expr", "edit_original", "input_str", "popup_expr", "popup_title",
@@ -630,22 +529,6 @@ def test_scenario_transaction_rejects_oversized_text_before_claim_or_release(
     assert screen._state[2][0] is curve_fb
     assert screen._state[3][1] is curve_job
     assert screen._state[3][3][1][2] is program
-
-
-def test_page_scenario_transaction_rejects_oversized_input_before_claim():
-    screen = _screen()
-    too_large = "x" * (MAX_PLOT_EXPRESSION_CHARS + 1)
-    screen.input_box.str = too_large
-    screen._state[1][3] = 1
-    screen._state[3][3][0][3] = 0
-
-    with pytest.raises(RuntimeError, match="text snapshot"):
-        screen.open_page_scenario_transaction()
-
-    assert screen._state[1][2] is None
-    assert screen.input_box.str is too_large
-    assert screen._state[1][3] == 1
-    assert screen._state[3][3][0][3] == 0
 
 
 def test_normal_settle_step_keeps_its_existing_memory_error_ui_recovery(

@@ -44,20 +44,15 @@ def test_target_lazily_imports_heavy_scenario_transaction(monkeypatch):
 
     lazy_module = types.ModuleType("screens.calculator_scenario")
     lazy_module.CalculatorScenarioTransaction = LazyTransaction
-    lazy_module.CalculatorPageScenarioTransaction = LazyTransaction
     monkeypatch.setitem(
         sys.modules, "screens.calculator_scenario", lazy_module)
     screen = _screen()
-    page_screen = _screen()
 
     transaction = screen.open_scenario_transaction()
-    page_transaction = page_screen.open_page_scenario_transaction()
 
     assert type(transaction) is LazyTransaction
     assert transaction.screen is screen
     assert screen._state[3][3] is transaction
-    assert type(page_transaction) is LazyTransaction
-    assert page_transaction.screen is page_screen
 
 
 def test_calculator_scenario_transaction_restores_history_input_and_popup():

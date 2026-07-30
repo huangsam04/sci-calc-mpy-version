@@ -109,13 +109,6 @@ class CalculatorScreen:
         self.input_box.activate()
         return transaction
 
-    def open_page_scenario_transaction(self):
-        """Reserve one bounded lease for ordinary Calculator activation."""
-        if self._state[3][3] is not None:
-            raise RuntimeError("Calculator scenario transaction is already open")
-        from screens.calculator_scenario import CalculatorPageScenarioTransaction
-        return CalculatorPageScenarioTransaction(self)
-
     def blocks_global_shortcuts(self):
         """An error popup owns every edge until it is dismissed."""
         return self.mode == 2

@@ -390,6 +390,61 @@ def test_navigation_releases_rebuildable_state_on_every_ordinary_leave(
     assert child.calls == ["activate", "deactivate", "release_memory"]
 
 
+def test_go_to_release_oom_keeps_the_current_page_and_allows_retry(
+        monkeypatch):
+    nav = _nav(monkeypatch)
+    root = ScreenStub()
+    child = ScreenStub()
+    failure = MemoryError("injected departure release OOM")
+    attempts = [0]
+    normal_release = root.release_memory
+
+    def fail_once():
+        attempts[0] += 1
+        if attempts[0] == 1:
+            raise failure
+        return normal_release()
+
+    root.release_memory = fail_once
+    nav.boot(root)
+
+    with pytest.raises(MemoryError) as caught:
+        nav.go_to(child)
+
+    assert caught.value is failure
+    assert nav.current is root
+    nav.go_to(child)
+    assert nav.current is child
+
+
+def test_go_back_release_oom_keeps_the_child_page_and_allows_retry(
+        monkeypatch):
+    nav = _nav(monkeypatch)
+    root = ScreenStub()
+    child = ScreenStub()
+    failure = MemoryError("injected return release OOM")
+    attempts = [0]
+    normal_release = child.release_memory
+
+    def fail_once():
+        attempts[0] += 1
+        if attempts[0] == 1:
+            raise failure
+        return normal_release()
+
+    child.release_memory = fail_once
+    nav.boot(root)
+    nav.go_to(child)
+
+    with pytest.raises(MemoryError) as caught:
+        nav.go_back()
+
+    assert caught.value is failure
+    assert nav.current is child
+    nav.go_back()
+    assert nav.current is root
+
+
 def test_memory_reset_releases_owned_path_and_locks_input(monkeypatch):
     memory = MemoryStub()
     root = ScreenStub()

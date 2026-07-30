@@ -441,46 +441,14 @@ PAGE_LETTERS = 7
 PAGE_FUNCTION_PICKER = 8
 PAGE_VARIABLE_PANEL = 9
 
-# Acceptance actions deliberately share the production page vocabulary.
-PAGE_SCENARIO_CALCULATOR = PAGE_CALCULATOR
-PAGE_SCENARIO_PLOT = PAGE_PLOT
-PAGE_SCENARIO_ADDONS = PAGE_FUNCTION_PANEL
-PAGE_SCENARIO_STOPWATCH = PAGE_STOPWATCH
-PAGE_SCENARIO_SETTINGS = PAGE_SETTINGS
-PAGE_SCENARIO_ABOUT = PAGE_ABOUT
-PAGE_SCENARIO_LETTERS = PAGE_LETTERS
-PAGE_SCENARIO_FUNCTION_PICKER = PAGE_FUNCTION_PICKER
-PAGE_SCENARIO_VARIABLE_PANEL = PAGE_VARIABLE_PANEL
-
-# Keep the screen vocabulary available without adding alternate action values.
-PAGE_SCENARIO_FUNCTION_PANEL = PAGE_SCENARIO_ADDONS
-PAGE_SCENARIO_CATALOG = PAGE_SCENARIO_FUNCTION_PICKER
-PAGE_SCENARIO_VARIABLES = PAGE_SCENARIO_VARIABLE_PANEL
-
-_PAGE_SCENARIO_READY = 0
-_PAGE_SCENARIO_LEASE_OPEN = 1
-_PAGE_SCENARIO_CHILD_ACTIVE = 2
-_PAGE_SCENARIO_LEASE_DONE = 3
-_PAGE_SCENARIO_LEASE_CLOSED = 4
-
-
-if hasattr(gc, "mem_free"):
-    _NavPageScenarioTransaction = None
-else:
-    from nav_scenario import _NavPageScenarioTransaction
-
-
 class Nav:
     """Exclusive owner for root, active pages, and rebuildable resources."""
 
     __slots__ = (
         "memory", "renderer", "stack", "_page_ids", "_page_builder",
         "_page_context", "_page_state", "_pending_screen", "_pending_id",
-        "_scenario_screen", "_scenario_id", "_scenario_parent",
-        "_scenario_released",
         "_input_locked",
-        "_collect_pending", "last_present_us", "_page_scenario_transaction",
-        "_active_screen")
+        "_collect_pending", "last_present_us", "_active_screen")
 
     def __init__(self, display, font_small, registry, memory=None,
                  page_builder=None):
@@ -497,14 +465,9 @@ class Nav:
         self._page_state = [None] * 10
         self._pending_screen = None
         self._pending_id = PAGE_ROOT
-        self._scenario_screen = None
-        self._scenario_id = PAGE_ROOT
-        self._scenario_parent = None
-        self._scenario_released = False
         self._input_locked = False
         self._collect_pending = False
         self.last_present_us = 0
-        self._page_scenario_transaction = None
         self._active_screen = None
 
     @property
@@ -611,7 +574,6 @@ class Nav:
 
     def open(self, page_id, trigger_event=None):
         """Construct one known page before changing the visible path."""
-        self._require_ordinary_navigation()
         if (isinstance(page_id, bool) or not isinstance(page_id, int)
                 or page_id <= PAGE_ROOT or page_id > PAGE_VARIABLE_PANEL):
             raise ValueError("Unknown page id")
@@ -642,7 +604,6 @@ class Nav:
 
     def back(self, trigger_event=None):
         """Return one level and forget the departed page reference."""
-        self._require_ordinary_navigation()
         if len(self.stack) <= 1:
             self._ensure_current_active()
             return self.current
@@ -656,7 +617,6 @@ class Nav:
 
     def defer_back(self, trigger_event=None):
         """Return while one quiet follow-up still requires the old page."""
-        self._require_ordinary_navigation()
         if len(self.stack) <= 1:
             return self.current
         if self._pending_screen is not None:
@@ -687,47 +647,6 @@ class Nav:
         self._pending_screen = None
         self._pending_id = PAGE_ROOT
         self._retire_page(page_id, screen)
-        return True
-
-    def acquire_scenario_page(self, page_id):
-        """Acquire one acceptance-only page while the ordinary root is idle."""
-        if (len(self.stack) != 1 or self.current_page_id != PAGE_ROOT
-                or self._scenario_screen is not None):
-            raise RuntimeError("Scenario page is unavailable")
-        parent = self.current
-        if page_id in (
-                PAGE_LETTERS, PAGE_FUNCTION_PICKER, PAGE_VARIABLE_PANEL):
-            parent = self._build_page(PAGE_CALCULATOR, self.current)
-            self._scenario_parent = parent
-        try:
-            screen = self._build_page(page_id, parent)
-        except BaseException:
-            if self._scenario_parent is not None:
-                calculator = self._scenario_parent
-                self._scenario_parent = None
-                self._retire_page(PAGE_CALCULATOR, calculator)
-            raise
-        self._scenario_screen = screen
-        self._scenario_id = page_id
-        self._scenario_released = False
-        return screen
-
-    def release_scenario_page(self, page_id, screen):
-        if (self._scenario_id != page_id
-                or self._scenario_screen is not screen):
-            raise RuntimeError("Scenario page is foreign")
-        self._scenario_screen = None
-        self._scenario_id = PAGE_ROOT
-        self.renderer.invalidate()
-        if not self._scenario_released:
-            self._release_screen(screen)
-        self._scenario_released = False
-        self._retire_page(page_id, screen)
-        parent = self._scenario_parent
-        self._scenario_parent = None
-        if parent is not None:
-            self._release_screen(parent)
-            self._retire_page(PAGE_CALCULATOR, parent)
         return True
 
     def calculator_context(self):
@@ -807,23 +726,10 @@ class Nav:
         for screen in reversed(self.stack):
             screen.deactivate()
 
-    def _has_prepared_page_scenario(self, screen, transaction):
-        """Check Nav-owned identity before skipping a child activation."""
-        return (isinstance(transaction, _NavPageScenarioTransaction)
-                and transaction is self._page_scenario_transaction
-                and transaction._nav is self
-                and transaction._prepared_screen is screen
-                and transaction._child_lease is not None
-                and transaction._phase == _PAGE_SCENARIO_LEASE_OPEN)
-
-    def _go_to(self, screen, trigger_event=None, prepared_transaction=None):
+    def _go_to(self, screen, trigger_event=None):
         if screen is self.current:
             self._ensure_current_active()
             return
-        if prepared_transaction is not None:
-            if not self._has_prepared_page_scenario(
-                    screen, prepared_transaction):
-                raise RuntimeError("Prepared page scenario lease is not active")
         old = self.current
         self._ensure_current_active()
         self._active_screen = None
@@ -841,72 +747,14 @@ class Nav:
             self._collect_pending = True
         self.stack.append(screen)
         try:
-            if prepared_transaction is None:
-                self._activate_screen(screen)
-            else:
-                if not self._has_prepared_page_scenario(
-                        screen, prepared_transaction):
-                    raise RuntimeError("Prepared page scenario lease is not active")
-                self._active_screen = screen
+            self._activate_screen(screen)
         except BaseException as primary_error:
             self.stack.pop()
             self._restore_active_screen(old, primary_error)
             raise
 
     def go_to(self, screen, trigger_event=None):
-        self._require_ordinary_navigation()
         self._go_to(screen, trigger_event)
-
-    def _go_to_prepared(self, screen, transaction, trigger_event=None):
-        """Navigate through the active transaction's exact prepared child."""
-        if (not self._has_prepared_page_scenario(screen, transaction)
-                or len(self.stack) != 1
-                or self.stack[0] is not transaction._root
-                or self.current is not transaction._root):
-            raise RuntimeError("Prepared page scenario lease is not active")
-        self._go_to(
-            screen, trigger_event, prepared_transaction=transaction)
-
-    def _go_back_prepared(self, transaction, trigger_event=None):
-        """Return only through the active transaction's known page path."""
-        if (not isinstance(transaction, _NavPageScenarioTransaction)
-                or transaction is not self._page_scenario_transaction
-                or transaction._nav is not self):
-            raise RuntimeError("Page scenario transaction is not active")
-        if len(self.stack) == 1:
-            if (self.current is not transaction._root
-                    or transaction._phase not in (
-                        _PAGE_SCENARIO_READY,
-                        _PAGE_SCENARIO_LEASE_CLOSED)):
-                raise RuntimeError("Page scenario navigation state is unexpected")
-            self._ensure_current_active()
-            return
-        if (transaction._phase != _PAGE_SCENARIO_LEASE_CLOSED
-                or len(self.stack) != 2
-                or self.stack[0] is not transaction._root
-                or self.current is not transaction._prepared_screen):
-            raise RuntimeError("Page scenario navigation state is unexpected")
-        self._go_back(trigger_event)
-        self._scenario_released = True
-
-    def _require_ordinary_navigation(self):
-        """Keep public navigation from escaping an active page lease."""
-        if self._page_scenario_transaction is not None:
-            raise RuntimeError("Page scenario transaction owns navigation")
-
-    def open_page_scenario_transaction(self):
-        """Open the controller-only bounded auxiliary-page primitive."""
-        if self._page_scenario_transaction is not None:
-            raise RuntimeError("Page scenario transaction is already active")
-        global _NavPageScenarioTransaction
-        transaction_type = _NavPageScenarioTransaction
-        if transaction_type is None:
-            from nav_scenario import (
-                _NavPageScenarioTransaction as transaction_type)
-            _NavPageScenarioTransaction = transaction_type
-        transaction = transaction_type(self)
-        self._page_scenario_transaction = transaction
-        return transaction
 
     def _go_back(self, trigger_event=None):
         if len(self.stack) <= 1:
@@ -952,14 +800,9 @@ class Nav:
             raise
 
     def go_back(self, trigger_event=None):
-        self._require_ordinary_navigation()
         self._go_back(trigger_event)
 
     def poll_event(self, keyboard):
-        # The bounded page scenario owns its own execution steps.  Do not
-        # consume queued keypad edges while its lease is open.
-        if self._page_scenario_transaction is not None:
-            return None
         if self._input_locked:
             if keyboard.any_pressed():
                 return None

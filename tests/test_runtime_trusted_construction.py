@@ -18,10 +18,6 @@ class _Nav:
         self.stack = [self.root]
         self.memory = object()
 
-    def open_page_scenario_transaction(self):
-        raise AssertionError("construction must not open a page transaction")
-
-
 def _binding():
     nav = _Nav()
     binding = ApplicationBinding(

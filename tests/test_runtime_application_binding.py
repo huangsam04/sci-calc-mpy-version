@@ -13,31 +13,12 @@ SOURCE = Path(__file__).parents[1] / "source"
 
 
 class _PageOwnerNav:
-    __slots__ = (
-        "root", "stack", "memory", "calls", "transaction", "acquired",
-        "released")
+    __slots__ = ("root", "stack", "memory")
 
     def __init__(self, root=None):
         self.root = object() if root is None else root
         self.stack = [self.root]
         self.memory = object()
-        self.calls = 0
-        self.transaction = object()
-        self.acquired = []
-        self.released = []
-
-    def open_page_scenario_transaction(self):
-        self.calls += 1
-        return self.transaction
-
-    def acquire_scenario_page(self, page_id):
-        page = object()
-        self.acquired.append((page_id, page))
-        return page
-
-    def release_scenario_page(self, page_id, page):
-        self.released.append((page_id, page))
-        return True
 
 
 def _binding(nav=None):
@@ -68,17 +49,12 @@ def test_application_binding_keeps_only_page_owner_and_shared_state():
         binding._nav = _PageOwnerNav()
 
 
-def test_binding_opens_and_releases_pages_only_through_owned_nav():
-    binding, nav = _binding()
+def test_binding_does_not_expose_acceptance_page_lifecycle():
+    binding, _nav = _binding()
 
-    transaction = binding.open_page_scenario_transaction()
-    page = binding.acquire_page(2)
-    assert binding.release_page(2, page) is True
-
-    assert transaction is nav.transaction
-    assert nav.calls == 1
-    assert nav.acquired == [(2, page)]
-    assert nav.released == [(2, page)]
+    assert not hasattr(binding, "open_page_scenario_transaction")
+    assert not hasattr(binding, "acquire_page")
+    assert not hasattr(binding, "release_page")
 
 
 def test_application_binding_requires_exact_resident_state_and_root():

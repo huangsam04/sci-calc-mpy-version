@@ -43,24 +43,6 @@ class ApplicationBinding:
             raise RuntimeError("Resident page owner is unavailable")
         return self
 
-    def open_page_scenario_transaction(self):
-        """Open Nav's bounded page transaction without exposing Nav."""
-        self.require_page_owner()
-        opener = getattr(
-            self._binding_state[0], "open_page_scenario_transaction", None)
-        if not callable(opener):
-            raise RuntimeError("Page transaction is unavailable")
-        return opener()
-
-    def acquire_page(self, page_id):
-        self.require_page_owner()
-        return self._binding_state[0].acquire_scenario_page(page_id)
-
-    def release_page(self, page_id, screen):
-        self.require_page_owner()
-        return self._binding_state[0].release_scenario_page(page_id, screen)
-
-
 def set_resident_runtime(runtime):
     if runtime is not None and getattr(runtime, "mode", None) != "resident":
         raise ValueError("Resident runtime must use resident mode")

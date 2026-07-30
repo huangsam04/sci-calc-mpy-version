@@ -96,67 +96,6 @@ _CALCULATOR_SCENARIO_ERROR_DIAGNOSTICS = (
 )
 
 
-class CalculatorPageScenarioTransaction:
-    """One reversible preparation of Calculator's ordinary visible activation.
-
-    This deliberately does not exercise history, evaluation, or an error
-    lifecycle.  It only performs the same small state transition as
-    :meth:`CalculatorScreen.activate` so navigation can enter the resident
-    page without granting a controller access to its private fields.
-    """
-
-    __slots__ = (
-        "_screen", "_closed", "_stepped", "_mode", "_history_notice",
-        "_cursor_visible")
-
-    def __init__(self, screen):
-        box = screen.input_box
-        self._screen = screen
-        self._closed = False
-        self._stepped = False
-        self._mode = screen.mode
-        self._history_notice = screen._state[3][0][1]
-        self._cursor_visible = box.cursor.is_visible
-
-        # Claim only after every checkpoint field is available.  There is no
-        # list, history, popup, or renderer snapshot in this activation lease.
-        screen._state[3][3] = self
-
-    def _require_open(self):
-        screen = self._screen
-        if self._closed or screen is None:
-            raise RuntimeError("Calculator page scenario transaction is closed")
-        if screen._state[3][3] is not self:
-            raise RuntimeError("Calculator page scenario transaction is not active")
-        return screen
-
-    def step(self):
-        """Prepare the ordinary Calculator activation state exactly once."""
-        screen = self._require_open()
-        if self._stepped:
-            raise RuntimeError("Calculator page scenario transaction is prepared")
-        screen._activate_visible_state()
-        self._stepped = True
-        return True
-
-    def close(self):
-        """Restore the pre-activation scalars; retry after a cleanup fault."""
-        if self._closed:
-            return True
-        screen = self._require_open()
-        screen.input_box.cursor.is_visible = self._cursor_visible
-        screen.mode = self._mode
-        screen._state[3][0][1] = self._history_notice
-        # Presented rows are derived and intentionally rebuilt lazily.  Do
-        # not retain a second display snapshot just to restore a cache marker.
-        screen._clear_presented_editor_state()
-        screen._state[3][3] = None
-        self._screen = None
-        self._history_notice = None
-        self._closed = True
-        return True
-
-
 class CalculatorScenarioTransaction:
     """One bounded, reversible diagnostic lease over an existing Calculator.
 

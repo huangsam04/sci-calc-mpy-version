@@ -156,7 +156,14 @@ class _ResidentApplicationBoundedSession:
             if self._child is not None:
                 raise RuntimeError("A different scenario page is active")
             self._release_page()
-        page = self._require_open().acquire_page(page_id)
+        binding = self._require_open()
+        binding.require_page_owner()
+        nav = binding._nav
+        if nav.current is not binding.root:
+            raise RuntimeError("Scenario page owner is not at the root")
+        page = nav.open(page_id)
+        if page is None or nav.current is not page:
+            raise RuntimeError("Scenario page did not open")
         self._page = page
         self._page_id = page_id
         return page
@@ -165,8 +172,13 @@ class _ResidentApplicationBoundedSession:
         page = self._page
         if page is None:
             return False
-        page_id = self._page_id
-        self._require_open().release_page(page_id, page)
+        binding = self._require_open()
+        nav = binding._nav
+        if nav.current is not page:
+            raise RuntimeError("Scenario page is not current")
+        returned = nav.back()
+        if returned is not binding.root or nav.current is not binding.root:
+            raise RuntimeError("Scenario page did not return to the root")
         self._page = None
         self._page_id = 0
         return True
@@ -581,8 +593,11 @@ class _ResidentApplicationBoundedSession:
         transaction = self._child
         if transaction is None:
             self._release_page()
+            from nav_scenario import PageLifecycleScenario
+
             transaction = self._open_child(
-                _CHILD_PAGES, binding.open_page_scenario_transaction())
+                _CHILD_PAGES,
+                PageLifecycleScenario(binding._nav, binding.root))
             return STEP_MORE
         if self._child_kind != _CHILD_PAGES:
             raise RuntimeError("Page scenario transaction is unavailable")
