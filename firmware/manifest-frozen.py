@@ -1,7 +1,8 @@
 """First measured SCI-CALC frozen-code set.
 
-Acceptance fixtures and scenario transactions remain on the SD application so
-the production heap comparison is not improved by freezing test-only code.
+Acceptance fixtures and scenario transactions are not frozen or shipped in an
+ordinary release; the existing acceptance script uploads them only while a
+device check is running.
 """
 
 freeze("$(PORT_DIR)/modules")

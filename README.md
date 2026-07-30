@@ -2,7 +2,9 @@
 
 SCI-CALC 的 MicroPython 固件，目标硬件为 ESP32-WROOM-32E、SSD1322 256×64 灰阶 OLED、5×6 矩阵键盘和 FAT32 SD 卡。
 
-当前应用版本为 **1.4.0**。源码编译基线是本仓库 `micropython/` 中的 **MicroPython 1.29.0-preview**，并已在设备的 **MicroPython 1.28.0 (2026-04-06)** 上完成冷启动验证。项目不修改 MicroPython 核心。
+当前应用版本为 **1.4.0**。源码和设备固件均由本仓库 `micropython/` 中的
+**MicroPython 1.29.0-preview** 构建；SCI-CALC 只增加 frozen manifest/board 配置，不修改
+MicroPython 核心。
 
 只想日常使用计算器时，请先看 [简明使用说明](USER_GUIDE.md)。本文保留部署、插件和维护细节。
 
@@ -16,16 +18,16 @@ SCI-CALC 的 MicroPython 固件，目标硬件为 ESP32-WROOM-32E、SSD1322 256�
 ├── sdcard.py           # 官方 Python SPI SD 驱动
 ├── main.py             # 读取选择记录并启动活动槽
 ├── bootenv.py / bootsel.py / bootlog.py / bootsupervisor.py
-├── recovery.py         # SD/应用损坏时的恢复界面
-└── display/            # 恢复界面所需的最小显示驱动
+├── recovery.py / display/  # SD/应用损坏时的恢复界面
+└── .frozen             # 稳定的显示、输入、计算、UI 和页面模块
 
 SD 卡 /sd
 ├── settings.json
 ├── vars.json
 ├── .slots/A/ 或 B/
 │   ├── release.manifest / .sci-calc-owner
-│   ├── launch.py / main.mpy
-│   ├── calc/ display/ input/ screens/ ui/ utils/
+│   ├── launch.py / main.mpy  # 动态产品入口与运行编排
+│   ├── approot.mpy / performance.mpy / runtime_handle.mpy / version.mpy
 │   ├── fonts/*.xglcd   # 随发布保留；当前常驻 UI 使用内置 8x8 字体
 │   └── functions/      # 可开关的发布内插件
 └── .staging/           # 发布中使用，成功后原子改名为候选槽
@@ -71,8 +73,9 @@ selector。若新 managed 路径与未知文件同名，快速模式会在写入
 ..\.venv\python.exe .\tools\release_deploy.py --port PORTNAME --mode mpy --transactional
 ```
 
-同版本 COM5 实测：原完整流程 `374 s`，精简后的完整 A/B 为 `65.890 s`，默认单会话
-增量为 `17.352 s`。当前设备只发布 `mpy`，`functions/*.py` 始终保留源码。
+COM5 实测：原完整流程 `374 s`，精简后的完整 A/B 为 `65.890 s`；默认单会话增量曾为
+`17.352 s`，当前候选含编译与同步为 `31.355 s`。当前设备只发布 `mpy`，`functions/*.py`
+始终保留源码。
 
 SD 卡和 OLED 共用 GPIO18/23 上的 SPI2，通过 CS4/CS5 分隔事务。内部
 `sdcard.py` 使用官方 Python block-device 驱动；不要替换成独占 SPI host 的
@@ -295,9 +298,10 @@ compile_expression
 `gc.collect()` 或 `gc.mem_free()`。
 
 当前代码没有 `MotionMenu`，普通 `Menu` 会把高亮直接吸附到目标行；`Nav` 也没有 SSD1322
-master-current 页面淡变状态。COM5 已稳定启动 resident runtime，但多次冷启动后的干净堆样本为
-10,752–11,200 B，仍低于启用动效所需的 12 KiB。因此两项动效均已删除；普通界面继续使用吸附式
-菜单和同步页面切换，不增加像素缓冲，也不恢复惰性页面、SWAP 或双 framebuffer。
+master-current 页面淡变状态。最新严格 COM5 应用矩阵在 `error_lifecycle` 测得最低空闲堆
+`10352 B`、安静回收 step `37.657 ms`，未同时满足 12 KiB 和 32 ms 门槛。因此两项动效均未启用；
+普通界面继续使用吸附式菜单和同步页面切换，不增加像素缓冲，也不恢复 `LazyScreen`、SWAP 或
+双 framebuffer。
 
 设置与变量采用 `文件.tmp → 文件` 提交，并保留上一份 `.bak`。主文件损坏时优先
 读取备份；按键处理只更新内存并把写入排入空闲主循环，写入失败不会清除当前内存状态，
@@ -354,9 +358,8 @@ UI 会显示保存失败并每两秒重试。
 ..\.venv\python.exe -m mpremote connect PORTNAME reset
 ```
 
-当前主机检查为 `1177 passed`，并通过 CPython 语法检查和 MicroPython 1.29
-`mpy-cross -march=xtensawin` 全源编译。最终五轮主机驻留导航为 0 次 `MemoryError`、8192 B
-framebuffer 峰值、16,000 us 最大阻塞步和 5,625 B 稳态 traced peak；这些数据用于比较逻辑
+最终主机检查为 `1093 passed in 26.72s`，脚本总耗时 `32.2s`，并通过 CPython 语法检查和
+MicroPython 1.29 `mpy-cross -march=xtensawin` 全源编译。主机 traced memory 只用于比较逻辑
 工作量，不替代真机堆或 SPI 时延。
 
 真机验收只使用现有统一入口：
@@ -365,24 +368,28 @@ framebuffer 峰值、16,000 us 最大阻塞步和 5,625 B 稳态 traced peak；�
 .\tools\run_device_acceptance.ps1 -Port PORTNAME
 ```
 
-该脚本是唯一正式验收入口，依次执行 resident 启动缓冲探针、最大用户状态应用矩阵、五轮运行时
-目标导航、五轮捕获边沿到屏幕提交的交互探针，以及 16 帧秒表局部刷新分配探针；每阶段后都复位
-设备并让 OLED 休眠。1.4.0 的最终 COM5 验收报告：单一 framebuffer 为 8192 B、固定 Plot 工作区
-为 104 B；20 条历史（共 768 字符）、16 个变量、20 个秒表圈和 3 个插件连续五轮无错误，稳态
-最低空闲堆 5760 B、观测到的瞬态最低值 400 B；125 个 runtime step 最大 30.165 ms、最低空闲堆
-4272 B；OLED 唤醒时捕获边沿到可见提交最大 19.226 ms、堆漂移 0；16 个秒表帧的堆增量全部为 0。
+该脚本是唯一正式验收入口，按需编译和安装验收载荷，依次执行 resident 启动缓冲探针、最大用户
+状态应用矩阵、五轮运行时目标导航、五轮捕获边沿到屏幕提交的交互探针，以及 16 帧秒表局部刷新
+分配探针；载荷在结束时删除，每阶段后复位设备并让 OLED 休眠。
+
+最新 1.4.0 COM5 候选的启动探针通过：framebuffer 始终为同一个 8192 B 对象，Plot 工作区为
+104 B，frozen/MPY/Viper ABI 正确。应用矩阵完成 10 个场景，`MemoryError=0`、普通错误 0；但
+`error_lifecycle` 的最低空闲堆为 `10352 B < 12288 B`，安静回收 step 为
+`37.657 ms > 32 ms`，因此统一入口按设计停止并报告 `failure_mask=12`，没有输出
+`ACCEPTANCE_COMPLETE`。两项动画保持未启用，验收载荷已清理，OLED 已休眠。
 
 ## 实机回归清单
 
 1. 有卡、无卡、损坏活动槽 `main.mpy` 各启动一次，确认恢复界面和串口错误。
 2. 计算、赋值、重启，确认变量持久化；开关插件后再次进入函数选择器。
 3. 快速输入、长按 DEL/ESC、Shift+RPN、Shift+Tab，确认没有重复事件。
-4. 运行 `tools/run_device_acceptance.ps1` 完成统一验收；必须看到
-   `ACCEPTANCE_COMPLETE PORTNAME stages=5 animation=removed_heap_below_12k`。1.4.0 已在 COM5 得到该结果。
+4. 运行 `tools/run_device_acceptance.ps1` 完成统一验收；只有全部硬门槛通过时才应看到
+   `ACCEPTANCE_COMPLETE`。当前 1.4.0 候选的已知正确结果是上述 `failure_mask=12`，不得把它改写为
+   成功或绕过 12 KiB/32 ms 门槛。
 5. 运行秒表 30 分钟，并检查绘图、缩放、求解和错误弹窗。
 
 诊断模式每五秒输出平均渲染耗时、present 耗时和空闲堆。统一验收目标仍是输入到可见像素小于
 20 ms、单个 step 不超过 32 ms、framebuffer 始终只有一个 8192 B 对象、逐帧堆增量为 0、五轮内
-无 `MemoryError` 且堆不持续下降。无动效运行按最大受支持用户状态验证，稳态门槛为 4 KiB；12 KiB
-仍是启用动效的独立硬门槛，未达到时必须删除动效。交互探针测量的是已捕获边沿到页面更新及提交，
+无 `MemoryError` 且堆不持续下降。12 KiB 仍是启用动效的独立硬门槛，未达到时必须删除动效；当前
+还同时存在 `error_lifecycle` 的 32 ms step 门禁失败。交互探针测量的是已捕获边沿到页面更新及提交，
 并报告扫描/去抖合同值；它不能单独证明物理按键扫描到像素的完整端到端时延。

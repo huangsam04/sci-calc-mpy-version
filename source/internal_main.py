@@ -3,16 +3,15 @@
 # strict sys.path, and owns the recovery handoff. This shim only covers a
 # failure of the supervisor itself.
 #
-# During first takeover the pinned 1.3.0 boot.py may run once before the new
-# boot.py is committed. It puts /sd ahead of the internal root, so remove that
-# untrusted import path before importing any new boot-chain module.
+# Normalize the trusted import path before loading any boot-chain module. A
+# previously interrupted bootstrap may otherwise leave /sd ahead of internal
+# flash for this one interpreter session.
 try:
     import sys
 
     sys.path = ["/lib", "/"]
-    # A legacy boot may have put /sd on sys.path before it imported this
-    # replacement main.py.  Do not let a cached card module bypass the
-    # narrowed path for the trusted boot chain.
+    # Do not let an already-cached card module bypass the narrowed path for
+    # the trusted boot chain.
     for module_name in (
             "bootenv", "bootlog", "bootsel", "bootsupervisor", "recovery"):
         sys.modules.pop(module_name, None)

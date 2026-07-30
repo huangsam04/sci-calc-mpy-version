@@ -209,8 +209,8 @@ class Display(object):
             self._row_views = []
         # Frame Buffer
         self.gs4_fb = FrameBuffer(self.gs4_buf, width, height, GS4_HMSB)
-        # Reused by write_cmd() so the animation hot path does not allocate
-        # five tiny command buffers before every full-frame transfer.
+        # Reused by write_cmd() so brightness and present paths do not allocate
+        # tiny command buffers before transfers.
         self._command_byte = bytearray(1)
         self._command_arg1 = bytearray(1)
         self._command_arg2 = bytearray(2)

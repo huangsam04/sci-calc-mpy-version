@@ -1,14 +1,14 @@
 # SCI-CALC MicroPython 技术说明
 
 本文是 `mp_version` 1.4.0 的实现说明和维护入口。它以源码当前行为为准，使用伪代码解释
-从 ESP32 上电到应用、输入、计算、显示、持久化、部署与诊断的完整逻辑；其中已合并
-2026-07-23 的性能调优记录。除 C 字体文件和 PNG 截图这类纯数据资产外，所有运行时和
-主机侧可执行逻辑均在本文中覆盖。
+从 ESP32 上电到应用、输入、计算、显示、持久化、部署与诊断的完整逻辑。设备使用仓库
+MicroPython 1.29.0-preview 的自定义 frozen 固件；动态 Add-ons 和用户数据仍留在 SD 卡。
 
 ## 1. 系统边界与文件布局
 
 目标硬件为 ESP32-WROOM-32E、SSD1322 256x64 4 位灰阶 OLED、5x6 矩阵键盘和 FAT32
-SD 卡。应用使用 MicroPython；内部 Flash 只放可恢复的启动链，绝大多数应用位于 SD 卡。
+SD 卡。内部 Flash 保存可恢复启动链和稳定 frozen 核心；SD 卡保存槽身份、动态运行边界、
+Add-ons、设置、变量及其他用户文件。
 
 ```text
 内部 Flash                                      SD 卡 /sd
@@ -16,9 +16,10 @@ SD 卡。应用使用 MicroPython；内部 Flash 只放可恢复的启动链，�
 boot.py       挂载 SD                            settings.json / vars.json（可变状态）
 sdcard.py     SPI block-device 驱动               .slots/A 或 B/
 main.py       槽选择与恢复入口                      release.manifest / .sci-calc-owner
-bootenv.py / bootsel.py / bootlog.py               launch.py -> main.py 或 main.mpy
-bootsupervisor.py                                  calc/ display/ input/ screens/ ui/ utils/
+bootenv.py / bootsel.py / bootlog.py               launch.py -> main.mpy
+bootsupervisor.py                                  approot/performance/runtime_handle/version
 recovery.py / display/                           functions/*.py / fonts/*.xglcd
+.frozen（稳定应用核心）                            Add-ons 和其他未知用户文件
                                                 .staging/（未激活候选）
 ```
 
@@ -77,7 +78,7 @@ on internal /main.py:
         choose unconsumed trial, otherwise confirmed A/B slot
         write boot evidence; consume a one-shot trial before execution
         require selected slot release.manifest
-        sys.path = [selected_slot, ".frozen", "/lib"]
+        sys.path = [".frozen", selected_slot, "/lib"]
         purge cached application modules
         release boot supervisor modules; gc.collect()
         execfile(selected_slot + "/launch.py")
@@ -124,8 +125,9 @@ main():
     registry.angle_mode = settings.angle_mode
     mark("functions")
 
-    import all screens
-    construct DeferredStorage, pages, overlays, main menu
+    preload frozen screen namespaces; collect boot-only imports
+    construct DeferredStorage, Nav and main menu only
+    configure Nav with shared state and fixed page ids
     mark("screen_imports")
     bind resident runtime; mark("ui_ready")
     submit first main-menu frame
@@ -191,15 +193,17 @@ Shift+`^` 为 `sqrt`，Shift+`RPN` 为 `rpn`，Shift+`Tab` 为 `stab`。页面�
 
 当前 `Menu` 没有运动槽，`_update_cursor_target()` 会把光标立即吸附到新行；源码中没有
 `MotionMenu` 或 quadratic ease-out 推进函数。`Nav` 也没有 `_fade_*` 状态或动画堆门禁。
-COM5 已通过 resident startup 和五阶段统一验收，但冷启动干净堆样本只有 10,752–11,200 B，
-未达到 12 KiB 动效硬门槛，因此两项计划动效已经删除而不是带风险启用。
+最新严格 COM5 应用矩阵在 `error_lifecycle` 测得 `heap_min=10352 B`、安静回收 step
+`37.657 ms`，未同时达到 12 KiB/32 ms 门槛，因此两项计划动效均未启用。
 按键和逐帧路径不调用 `gc.collect()` 或 `gc.mem_free()`。
 
 ### 4.2 `Nav` 栈、同步页面切换与输入恢复
 
-`Nav` 维护唯一页面栈和已注册页面的可重建资源生命周期。普通 `go_to()` / `go_back()` 同步完成
-旧页停用、释放、新页激活，再由下一次 `Renderer.present()` 提交目标页；当前没有 SSD1322
-master-current 淡出/淡入或暗点提交逻辑。亮度命令只由 Settings 和休眠/唤醒路径使用。
+`Nav` 独占页面栈、固定 `page_id` 和可重建资源生命周期；普通调用方只使用 `open(page_id)`、
+`back()` 与 `current`。启动只构造根菜单，进入页面时才创建实例；离页会分离需要保留的紧凑状态、
+清除页面引用，并把 GC 安排到安静回收点。内部同步切换完成旧页停用、释放和新页激活，再由下一次
+`Renderer.present()` 提交目标页；当前没有 SSD1322 master-current 淡出/淡入或暗点提交逻辑。
+亮度命令只由 Settings 和休眠/唤醒路径使用。
 
 崩溃恢复中的 `reset(root)` 会释放可重建资源、清空导航栈到根页并锁住输入，直到所有物理按键
 释放。页面激活或回滚发生 `MemoryError` 时保留原异常优先级，不用视觉效果延迟恢复。
@@ -527,7 +531,7 @@ Calculator.update:
 
 ### 7.3 函数面板、函数选择器、字母面板和变量面板
 
-函数面板构造时（启动进度仍可见）读取插件文件列表、注册摘要和依赖元数据；普通 `activate()`
+函数面板首次打开时读取已由启动注册表保留的插件文件列表、注册摘要和依赖元数据；普通 `activate()`
 只重建菜单，不会执行 SD 插件源码。它列出四个内置组以及 `Add-on:` 项，使用不同 ID（如
 `basic` 与 `plugin:basic`），防止同名冲突。若已启用的 Add-in 缺少已知依赖，激活时递归加入
 依赖闭包、标为待保存，并在页脚显示 `Auto on: name`；用户关闭一个依赖时，已启用的依赖方也会
@@ -739,8 +743,8 @@ release_deploy(port, mode):
 会在任何写入前拒绝。需要完整 A/B、逐项校验和冷启动
 resident smoke 时增加 `--transactional`；同一选项也负责首次安装或修复 bootstrap。MPY 模式固定
 使用仓库 `v1.29.0-preview` 的
-`mpy-cross -march=xtensawin -X no-source-lines`。同版本 COM5 实测从原完整流程 `374 s`、精简后的
-完整 A/B `65.890 s`，降至默认单会话增量 `17.352 s`。
+`mpy-cross -march=xtensawin -X no-source-lines`。COM5 实测从原完整流程 `374 s`、精简后的
+完整 A/B `65.890 s`，降至默认单会话增量 `17.352 s`；当前候选含编译与同步为 `31.355 s`。
 
 `check.ps1` 强制使用仓库 MicroPython `v1.29.0-preview` 的 `mpy-cross`，依序生成字体、运行 pytest、
 CPython `compileall`、对所有源码使用 `-march=xtensawin` 编译 `.mpy`。它在兼容性或语法错误时立刻
@@ -752,64 +756,58 @@ CPython `compileall`、对所有源码使用 `-march=xtensawin` 编译 `.mpy`。
 
 当前实现只保留真机测量能证明收益的改动：
 
-1. 显示始终只有一个 8192 B GS4 framebuffer；Plot 复用一个 104 B 工作区，并在启动期预建
+1. 显示始终只有一个 8192 B GS4 framebuffer；Plot 按需借用一个 104 B 工作区，并复用页面内
    `_CurveJob`，绘图切片不再反复申请临时工作对象。
-2. 页面资源通过各自 `release_memory()` 和 `Nav` 的统一释放入口回收；FunctionPicker 的名称表
-   预留一次并原位重建，异常关闭场景事务后仍保留 list backing，避免下一次激活重新申请大块。
+2. `Nav` 在打开页面时按需构造实例，离页时通过 `detach_state()` 保存必要的紧凑用户状态，并经
+   `release_memory()` 释放可重建资源；FunctionPicker 的名称表原位重建，不复制排序列表。
 3. 函数重载复用 live registry，固定 bundled 插件不再导入通用源码 loader；loader 临时模块在
    冷操作后移除，插件清理使用 `popitem()`，不创建键列表副本。
-4. `MemoryManager` 不再维护通用资源字典；菜单仍只损伤旧、新高亮行。没有增加像素缓冲、通用
-   动画层、`LazyScreen`、SWAP 或第二 framebuffer。
+4. 验收侧缓存同一 application matrix 内不变的 framebuffer 身份快照；该缓存不进入普通 release。
+   没有增加像素缓冲、通用动画层、`LazyScreen`、SWAP 或第二 framebuffer。
 
-多次 COM5 冷启动在导入设备探针前测得 10,752–11,200 B 干净空闲堆。这个数值足以稳定运行
-下述有界用户状态，但低于 12,288 B 动效门槛。无动效模式的稳态门槛保持 4096 B；它只在同时
-覆盖最大历史、变量、圈数、固定插件、错误恢复、绘图与页面往返的应用矩阵中判定，不能由空启动
-样本替代。最终 `check.ps1` 为 `1177 passed`，CPython compileall 和 MicroPython 1.29 全源
-mpy-cross 均通过。
+最终 `check.ps1` 为 `1093 passed in 26.72s`，脚本总耗时 `32.2s`；CPython compileall 和
+MicroPython 1.29 全源 mpy-cross 均通过。
 
-### 10.2 COM5 最终验收（1.4.0）
+### 10.2 COM5 严格门禁（1.4.0）
 
-发布 `a4bc9edde9c7b19c16ef0b9f355029397282afdd39bac343905d4b936865ab8d` 已确认，manifest
-SHA-256 为 `9a3694fcc991347ad1a44d9ad3e63e6130e2d56b5aa813eb2e4e15c33c816db5`。统一入口为：
+当前动态 release 为 `f8a6badf6054926605642a5bac6725b57e2ce876c6221a0c7b8381152687b9f9`，
+manifest SHA-256 为 `c9ff490898e7ba209d4d0597321f8abbc751542b6591ec501a15fed9c56b35a7`。
+默认快速增量部署用时 `31.355 s`。统一入口仍为：
 
 ```powershell
 .\tools\run_device_acceptance.ps1 -Port PORTNAME
 ```
 
-COM5 的 1.4.0 完整五阶段结果如下；每阶段复位后均发送 SSD1322 硬件休眠命令。
+最新严格运行在应用矩阵阶段正确拒绝候选，因此不能宣称完整五阶段通过：
 
 | 检查 | 真机结果 |
 | --- | --- |
-| 启动与固定缓冲 | resident ready；framebuffer 8192 B；Plot 工作区 104 B；Viper ABI 通过 |
-| 最大用户状态五轮 | 历史 20 条/768 字符、变量 16、圈数 20、插件 3；`MemoryError=0`、错误 0；稳态最低 5760 B，观测瞬态最低 400 B，漂移 -32 B |
-| runtime 五轮 | 25 个场景、125 steps；最大 30.165 ms；最低 4272 B；漂移 -256 B；buffer 峰值 8296 B 且身份不变 |
-| OLED 唤醒时捕获边沿到可见提交 | 五轮最大 19.226 ms；堆 4992 B → 4992 B；`MemoryError=0`、错误 0 |
-| 秒表逐帧分配 | 16/16 帧已提交；每帧堆增量 0；总增量 0 |
+| 启动与固定缓冲 | resident/root ready；同一个 framebuffer 8192 B；Plot 工作区 104 B；MPY/Viper ABI 通过 |
+| 应用矩阵 | 完成 10 个场景；`MemoryError=0`、普通错误 0；最低空闲堆 10352 B；最大 step 37.657 ms；`failure_mask=12` |
+| 最低堆位置 | `error_lifecycle`，phase 1，round 1 |
+| 结果 | `10352 B < 12288 B` 且 `37.657 ms > 32 ms`；停止后续阶段，不输出 `ACCEPTANCE_COMPLETE` |
+| 收尾 | 临时 support/stage 载荷已删除；SSD1322 已发送硬件休眠命令 |
 
-运行结束必须出现
-`ACCEPTANCE_COMPLETE PORTNAME stages=5 animation=removed_heap_below_12k`。交互数字从已捕获边沿
-开始，包含页面更新和 OLED 提交；矩阵扫描与去抖仍由固定 8 ms 合同单独约束，不能把该数字描述为
-物理按键闭合到像素的完整端到端时延。
+交互数字若执行到该阶段，从已捕获边沿开始并包含页面更新和 OLED 提交；矩阵扫描与去抖合同必须
+单独报告，不能把它描述为物理按键闭合到像素的完整端到端时延。
 
-### 10.3 分裂堆下的设备探针
+### 10.3 已测热点与淘汰候选
 
-最终统一验收曾在导入交互探针时复现 1057 B 连续分配失败：导入前 `gc.mem_free()` 为 11,072 B，
-说明问题是分裂堆中的最大连续块，不是总空闲量或 SD 包体大小。交互探针保持同一 `run()` 入口和
-五轮覆盖，只把每轮操作从单体函数拆成固定 helper，并在计时前唤醒 OLED、退出时立即休眠；最终
-编译文件大小为 3483 B，但不再要求同一个 1057 B 代码块。原冷启动复现命令在修改前 3 次中失败
-1 次，最终版本连续 5 次 `MemoryError=0`，随后完整五阶段验收通过。这项修改只提高验收探针在
-分裂堆上的可加载性和测量真实性，不计作生产应用的空闲堆收益。
+固定宽度历史表达式格式化曾把一次性微基准峰值从 `4352 B` 降到 `1472 B`，但应用矩阵最低堆仍为
+`9904 B`，因此实现、专属测试和生成 MPY 均已删除。缓存验收 `buffer_snapshot()` 的不变结果后，
+历史五轮通过，完成场景数从 5 增至 10，最低堆升至 10352 B；下一热点稳定落在真实
+`error_lifecycle` 安静回收。
 
-1.4.0 最终验收还复现了 runtime monitor 单个 `run` raw bytecode 为 1198 B 时的连续块申请失败。
-保持相同 25 场景、五轮和输出协议，把导航、settle、统计与收尾拆成固定 helper 后，最大代码块降为
-349 B；干净真机复跑为 125 steps、`heap_min=4272 B`、`MemoryError=0`。验收器现在在成功导入
-临时 `.mpy` 后、执行负载前由同一预编译命令自删文件，避免阶段末低堆清理和复位后再次污染堆。
+自动 GC 阈值 `4096 B` 和 `20000 B` 都把最低堆提高到 `15200 B`，但最大 step 分别为
+`41.810 ms` 和 `40.875 ms`，超过 32 ms；两项实验均已删除。没有继续扩张到计算核心，也没有
+为比较保留第二套实现。
 
 ### 10.4 动效门禁
 
-菜单 ease-out 和页面硬件亮度淡出/淡入均未保留。12 KiB 门槛没有降低，源码中没有动画状态、
-新增像素缓冲或逐帧 GC。1.4.0 已在 COM5 完成统一验收；若以后重新考虑动效，必须先在最大
-受支持用户状态和连续五轮操作下把最低空闲堆提高到至少 12 KiB，再重新运行同一统一验收。
+菜单 ease-out 和页面硬件亮度淡出/淡入均未启用。12 KiB/32 ms 门槛没有降低，源码中没有动画
+状态、新增像素缓冲或逐帧 GC；新增动画状态和像素缓冲均为 `0 B`。若以后重新考虑动效，必须先在
+最大受支持用户状态和连续五轮操作下同时通过最低 12 KiB、最大 step 32 ms、`MemoryError=0` 和
+堆稳定门槛，再重新运行同一统一验收。
 
 ## 11. 验证范围与维护准则
 
