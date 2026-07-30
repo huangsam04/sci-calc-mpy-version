@@ -1,3 +1,4 @@
+import os
 import pathlib
 import re
 import shutil
@@ -10,9 +11,20 @@ import pytest
 
 
 PROJECT = pathlib.Path(__file__).parents[1].resolve()
-PYTEST_TEMP_ROOT = PROJECT / ".pytest_tmp"
+WORK_ROOT = PROJECT / ".work"
+PROCESS_TEMP_ROOT = WORK_ROOT / "temp"
+PYTHON_CACHE_ROOT = WORK_ROOT / "pycache"
+PYTEST_TEMP_ROOT = WORK_ROOT / "pytest"
 PYTEST_SESSION_ROOT = PYTEST_TEMP_ROOT / "sessions"
 _GUID_NAME = re.compile(r"[0-9a-f]{32}")
+
+PROCESS_TEMP_ROOT.mkdir(parents=True, exist_ok=True)
+PYTHON_CACHE_ROOT.mkdir(parents=True, exist_ok=True)
+for _name in ("TEMP", "TMP", "TMPDIR"):
+    os.environ[_name] = str(PROCESS_TEMP_ROOT)
+os.environ["PYTHONPYCACHEPREFIX"] = str(PYTHON_CACHE_ROOT)
+sys.pycache_prefix = str(PYTHON_CACHE_ROOT)
+sys.dont_write_bytecode = True
 
 
 def _cleanup_project_temp(session_temp):
@@ -34,7 +46,7 @@ def pytest_configure(config):
             "caller-supplied pytest basetemp is forbidden; "
             "SCI-CALC creates a unique project-local directory")
 
-    PYTEST_TEMP_ROOT.mkdir(exist_ok=True)
+    PYTEST_TEMP_ROOT.mkdir(parents=True, exist_ok=True)
     if PYTEST_TEMP_ROOT.resolve() != PYTEST_TEMP_ROOT:
         raise RuntimeError("project pytest temp root must not be redirected")
 

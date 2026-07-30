@@ -11,7 +11,8 @@ $WorkspaceRoot = Split-Path -Parent $ProjectRoot
 $Python = Join-Path $WorkspaceRoot ".venv\python.exe"
 $Source = Join-Path $ProjectRoot "source"
 $MpyCross = Join-Path $WorkspaceRoot "micropython\mpy-cross\build\mpy-cross.exe"
-$BuildRoot = Join-Path $ProjectRoot ".mpy-build"
+$WorkRoot = Join-Path $ProjectRoot ".work"
+$BuildRoot = Join-Path $WorkRoot "mpy"
 $FontBuild = Join-Path $BuildRoot "fonts"
 $MpyBuild = Join-Path $BuildRoot "deploy-mpy"
 $ProbeSource = Join-Path $ProjectRoot "tools\mpy_abi_probe.py"
@@ -192,6 +193,21 @@ function Build-MpyAssets {
     }
 }
 
+$ProcessEnvironmentNames = @(
+    "PYTHONPYCACHEPREFIX", "TEMP", "TMP", "TMPDIR")
+$PreviousProcessEnvironment = @{}
+foreach ($Name in $ProcessEnvironmentNames) {
+    $PreviousProcessEnvironment[$Name] =
+        [Environment]::GetEnvironmentVariable($Name, "Process")
+}
+
+try {
+$env:PYTHONPYCACHEPREFIX = Join-Path $WorkRoot "pycache"
+$env:TEMP = Join-Path $WorkRoot "temp"
+$env:TMP = $env:TEMP
+$env:TMPDIR = $env:TEMP
+New-Item -ItemType Directory -Force -Path $BuildRoot, $env:TEMP | Out-Null
+
 Build-FontAssets
 
 Write-Host "Installing internal launch and recovery files on $Port..."
@@ -301,3 +317,10 @@ if ($Reset) {
 }
 
 Write-Host "SCI-CALC deployment complete."
+}
+finally {
+    foreach ($Name in $ProcessEnvironmentNames) {
+        [Environment]::SetEnvironmentVariable(
+            $Name, $PreviousProcessEnvironment[$Name], "Process")
+    }
+}

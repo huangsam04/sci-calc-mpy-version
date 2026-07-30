@@ -1,11 +1,21 @@
 # Fast in-place deployment with an explicit transactional A/B fallback.
 import argparse
+import os
 import subprocess
 import sys
 import time
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).parents[1]
+WORK_ROOT = PROJECT_ROOT / ".work"
+PROCESS_TEMP_ROOT = WORK_ROOT / "temp"
+PYTHON_CACHE_ROOT = WORK_ROOT / "pycache"
+PROCESS_TEMP_ROOT.mkdir(parents=True, exist_ok=True)
+PYTHON_CACHE_ROOT.mkdir(parents=True, exist_ok=True)
+for _name in ("TEMP", "TMP", "TMPDIR"):
+    os.environ[_name] = str(PROCESS_TEMP_ROOT)
+os.environ["PYTHONPYCACHEPREFIX"] = str(PYTHON_CACHE_ROOT)
+sys.pycache_prefix = str(PYTHON_CACHE_ROOT)
 sys.path.insert(0, str(PROJECT_ROOT))
 sys.path.insert(0, str(PROJECT_ROOT / "source"))
 

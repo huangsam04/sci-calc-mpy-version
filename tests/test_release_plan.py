@@ -10,6 +10,8 @@ from tools import release_plan as release_plan_module
 from tools.release_plan import (
     ReleaseTreeSnapshot,
     cleanup_candidates,
+    is_compiled_in_mpy,
+    is_frozen_module,
     plan_release,
     snapshot_release_tree,
 )
@@ -75,7 +77,7 @@ def test_source_release_plan_is_deterministic_for_unordered_snapshot_input():
     assert len(forward.release_id) == 64
 
 
-def test_mpy_plan_keeps_bootstrap_launcher_and_function_packs_as_source():
+def test_mpy_plan_keeps_bootstrap_and_launcher_as_source():
     snapshot = ReleaseTreeSnapshot.from_files(
         (
             ("boot.py", b"# boot\n"),
@@ -99,7 +101,6 @@ def test_mpy_plan_keeps_bootstrap_launcher_and_function_packs_as_source():
     ) == (
         ("bootstrap:boot", "source", "internal", "boot.py"),
         ("bootstrap:main", "source", "internal", "main.py"),
-        ("sd:functions/basic", "source", "sd", "functions/basic.py"),
         ("sd:launch", "source", "sd", "launch.py"),
         ("sd:main", "mpy", "sd", "main.mpy"),
         ("sd:version", "mpy", "sd", "version.mpy"),
@@ -175,7 +176,7 @@ def test_mpy_plan_fails_closed_when_a_selected_output_is_empty():
         plan_release(snapshot, mode="mpy")
 
 
-def test_display_driver_is_a_bootstrap_anchor_and_a_slot_managed_asset():
+def test_frozen_display_driver_remains_only_a_bootstrap_anchor():
     snapshot = ReleaseTreeSnapshot.from_files((
         ("display/ssd1322.py", b"# display driver\n"),
         ("version.py", b'VERSION = "1.3.0"\n'),
@@ -195,13 +196,32 @@ def test_display_driver_is_a_bootstrap_anchor_and_a_slot_managed_asset():
             "bootstrap_fixed",
             "display/ssd1322.py",
         ),
-        (
-            "sd:display/ssd1322",
-            "sd",
-            "managed_release",
-            "display/ssd1322.py",
-        ),
     )
+
+
+def test_frozen_modules_are_omitted_from_slots_but_dynamic_modules_remain():
+    snapshot = ReleaseTreeSnapshot.from_files((
+        ("calc/parser.py", b"# frozen calculator core\n"),
+        ("calc/scenario_variables.py", b"# dynamic acceptance transaction\n"),
+        ("functions/basic.py", b"# frozen built-in pack\n"),
+        ("functions/_acceptance_core.py", b"# dynamic fixture\n"),
+        ("screens/calculator.py", b"# frozen page\n"),
+        ("screens/calculator_scenario.py", b"# dynamic scenario\n"),
+        ("version.py", b'VERSION = "1.4.0"\n'),
+    ))
+
+    plan = plan_release(snapshot, mode="source")
+    keys = {asset.key for asset in plan.assets}
+
+    assert "sd:calc/parser" not in keys
+    assert "sd:functions/basic" not in keys
+    assert "sd:screens/calculator" not in keys
+    assert {
+        "sd:calc/scenario_variables",
+        "sd:functions/_acceptance_core",
+        "sd:screens/calculator_scenario",
+        "sd:version",
+    }.issubset(keys)
 
 
 def test_font_sources_remain_host_only_and_generated_fonts_are_deployed():
@@ -456,17 +476,17 @@ def test_current_source_tree_has_one_explicit_release_classification(tmp_path):
         mode="source",
     )
 
-    assert len(plan.assets) == 92
+    assert len(plan.assets) == 49
     assert Counter((asset.zone, asset.role) for asset in plan.assets) == {
         ("internal", "bootstrap_fixed"): 10,
-        ("sd", "managed_release"): 76,
+        ("sd", "managed_release"): 33,
         ("sd", "seed_if_absent"): 2,
         ("host", "host_only"): 4,
     }
     assert Counter(
         asset.kind for asset in plan.assets if asset.role != "host_only"
     ) == {
-        "source": 83,
+        "source": 40,
         "font": 3,
         "seed": 2,
     }
@@ -484,16 +504,12 @@ def test_current_source_tree_has_one_explicit_release_classification(tmp_path):
         assert anchor.role == "bootstrap_fixed"
         assert anchor.kind == "source"
         assert anchor.relative_path == relative_path
-    for key in ("sd:display/mono_palette", "sd:display/ssd1322"):
-        slot_copy = next(
-            asset for asset in plan.assets if asset.key == key)
-        assert slot_copy.zone == "sd"
-        assert slot_copy.role == "managed_release"
+    assert not [
+        asset for asset in plan.assets
+        if asset.zone == "sd" and is_frozen_module(asset.source_path)
+    ]
     for key, relative_path in (
-            ("sd:calc/bundled_plugins", "calc/bundled_plugins.py"),
-            ("sd:calc/limits", "calc/limits.py"),
             ("sd:calc/plugin_fixture", "calc/plugin_fixture.py"),
-            ("sd:calc/plugin_reload", "calc/plugin_reload.py"),
             ("sd:calc/scenario_variables", "calc/scenario_variables.py"),
             ("sd:screens/calculator_scenario",
              "screens/calculator_scenario.py"),
@@ -544,21 +560,9 @@ def test_current_mpy_plan_selects_exactly_one_format_per_device_module(
         (fonts_root / (name + ".xglcd")).write_bytes(
             b"generated-" + name.encode("ascii"))
 
-    always_source = {
-        "boot.py",
-        "bootenv.py",
-        "bootlog.py",
-        "bootsel.py",
-        "bootsupervisor.py",
-        "internal_main.py",
-        "launch.py",
-        "recovery.py",
-        "sdcard.py",
-        "runtime_scenarios_host.py",
-    }
     for source_path in source_root.rglob("*.py"):
         relative = source_path.relative_to(source_root).as_posix()
-        if relative in always_source or relative.startswith("functions/"):
+        if not is_compiled_in_mpy(relative):
             continue
         output = build_root / Path(relative).with_suffix(".mpy")
         output.parent.mkdir(parents=True, exist_ok=True)
@@ -572,8 +576,8 @@ def test_current_mpy_plan_selects_exactly_one_format_per_device_module(
     assert Counter(
         asset.kind for asset in plan.assets if asset.role != "host_only"
     ) == {
-        "source": 18,
-        "mpy": 65,
+        "source": 14,
+        "mpy": 26,
         "font": 3,
         "seed": 2,
     }
@@ -582,11 +586,12 @@ def test_current_mpy_plan_selects_exactly_one_format_per_device_module(
     assert bootsel.zone == "internal"
     assert bootsel.kind == "source"
     assert bootsel.role == "bootstrap_fixed"
+    assert not [
+        asset for asset in plan.assets
+        if asset.zone == "sd" and is_frozen_module(asset.source_path)
+    ]
     for key, relative_path in (
-            ("sd:calc/bundled_plugins", "calc/bundled_plugins.mpy"),
-            ("sd:calc/limits", "calc/limits.mpy"),
             ("sd:calc/plugin_fixture", "calc/plugin_fixture.mpy"),
-            ("sd:calc/plugin_reload", "calc/plugin_reload.mpy"),
             ("sd:calc/scenario_variables", "calc/scenario_variables.mpy"),
             ("sd:screens/calculator_scenario",
              "screens/calculator_scenario.mpy"),
@@ -639,7 +644,7 @@ def test_current_mpy_plan_selects_exactly_one_format_per_device_module(
         and asset.kind in ("source", "mpy")
         and asset.role == "managed_release"
     ]
-    assert len(sd_modules) == len(set(sd_modules)) == 73
+    assert len(sd_modules) == len(set(sd_modules)) == 30
 
 
 def test_cleanup_uses_the_previous_owned_manifest_not_a_remote_listing():

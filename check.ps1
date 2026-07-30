@@ -6,9 +6,24 @@ $ProjectRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 $WorkspaceRoot = Split-Path -Parent $ProjectRoot
 $Python = Join-Path $WorkspaceRoot ".venv\python.exe"
 $MpyCross = Join-Path $WorkspaceRoot "micropython\mpy-cross\build\mpy-cross.exe"
-$BuildRoot = Join-Path $ProjectRoot ".mpy-build"
+$WorkRoot = Join-Path $ProjectRoot ".work"
+$BuildRoot = Join-Path $WorkRoot "mpy"
 $FontBuild = Join-Path $BuildRoot "fonts"
 $HostCheckSupport = Join-Path $ProjectRoot "tools\host_check_support.ps1"
+$ProcessEnvironmentNames = @(
+    "PYTHONPYCACHEPREFIX", "TEMP", "TMP", "TMPDIR")
+$PreviousProcessEnvironment = @{}
+foreach ($Name in $ProcessEnvironmentNames) {
+    $PreviousProcessEnvironment[$Name] =
+        [Environment]::GetEnvironmentVariable($Name, "Process")
+}
+
+try {
+$env:PYTHONPYCACHEPREFIX = Join-Path $WorkRoot "pycache"
+$env:TEMP = Join-Path $WorkRoot "temp"
+$env:TMP = $env:TEMP
+$env:TMPDIR = $env:TEMP
+New-Item -ItemType Directory -Force -Path $BuildRoot, $env:TEMP | Out-Null
 
 . $HostCheckSupport
 
@@ -51,3 +66,10 @@ Invoke-DeviceToolCompilation `
     -MpyCross $MpyCross
 
 Write-Host "All host and MicroPython compatibility checks passed."
+}
+finally {
+    foreach ($Name in $ProcessEnvironmentNames) {
+        [Environment]::SetEnvironmentVariable(
+            $Name, $PreviousProcessEnvironment[$Name], "Process")
+    }
+}

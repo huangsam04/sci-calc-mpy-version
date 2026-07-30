@@ -16,7 +16,8 @@ from tools.release_plan import (
     validate_release_plan,
 )
 
-_BUILD_DIR_NAME = ".mpy-build"
+_WORK_DIR_NAME = ".work"
+_BUILD_DIR_NAME = "mpy"
 
 
 @dataclass(frozen=True, slots=True)
@@ -29,7 +30,7 @@ def prepare_release_plans(project_root, compiler):
     """Build every asset and return validated (source, mpy) plans."""
     project_root = Path(project_root)
     source_root = project_root / "source"
-    build_root = project_root / _BUILD_DIR_NAME
+    build_root = project_root / _WORK_DIR_NAME / _BUILD_DIR_NAME
     if build_root.exists():
         shutil.rmtree(build_root)
     build_root.mkdir(parents=True)

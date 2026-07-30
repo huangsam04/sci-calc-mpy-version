@@ -172,7 +172,7 @@ def test_supervise_consumes_the_trial_before_executing_the_slot():
     assert env.calls[0] == "read_selector"
     assert env.calls[1] == "write_selector"
     assert env.written[0].trial_consumed is True
-    assert ("sys_path", ("/sd/.slots/B", ".frozen", "/lib")) in env.calls
+    assert ("sys_path", (".frozen", "/sd/.slots/B", "/lib")) in env.calls
     assert ("exec", "/sd/.slots/B/launch.py") in env.calls
     assert env.calls.index("write_selector") < env.calls.index(
         ("exec", "/sd/.slots/B/launch.py"))
@@ -238,7 +238,7 @@ def test_supervise_exec_failure_purges_before_recovery():
 
     bootsupervisor.supervise(env)
 
-    assert ("sys_path", ("/sd/.slots/A", ".frozen", "/lib")) in env.calls
+    assert ("sys_path", (".frozen", "/sd/.slots/A", "/lib")) in env.calls
     recovery_index = next(
         index for index, call in enumerate(env.calls)
         if isinstance(call, tuple) and call[0] == "recovery")

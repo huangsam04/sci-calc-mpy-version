@@ -3,10 +3,10 @@ import sys
 import approot
 
 
-def test_slot_root_first_on_sys_path_wins():
+def test_slot_root_is_found_behind_the_frozen_import_path():
     original = sys.path[:]
     try:
-        sys.path[:] = ["/sd/.slots/B", ".frozen", "/lib"]
+        sys.path[:] = [".frozen", "/sd/.slots/B", "/lib"]
         assert approot.app_root() == "/sd/.slots/B"
     finally:
         sys.path[:] = original

@@ -19,6 +19,8 @@ def test_deploy_hashes_freshly_initialized_settings_and_variables():
 def test_deploy_uses_mpy_only_after_an_on_device_abi_probe():
     script = (Path(__file__).parents[1] / "deploy.ps1").read_text(encoding="utf-8")
 
+    assert '$WorkRoot = Join-Path $ProjectRoot ".work"' in script
+    assert '$BuildRoot = Join-Path $WorkRoot "mpy"' in script
     assert "Test-MpyCompatibility" in script
     assert "sci_calc_mpy_probe.mpy" in script
     assert "$UseMpy" in script

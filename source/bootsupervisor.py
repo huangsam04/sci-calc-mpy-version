@@ -12,7 +12,6 @@
 ACTION_SLOT = "slot"
 ACTION_RECOVERY = "recovery"
 
-_SLOT_SYS_PATH_TAIL = (".frozen", "/lib")
 _RECOVERY_SYS_PATH = ("/lib", "/")
 _LAUNCH_NAME = "launch.py"
 
@@ -105,8 +104,7 @@ def prepare(environment):
         raise RuntimeError(plan.reason)
 
     slot_root = environment.slot_root(plan.slot_ref.name)
-    environment.set_sys_path(
-        (slot_root,) + _SLOT_SYS_PATH_TAIL)
+    environment.set_sys_path((".frozen", slot_root, "/lib"))
     environment.purge_slot_modules()
     return plan, slot_root + "/" + _LAUNCH_NAME
 

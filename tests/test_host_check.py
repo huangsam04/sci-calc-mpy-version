@@ -10,7 +10,7 @@ import pytest
 
 
 PROJECT = Path(__file__).parents[1]
-PYTEST_TEMP_ROOT = PROJECT / ".pytest_tmp"
+PYTEST_TEMP_ROOT = PROJECT / ".work" / "pytest"
 PYTEST_SESSION_ROOT = PYTEST_TEMP_ROOT / "sessions"
 TEMP_PROBE = PROJECT / "tests" / "_support" / "pytest_temp_probe.py"
 CHECK_SCRIPT = PROJECT / "check.ps1"
@@ -23,6 +23,11 @@ DEVICE_COMPILE_PROBE = (
 def _run_temp_probe(*, fail=False):
     environment = os.environ.copy()
     environment["PYTHONDONTWRITEBYTECODE"] = "1"
+    outside_temp = str(PROJECT.parent / ".pytest_tmp")
+    environment["TEMP"] = outside_temp
+    environment["TMP"] = outside_temp
+    environment["TMPDIR"] = outside_temp
+    environment.pop("PYTHONPYCACHEPREFIX", None)
     if fail:
         environment["SCI_CALC_PYTEST_PROBE_FAIL"] = "1"
     environment.pop("PYTEST_ADDOPTS", None)
@@ -47,6 +52,15 @@ def _reported_session_temp(result):
     return Path(line[len(marker) :]).resolve()
 
 
+def _reported_path(result, marker):
+    line = next(
+        (item for item in result.stdout.splitlines() if item.startswith(marker)),
+        None,
+    )
+    assert line is not None, result.stdout
+    return Path(line[len(marker) :]).resolve()
+
+
 def _assert_project_temp_was_cleaned(session_temp):
     assert session_temp.parent == PYTEST_SESSION_ROOT.resolve()
     assert re.fullmatch(r"[0-9a-f]{32}", session_temp.name)
@@ -58,6 +72,22 @@ def test_direct_pytest_uses_and_cleans_a_unique_project_temp_directory():
 
     assert result.returncode == 0, result.stdout + result.stderr
     _assert_project_temp_was_cleaned(_reported_session_temp(result))
+
+
+def test_direct_pytest_confines_process_temp_and_python_cache_to_work_root():
+    result = _run_temp_probe()
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    expected_temp = (PROJECT / ".work" / "temp").resolve()
+    for marker in (
+        "SCI_CALC_PROCESS_TEMP=",
+        "SCI_CALC_PROCESS_TMP=",
+        "SCI_CALC_PROCESS_TMPDIR=",
+    ):
+        assert _reported_path(result, marker) == expected_temp
+    assert _reported_path(
+        result, "SCI_CALC_PYTHON_CACHE=") == (
+            PROJECT / ".work" / "pycache").resolve()
 
 
 def test_failed_direct_pytest_still_cleans_its_project_temp_directory():
@@ -142,12 +172,89 @@ def test_host_check_mpy_compiles_every_device_tool():
     support = CHECK_SUPPORT.read_text(encoding="utf-8")
 
     assert "Invoke-DeviceToolCompilation" in script
+    assert 'Join-Path $ProjectRoot ".work"' in script
+    assert 'Join-Path $WorkRoot "mpy"' in script
     assert 'Join-Path $ProjectRoot "tools"' in script
     assert 'Join-Path $BuildRoot "device-tools"' in script
     assert "-X no-source-lines" in script
     assert "-X no-source-lines" in support
     assert "-s $Relative" in script
     assert '-s $EmbeddedSource' in support
+
+
+def test_generated_build_and_test_paths_share_one_work_root():
+    expected = {
+        "check.ps1": (
+            'Join-Path $ProjectRoot ".work"',
+            '[Environment]::GetEnvironmentVariable',
+            '[Environment]::SetEnvironmentVariable',
+        ),
+        "deploy.ps1": (
+            'Join-Path $ProjectRoot ".work"',
+            '[Environment]::GetEnvironmentVariable',
+            '[Environment]::SetEnvironmentVariable',
+        ),
+        "tools/build_firmware.ps1": (
+            'Join-Path $ProjectRoot ".work"',
+            'Join-Path $WorkRoot ("firmware\\" + $Profile)',
+            'set "PYTHONPYCACHEPREFIX=',
+        ),
+        "tools/flash_firmware.ps1": (
+            'Join-Path $ProjectRoot ".work"',
+            'Join-Path $WorkRoot "pycache"',
+            '[Environment]::GetEnvironmentVariable',
+            '[Environment]::SetEnvironmentVariable',
+        ),
+        "tools/run_device_acceptance.ps1": (
+            'Join-Path $ProjectRoot ".work"',
+            '.work/mpy/device-tools',
+            '[Environment]::GetEnvironmentVariable',
+            '[Environment]::SetEnvironmentVariable',
+        ),
+        "tools/release_deploy.py": (
+            'WORK_ROOT = PROJECT_ROOT / ".work"',
+            'sys.pycache_prefix = str(PYTHON_CACHE_ROOT)',
+        ),
+        "tests/conftest.py": (
+            'WORK_ROOT = PROJECT / ".work"',
+            'PYTEST_TEMP_ROOT = WORK_ROOT / "pytest"',
+        ),
+        "tools/release_build.py": ('_WORK_DIR_NAME = ".work"',),
+    }
+    for relative, markers in expected.items():
+        source = (PROJECT / relative).read_text(encoding="utf-8")
+        for marker in markers:
+            assert marker in source, relative
+
+
+def test_git_does_not_hide_generated_paths_outside_work_root():
+    ignored = (PROJECT / ".gitignore").read_text(encoding="utf-8").splitlines()
+
+    assert ".work/" in ignored
+    assert ".pytest_cache/" not in ignored
+    assert not any("__pycache__" in line for line in ignored)
+
+
+def test_direct_release_cli_keeps_local_import_cache_under_work_root():
+    environment = os.environ.copy()
+    environment.pop("PYTHONPYCACHEPREFIX", None)
+    environment.pop("PYTHONDONTWRITEBYTECODE", None)
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(PROJECT / "tools" / "release_deploy.py"),
+            "--help",
+        ],
+        cwd=PROJECT,
+        env=environment,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "Deploy SCI-CALC" in result.stdout
+    assert not (PROJECT / "tools" / "__pycache__").exists()
 
 
 @pytest.mark.parametrize(

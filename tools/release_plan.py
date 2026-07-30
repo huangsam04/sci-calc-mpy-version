@@ -35,6 +35,37 @@ _INTERNAL_DISPLAY_PATHS = frozenset((
     "display/mono_palette.py",
     "display/ssd1322.py",
 ))
+_FROZEN_PACKAGE_PREFIXES = (
+    "display/",
+    "input/",
+    "ui/",
+    "utils/",
+)
+_FROZEN_MODULE_PATHS = frozenset((
+    "calc/__init__.py",
+    "calc/bundled_plugins.py",
+    "calc/functions.py",
+    "calc/limits.py",
+    "calc/loader.py",
+    "calc/number.py",
+    "calc/parser.py",
+    "calc/plugin_reload.py",
+    "functions/__init__.py",
+    "functions/basic.py",
+    "functions/solve.py",
+    "functions/trig.py",
+    "screens/__init__.py",
+    "screens/about.py",
+    "screens/calculator.py",
+    "screens/function_panel.py",
+    "screens/function_picker.py",
+    "screens/letter_panel.py",
+    "screens/main_menu.py",
+    "screens/plot.py",
+    "screens/settings.py",
+    "screens/stopwatch.py",
+    "screens/variable_panel.py",
+))
 _FONT_OUTPUTS = {
     "fonts/Bally7x9.c": "fonts/Bally7x9.xglcd",
     "fonts/FixedFont5x8.c": "fonts/FixedFont5x8.xglcd",
@@ -90,9 +121,18 @@ _JSON_DELIMITERS = b" \t\r\n,]}"
 _HEX_DIGITS = b"0123456789abcdefABCDEF"
 
 
+def is_frozen_module(path):
+    """True when *path* is supplied by the required SCI-CALC firmware."""
+    return (path in _FROZEN_MODULE_PATHS
+            or (path.endswith(".py")
+                and path.startswith(_FROZEN_PACKAGE_PREFIXES)))
+
+
 def is_compiled_in_mpy(path):
     """True when the mpy plan expects a compiled output for *path*."""
     if not path.endswith(".py"):
+        return False
+    if is_frozen_module(path):
         return False
     if path in _INTERNAL_DISPLAY_PATHS:
         return True
@@ -305,6 +345,11 @@ def _source_assets(path, content, mode, build_files):
             "host_source",
             "host_only",
         ),)
+
+    if is_frozen_module(path):
+        if path in _BOOTSTRAP_PATHS:
+            return (_bootstrap_asset(path, content),)
+        return ()
 
     seed_key = _SEED_PATHS.get(path)
     if seed_key is not None:

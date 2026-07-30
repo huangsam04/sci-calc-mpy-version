@@ -11,8 +11,8 @@ from tools.release_plan import is_compiled_in_mpy
 @pytest.mark.parametrize(("path", "expected"), (
     ("main.py", True),
     ("approot.py", True),
-    ("calc/parser.py", True),
-    ("display/ssd1322.py", True),
+    ("calc/parser.py", False),
+    ("display/ssd1322.py", False),
     ("boot.py", False),
     ("bootenv.py", False),
     ("bootlog.py", False),
@@ -73,9 +73,11 @@ def test_prepare_builds_fonts_compiles_exactly_the_mpy_set(tmp_path):
 
     plans = prepare_release_plans(project, _recording_compiler(calls))
 
+    assert (project / ".work" / "mpy").is_dir()
+    assert not (project / ".mpy-build").exists()
     compiled_names = sorted(
         str(path).replace("\\", "/").split("/")[-1] for path in calls)
-    assert compiled_names == ["main.py", "parser.py", "version.py"]
+    assert compiled_names == ["main.py", "version.py"]
     source_plan = plans.source
     mpy_plan = plans.mpy
     assert source_plan.mode == "source"

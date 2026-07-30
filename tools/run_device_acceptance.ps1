@@ -13,11 +13,31 @@ $ErrorActionPreference = "Stop"
 $ProjectRoot = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
 $WorkspaceRoot = Split-Path -Parent $ProjectRoot
 $Python = Join-Path $WorkspaceRoot ".venv\python.exe"
+$WorkRoot = Join-Path $ProjectRoot ".work"
 $MpyCross = Join-Path `
     $WorkspaceRoot "micropython\mpy-cross\build\mpy-cross.exe"
 $RemoteArtifact = "/sd/_sci_accept_stage.mpy"
 $RunArtifact = (
-    "import gc,os,sys;gc.collect();sys.path.insert(0,'/sd');" +
+    "import gc,os,sys;gc.collect();" +
+    "import calc,screens,functions;slot=sys.path[1];" +
+    "assert slot.startswith('/sd/.slots/');" +
+    "calc_path=calc.__path__;" +
+    "screens_path=screens.__path__;" +
+    "functions_path=functions.__path__;" +
+    "calc.__path__=slot+'/calc';" +
+    "screens.__path__=slot+'/screens';" +
+    "functions.__path__=slot+'/functions';" +
+    "import calc.plugin_fixture,calc.scenario_variables;" +
+    "import screens.about_scenario,screens.calculator_scenario;" +
+    "import screens.function_panel_scenario;" +
+    "import screens.function_picker_scenario;" +
+    "import screens.letter_panel_scenario,screens.plot_scenario;" +
+    "import screens.settings_scenario,screens.stopwatch_scenario;" +
+    "import screens.variable_panel_scenario;" +
+    "calc.__path__=calc_path;" +
+    "screens.__path__=screens_path;" +
+    "functions.__path__=functions_path;" +
+    "sys.path.append('/sd');" +
     "import _sci_accept_stage;" +
     "os.remove('/sd/_sci_accept_stage.mpy');" +
     "_sci_accept_stage.run()"
@@ -38,27 +58,27 @@ $Stages = @(
     [PSCustomObject]@{
         Name = "boot_probe"
         Script = "tools/device_boot_probe.py"
-        Artifact = ".mpy-build/device-tools/device_boot_probe.mpy"
+        Artifact = ".work/mpy/device-tools/device_boot_probe.mpy"
     },
     [PSCustomObject]@{
         Name = "application_matrix"
         Script = "tools/device_application_acceptance.py"
-        Artifact = ".mpy-build/device-tools/device_application_acceptance.mpy"
+        Artifact = ".work/mpy/device-tools/device_application_acceptance.mpy"
     },
     [PSCustomObject]@{
         Name = "runtime_target_tracer"
         Script = "tools/device_runtime_monitor.py"
-        Artifact = ".mpy-build/device-tools/device_runtime_monitor.mpy"
+        Artifact = ".work/mpy/device-tools/device_runtime_monitor.mpy"
     },
     [PSCustomObject]@{
         Name = "interaction_screen_tracer"
         Script = "tools/device_interaction_acceptance.py"
-        Artifact = ".mpy-build/device-tools/device_interaction_acceptance.mpy"
+        Artifact = ".work/mpy/device-tools/device_interaction_acceptance.mpy"
     },
     [PSCustomObject]@{
         Name = "frame_allocation_probe"
         Script = "tools/device_frame_allocation_probe.py"
-        Artifact = ".mpy-build/device-tools/device_frame_allocation_probe.mpy"
+        Artifact = ".work/mpy/device-tools/device_frame_allocation_probe.mpy"
     }
 )
 
@@ -67,6 +87,7 @@ if (-not $DryRun -and $null -eq $MpremoteAdapter -and -not (Test-Path -LiteralPa
 }
 
 function Build-AcceptanceArtifacts {
+    New-Item -ItemType Directory -Force -Path $env:TEMP | Out-Null
     if (-not (Test-Path -LiteralPath $MpyCross -PathType Leaf)) {
         throw "Missing MicroPython 1.29 mpy-cross: $MpyCross"
     }
@@ -214,6 +235,20 @@ function Invoke-AcceptanceStage {
     }
 }
 
+$ProcessEnvironmentNames = @(
+    "PYTHONPYCACHEPREFIX", "TEMP", "TMP", "TMPDIR")
+$PreviousProcessEnvironment = @{}
+foreach ($Name in $ProcessEnvironmentNames) {
+    $PreviousProcessEnvironment[$Name] =
+        [Environment]::GetEnvironmentVariable($Name, "Process")
+}
+
+try {
+$env:PYTHONPYCACHEPREFIX = Join-Path $WorkRoot "pycache"
+$env:TEMP = Join-Path $WorkRoot "temp"
+$env:TMP = $env:TEMP
+$env:TMPDIR = $env:TEMP
+
 if (-not $DryRun -and $null -eq $MpremoteAdapter) {
     Build-AcceptanceArtifacts
 }
@@ -229,4 +264,11 @@ if ($DryRun) {
 }
 else {
     Write-Output "ACCEPTANCE_COMPLETE $Port stages=5 animation=removed_heap_below_12k"
+}
+}
+finally {
+    foreach ($Name in $ProcessEnvironmentNames) {
+        [Environment]::SetEnvironmentVariable(
+            $Name, $PreviousProcessEnvironment[$Name], "Process")
+    }
 }
