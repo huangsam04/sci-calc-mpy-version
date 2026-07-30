@@ -8,7 +8,7 @@
 - [ ] frozen manifest、固件构建、部署清单和按需页面生命周期有聚焦回归测试；动态 Add-ons 与用户数据路径保持可写。
 - [x] 唯一正式部署入口收敛为 `tools/release_deploy.py` 快速增量模式；删除旧 `deploy.ps1`、ABI 探针及专属测试，聚焦回归 `28 passed`。
 - [x] 删除未发布 runtime aggregate/compatibility session、builder、wrapper 和专属测试；当前 bounded/OOM/close 恢复接口回归 `56 passed`。
-- [ ] 删除 1.3.0、legacy slot 和旧 adoption 专属路径及夹具，保留首次 provision、用户数据与掉电恢复。
+- [x] 删除 1.3.0 adoption、legacy transition-slot 路径及专属夹具；`--transactional` 仍支持当前固件首次 provision，用户数据与掉电恢复回归 `256 passed`。
 - [ ] 普通 release 排除 acceptance fixture/scenario；验收载荷由现有 `tools/run_device_acceptance.ps1` 临时上传和删除。
 - [ ] 收窄 `Nav` 普通接口并清理 `.work` 过期产物，更新 `.work/LOCATIONS.md`；内存、时延、OOM 与数据保护合同不变。
 - [ ] 最终 `check.ps1` 通过 CPython、全部 pytest 和仓库 MicroPython 1.29 `mpy-cross` 检查。

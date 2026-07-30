@@ -17,7 +17,6 @@ import bootsel
 import bootsupervisor
 from tools import release_deploy
 from tools import release_device_mpremote as mpadapter
-from tools import release_adoption
 from tools.release_apply import ReleaseFailure, apply_release
 from tools.release_plan import ReleaseTreeSnapshot, plan_release
 from tools.release_protocol import SlotRef, owner_marker_payload
@@ -28,7 +27,7 @@ from tools.release_protocol import SlotRef, owner_marker_payload
     (mpadapter.SELECTOR_WRITE_CODE, "bootsel"),
     (mpadapter.BOOTLOG_READ_CODE, "bootlog"),
 ))
-def test_first_adoption_controls_restore_trusted_root_before_import(
+def test_selector_controls_restore_trusted_root_before_import(
         code, module_name):
     root_restore = "sys.path.insert(0,'/')"
 
@@ -160,76 +159,6 @@ class _DeviceTwin:
 
     def exec(self, code, **params):
         assert self._connected
-        if code is release_adoption.DIRECTORY_AUDIT_CODE:
-            path = ast.literal_eval(params["path"])
-            allowed = set(ast.literal_eval(params["allowed"]))
-            mapped = self._map(path)
-            if not mapped.exists():
-                return "M"
-            if not mapped.is_dir():
-                return "F"
-            count = 0
-            for child in mapped.iterdir():
-                count += 1
-                if count > 16 or child.name not in allowed:
-                    return "F"
-            return "E" if count == 0 else "D"
-        if code is release_adoption.DIRECTORY_COUNT_CODE:
-            path = ast.literal_eval(params["path"])
-            mapped = self._map(path)
-            if not mapped.exists():
-                return "M"
-            if not mapped.is_dir():
-                return "F"
-            count = 0
-            for _child in mapped.iterdir():
-                count += 1
-                if count > release_adoption._SLOT_DIRECTORY_ENTRY_LIMIT:
-                    return "F"
-            return "N{0:03x}".format(count)
-        if code is release_adoption.ENTRY_KIND_CODE:
-            path = ast.literal_eval(params["path"])
-            mapped = self._map(path)
-            if not mapped.exists():
-                return "M"
-            return "D" if mapped.is_dir() else "R"
-        if code is release_adoption.CREATE_DIRECTORY_CODE:
-            path = ast.literal_eval(params["path"])
-            mapped = self._map(path)
-            if mapped.exists():
-                return "D" if mapped.is_dir() else "F"
-            if not mapped.parent.is_dir():
-                return "F"
-            mapped.mkdir()
-            return "C"
-        if code is release_adoption.ATOMIC_CREATE_CODE:
-            path = ast.literal_eval(params["path"])
-            mapped = self._map(path)
-            if mapped.exists():
-                return "E"
-            if not mapped.parent.is_dir():
-                return "F"
-            mapped.write_bytes(binascii.unhexlify(params["payload_hex"]))
-            return "C"
-        if code is release_adoption.CONDITIONAL_RENAME_CODE:
-            src = self._map(ast.literal_eval(params["src"]))
-            dst = self._map(ast.literal_eval(params["dst"]))
-            expected = set(ast.literal_eval(params["expected"]))
-            if (not src.is_file()
-                    or hashlib.sha256(src.read_bytes()).hexdigest()
-                    != params["wanted"]):
-                return "SOURCE"
-            if (dst.exists()
-                    and hashlib.sha256(dst.read_bytes()).hexdigest()
-                    not in expected):
-                return "CONFLICT"
-            # Windows does not replace an existing destination on rename.
-            # This branch has already verified that it is the admitted old
-            # bootstrap file, matching the device-side conditional contract.
-            if dst.exists():
-                dst.unlink()
-            src.rename(dst)
-            return "RENAMED"
         if code is mpadapter.SELECTOR_READ_CODE:
             store = bootsel.SelectorStore(
                 str(self._map("/sys/sel.0")), str(self._map("/sys/sel.1")))
@@ -1026,60 +955,6 @@ def _seed_confirmed_device(twin, plan, extra_files=()):
     twin.write_paths = []
 
 
-def test_exact_unmarked_transition_slot_is_claimed_then_erased(tmp_path):
-    plan = _plan("1.3.0", legacy=True)
-    adapter, twin = _adapter_and_twin(
-        tmp_path, lambda boot: _smoke_lines("1.3.0"))
-    slot_root = bootenv.SLOT_BASE + "/A"
-    twin.write_file(
-        slot_root + "/" + bootenv.MANIFEST_NAME,
-        plan.manifest_bytes,
-    )
-    for asset in plan.assets:
-        if asset.role == "managed_release" and asset.zone == "sd":
-            twin.write_file(
-                slot_root + "/" + asset.relative_path,
-                asset.payload,
-            )
-    ref = SlotRef("A", plan.release_id, plan.manifest_sha256)
-
-    def reclaim(session):
-        assert session._trees.inspect_transition_slot(ref) == "unmarked"
-        assert session._trees.claim_and_erase_transition_slot(ref) == "ERASED"
-        assert session._trees.inspect_transition_slot(ref) == "absent"
-
-    adapter.run_session(reclaim)
-
-    assert not twin._map(slot_root).exists()
-
-
-def test_unmarked_transition_slot_with_unknown_content_is_not_claimed(
-        tmp_path):
-    plan = _plan("1.3.0", legacy=True)
-    adapter, twin = _adapter_and_twin(
-        tmp_path, lambda boot: _smoke_lines("1.3.0"))
-    slot_root = bootenv.SLOT_BASE + "/A"
-    twin.write_file(
-        slot_root + "/" + bootenv.MANIFEST_NAME,
-        plan.manifest_bytes,
-    )
-    for asset in plan.assets:
-        if asset.role == "managed_release" and asset.zone == "sd":
-            twin.write_file(
-                slot_root + "/" + asset.relative_path,
-                asset.payload,
-            )
-    twin.write_file(slot_root + "/foreign.txt", b"keep me\n")
-    ref = SlotRef("A", plan.release_id, plan.manifest_sha256)
-
-    with pytest.raises(ValueError, match="unknown content"):
-        adapter.run_session(
-            lambda session: session._trees.inspect_transition_slot(ref))
-
-    assert twin.read_file(slot_root + "/foreign.txt") == b"keep me\n"
-    assert not twin.exists(slot_root + "/" + mpadapter.OWNER_MARKER_NAME)
-
-
 def _read_selector(twin):
     store = bootsel.SelectorStore(
         str(twin._map("/sys/sel.0")), str(twin._map("/sys/sel.1")))
@@ -1217,14 +1092,14 @@ def test_fast_release_preserves_an_unowned_new_managed_path(tmp_path):
     assert _read_selector(twin).confirmed.release_id == old_plan.release_id
 
 
-def test_fast_release_requires_transactional_adoption_without_confirmed_slot(
+def test_fast_release_requires_transactional_first_provision_without_confirmed_slot(
         tmp_path):
     plan = _plan("1.4.0")
     adapter, twin = _adapter_and_twin(
         tmp_path, lambda boot: _smoke_lines("1.4.0"))
 
     with pytest.raises(
-            ValueError, match=r"--transactional --adopt"):
+            ValueError, match=r"--transactional"):
         release_deploy.apply_fast_release(plan, adapter)
 
     assert twin.write_paths == []

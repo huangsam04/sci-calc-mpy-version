@@ -37,9 +37,8 @@ _STAGING_ROOT = "/sd/.staging"
 _SELECTOR_RECORD_MAX_BYTES = 921
 _BOOTLOG_RECORD_MAX_BYTES = 351
 
-# First-adoption controls run before the resident application exists, so they
-# can use the shared device codecs. Explicitly restore only the trusted
-# internal root; the ordinary release path below reads fixed records directly.
+# Selector controls can run before the resident application exists. Explicitly
+# restore only the trusted internal root before importing the shared codecs.
 _TRUSTED_BOOT_IMPORT = (
     "import sys\n"
     "sys.path.insert(0,'/') if '/' not in sys.path else None\n")
@@ -1256,78 +1255,6 @@ class _OwnedReleaseTrees:
         audit(directory_by_path[""])
         return frozenset(present_files), frozenset(present_directories)
 
-    def inspect_transition_slot(self, ref):
-        """Classify one exact legacy slot without trusting an absent marker."""
-        if type(ref) is not SlotRef:
-            raise ValueError("invalid transition slot reference")
-        root = self._slot_root(ref.name)
-        root_kind = self._entry_kind(bootenv.SLOT_BASE, ref.name)
-        if root_kind == "M":
-            return "absent"
-        if root_kind != "D":
-            raise ValueError("transition slot root type conflict")
-        if self._directory_count(root) == 0:
-            return "empty"
-
-        marker_kind = self._entry_kind(root, OWNER_MARKER_NAME)
-        if marker_kind == "M":
-            if self._entry_kind(root, bootenv.MANIFEST_NAME) != "R":
-                raise ValueError("transition slot manifest is missing")
-            spec = self._read_manifest(
-                root, ref.release_id, ref.manifest_sha256)
-            present_files, _present_directories = self._audit_shape(
-                spec, allow_missing_owner=True)
-            if not all(path in present_files for path in spec.asset_paths):
-                raise ValueError("transition slot asset is missing")
-            self._verify_slot_assets(
-                spec.root, spec.manifest_sha256, spec.release_id)
-            return "unmarked"
-        if marker_kind != "R":
-            raise ValueError("transition slot marker type conflict")
-
-        provisional = _OwnedTreeSpec(
-            root=root,
-            release_id=ref.release_id,
-            manifest_sha256=ref.manifest_sha256,
-            manifest_bytes=b"",
-            asset_paths=(),
-            asset_sha256=(),
-            directories=(),
-            owner_payload=owner_marker_payload(
-                ref.release_id, ref.manifest_sha256),
-            owner_sha256=hashlib.sha256(owner_marker_payload(
-                ref.release_id, ref.manifest_sha256)).hexdigest(),
-        )
-        if self._root_receipt(provisional) != "O":
-            raise ValueError("transition slot marker or manifest is not trusted")
-        spec = self._read_manifest(
-            root, ref.release_id, ref.manifest_sha256)
-        self._verify_spec(spec, allow_missing_assets=True)
-        return "owned"
-
-    def claim_and_erase_transition_slot(self, ref):
-        """Adopt an exact unmarked legacy slot, then erase it recoverably."""
-        state = self.inspect_transition_slot(ref)
-        root = self._slot_root(ref.name)
-        if state == "absent":
-            return "ABSENT"
-        if state == "empty":
-            if self._directory_count(root) != 0:
-                raise ValueError("transition slot changed during empty cleanup")
-            self._delete_directory(root, root=True)
-            return "ERASED"
-        if state == "unmarked":
-            spec = self._read_manifest(
-                root, ref.release_id, ref.manifest_sha256)
-            if self._entry_kind(root, OWNER_MARKER_NAME) != "M":
-                raise ValueError("transition slot marker changed before claim")
-            self._device.write_file(
-                _owned_full_path(root, OWNER_MARKER_NAME),
-                spec.owner_payload,
-            )
-            self._verify_spec(spec)
-        return self.erase_retired(ref)
-
     def _verify_spec(self, spec, allow_missing_assets=False):
         if self._root_receipt(spec) != "O":
             raise ValueError("owned release marker or manifest is not trusted")
@@ -1777,7 +1704,7 @@ class _MpremoteSession:
                 or selector.confirmation_pending):
             raise ValueError(
                 "fast deployment requires one stable confirmed slot; "
-                "use --transactional --adopt to provision or repair it")
+                "use --transactional to provision or repair it")
         current_ref = _entry_to_ref(selector.confirmed)
         root = self._trees._slot_root(current_ref.name)
         manifest_path = _owned_full_path(root, bootenv.MANIFEST_NAME)
