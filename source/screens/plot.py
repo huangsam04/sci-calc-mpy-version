@@ -846,6 +846,9 @@ class PlotScreen(UIElement):
         if self._state[3][0] >= 0:
             return
         display.draw_text8x8(77, 19, 'Plotting', gs=15)
+        display.fill_rectangle(
+            PLOT_PROGRESS_X + 1, PLOT_PROGRESS_Y + 1,
+            PLOT_PROGRESS_W - 2, PLOT_PROGRESS_H - 2, 0)
         display.draw_rectangle(
             PLOT_PROGRESS_X, PLOT_PROGRESS_Y,
             PLOT_PROGRESS_W, PLOT_PROGRESS_H, 8)

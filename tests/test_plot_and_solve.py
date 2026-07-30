@@ -546,6 +546,13 @@ def test_plot_submit_draws_progress_before_any_curve_work():
         plot_module.PLOT_PROGRESS_H,
         8,
     ) in display.rectangles
+    assert (
+        plot_module.PLOT_PROGRESS_X + 1,
+        plot_module.PLOT_PROGRESS_Y + 1,
+        plot_module.PLOT_PROGRESS_W - 2,
+        plot_module.PLOT_PROGRESS_H - 2,
+        0,
+    ) in display.fills
     assert plot._state[3][3][3] is pooled_job
     assert not hasattr(plot, "progress_buffer")
 

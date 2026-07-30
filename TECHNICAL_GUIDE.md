@@ -1,6 +1,6 @@
 # SCI-CALC MicroPython 技术说明
 
-本文是 `mp_version` 1.3.0 的实现说明和维护入口。它以源码当前行为为准，使用伪代码解释
+本文是 `mp_version` 1.4.0 的实现说明和维护入口。它以源码当前行为为准，使用伪代码解释
 从 ESP32 上电到应用、输入、计算、显示、持久化、部署与诊断的完整逻辑；其中已合并
 2026-07-23 的性能调优记录。除 C 字体文件和 PNG 截图这类纯数据资产外，所有运行时和
 主机侧可执行逻辑均在本文中覆盖。
@@ -184,8 +184,9 @@ Shift+`^` 为 `sqrt`，Shift+`RPN` 为 `rpn`，Shift+`Tab` 为 `stab`。页面�
 
 ### 4.1 UIElement、FrameScheduler 与当前吸附式反馈
 
-所有页面/控件继承 `UIElement`，约定 `activate()`、`deactivate()`、`draw(display)` 和
-`update(keyboard, event)`。`FrameScheduler` 记录输入、普通脏帧、秒表连续帧、侧栏轮询和安静
+`UIElement` 为普通页面/控件提供默认生命周期；Calculator 和 Function Panel 等紧凑页面直接实现
+同一 `activate()`、`deactivate()`、`draw(display)` 和 `update(keyboard, event)` 协议而不继承它。
+`FrameScheduler` 记录输入、普通脏帧、秒表连续帧、侧栏轮询和安静
 工作期限；普通脏帧间隔为 66 ms，循环固定休眠 4 ms。
 
 当前 `Menu` 没有运动槽，`_update_cursor_target()` 会把光标立即吸附到新行；源码中没有
@@ -485,6 +486,8 @@ Add-in 可在注册期使用 `registry.plugin(name)`，在回调运行期使用 
 ### 7.2 主菜单与计算器
 
 主菜单有 Calculator、Plot、Function Panel、Stopwatch、Settings 五项；返回根页面保留原选择。
+导航只把 `nav._managed` 中按对象身份注册的目标交给 `Nav.go_to()`。Calculator 和 Function Panel
+是紧凑页面对象而非 `UIElement` 子类，因此入口不依赖继承判断，也不会误走全局快捷键分支。
 
 计算器有三种模式：输入、历史导航、错误弹窗。成功求值将 `(expr, result)` 插到最多 20 条历史
 的头部，清空输入；每个 `Number` 统一格式化为 `x.xxxx*10^x`。显示位数来自
@@ -550,31 +553,34 @@ Plot 页持有独立输入框、x 范围 `[-10,10]`、y 范围、仅包含 `x` �
 物理 4/6 向左/右平移当前 x 范围 25%，ENT 打开编辑，RPN 预填 `x`。编辑框固定显示在顶部 14 px；
 ENT 提交，ESC 恢复编辑前表达式，Shift+Tab 重置 x 范围。
 
-编译缓存最多四项 LRU，键为表达式，注册表 `revision` 变化则清空，因此启用/禁用函数后不会
-继续使用过期语法树。
+Plot 只保留当前表达式的一份已编译程序及其注册表 `revision`；表达式或 revision 变化时先释放旧
+引用，再在安静调度槽编译，因此不会保留多项 AST。启动期预建的 `_CurveJob` 原地重置，进度复用
+曲线揭示宽度标量的负值编码，不创建进度对象或像素缓冲。
 
 ```text
-render_curve(auto_scale=true):
-    program = LRU.get(expr) or compile_expression(expr, live registry)
+settle_curve(auto_scale=true):
+    program = current program or compile_expression(expr, live registry)
     if auto_scale, for every second horizontal sample pixel:
         x = x_min + normalized_pixel * (x_max - x_min)
         y = float(evaluate_program(program, temporary x context))
-        accept only finite-ish |y| < 1e6; retain at most 24 robust samples
+        accept only finite-ish |y| < 1e6; retain at most 12 robust samples
     if no valid sample: clear curve; show popup; return
     if auto_scale:
         full_range = min..max
         central_range = trimmed bounded robust samples
         if full_range > 4 * robust_range: use central range  # 抑制极点
         add 10% padding (at least 0.5; constant curve gets 1)
-    reuse or allocate MONO_HMSB curve buffer
+    clear the fixed 104-byte Plot workspace in a bounded slice
     evaluate every second x sample again without retaining a float array:
-        map y to pixel only if inside viewport
-        plot point; connect to predecessor only if vertical jump <= 3/4 height
-        otherwise break polyline to avoid渐近线伪竖线
+        store one y byte per sampled column, or 255 for an invalid point
+    update Plotting progress only when an integer bar column advances
+    at completion, submit the target curve once
 ```
 
-绘制时先画边框、可见的 x/y 轴、原点十字，再以调色板把单色曲线透明 blit 到 GS4 帧缓冲。
-曲线缓存只在表达式/范围变化时重算，页面的每一帧只绘制缓存。
+提交表达式的首帧先画 `Plotting` 和空进度条。后续切片把自动缩放采样、工作区清零和栅格采样的
+已完成量映射到条内宽度，只通过 `DamageMap` 更新进度条所在 7 行；完成时才把 y 样本直接重建到
+唯一 GS4 framebuffer，并重画边框、坐标轴和原点十字。新输入、离页、异常或 OOM 会取消工作并
+恢复普通终态，按键路径不调用 GC。
 
 ### 7.5 秒表、设置与关于页
 
@@ -755,19 +761,20 @@ CPython `compileall`、对所有源码使用 `-march=xtensawin` 编译 `.mpy`。
 多次 COM5 冷启动在导入设备探针前测得 10,752–11,200 B 干净空闲堆。这个数值足以稳定运行
 下述有界用户状态，但低于 12,288 B 动效门槛。无动效模式的稳态门槛保持 4096 B；它只在同时
 覆盖最大历史、变量、圈数、固定插件、错误恢复、绘图与页面往返的应用矩阵中判定，不能由空启动
-样本替代。最终 `check.ps1` 为 `1159 passed`，CPython compileall 和 MicroPython 1.29 全源
+样本替代。最终 `check.ps1` 为 `1164 passed`，CPython compileall 和 MicroPython 1.29 全源
 mpy-cross 均通过。
 
-### 10.2 COM5 最终统一验收
+### 10.2 COM5 动效门禁基线（1.3.0）
 
-正式发布 `ea9a9910e61290dc2cefaeb32e3443346f072c9bf2e8dddeec900a023b5c9bbf` 已确认，manifest
+上一正式发布 `ea9a9910e61290dc2cefaeb32e3443346f072c9bf2e8dddeec900a023b5c9bbf` 已确认，manifest
 SHA-256 为 `2890e021b36ae96d49c4a2665978d500d3ae24d2d3f9cf2bdd62f7ee8185b9bc`。统一入口为：
 
 ```powershell
 .\tools\run_device_acceptance.ps1 -Port PORTNAME
 ```
 
-COM5 的一次完整五阶段结果如下；每阶段复位后均发送 SSD1322 硬件休眠命令。
+COM5 的 1.3.0 完整五阶段结果如下；每阶段复位后均发送 SSD1322 硬件休眠命令。它用于否决
+1.4.0 动效，不替代 1.4.0 部署后的最终统一验收。
 
 | 检查 | 真机结果 |
 | --- | --- |
@@ -794,7 +801,7 @@ COM5 的一次完整五阶段结果如下；每阶段复位后均发送 SSD1322 
 ### 10.4 动效门禁
 
 菜单 ease-out 和页面硬件亮度淡出/淡入均未保留。12 KiB 门槛没有降低，源码中没有动画状态、
-新增像素缓冲或逐帧 GC。当前发布没有待用户处理的权限门禁；若以后重新考虑动效，必须先在最大
+新增像素缓冲或逐帧 GC。1.4.0 仍须在 COM5 重新完成统一验收；若以后重新考虑动效，必须先在最大
 受支持用户状态和连续五轮操作下把最低空闲堆提高到至少 12 KiB，再重新运行同一统一验收。
 
 ## 11. 验证范围与维护准则

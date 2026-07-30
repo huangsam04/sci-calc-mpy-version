@@ -2,7 +2,7 @@
 
 SCI-CALC 的 MicroPython 固件，目标硬件为 ESP32-WROOM-32E、SSD1322 256×64 灰阶 OLED、5×6 矩阵键盘和 FAT32 SD 卡。
 
-当前应用版本为 **1.3.0**。源码编译基线是本仓库 `micropython/` 中的 **MicroPython 1.29.0-preview**，并已在设备的 **MicroPython 1.28.0 (2026-04-06)** 上完成冷启动验证。项目不修改 MicroPython 核心。
+当前应用版本为 **1.4.0**。源码编译基线是本仓库 `micropython/` 中的 **MicroPython 1.29.0-preview**，并已在设备的 **MicroPython 1.28.0 (2026-04-06)** 上完成冷启动验证。项目不修改 MicroPython 核心。
 
 只想日常使用计算器时，请先看 [简明使用说明](USER_GUIDE.md)。本文保留部署、插件和维护细节。
 
@@ -143,6 +143,8 @@ max(3, 5, 4)          -> 5
 自动缩放通常保留完整采样极值；当少量
 渐近线附近的采样值远离中央 90% 数据时，改用稳健范围，避免正常曲线被压扁。
 非有限值、视窗外分支和大幅跳变不会被连接成贯穿屏幕的伪曲线。
+提交后会立即显示 `Plotting` 和真实进度条；自动缩放、工作区清零和曲线采样按有界切片推进，
+中途按键会取消旧任务并进入对应操作。进度条直接画入唯一 framebuffer，未增加像素缓冲。
 
 ### 其他页面
 
@@ -343,7 +345,7 @@ UI 会显示保存失败并每两秒重试。
 ..\.venv\python.exe -m mpremote connect PORTNAME reset
 ```
 
-当前主机基线为 `1159 passed`，并通过 CPython 语法检查和 MicroPython 1.29
+当前主机基线为 `1164 passed`，并通过 CPython 语法检查和 MicroPython 1.29
 `mpy-cross -march=xtensawin` 全源编译。最终五轮主机驻留导航为 0 次 `MemoryError`、8192 B
 framebuffer 峰值、16,000 us 最大阻塞步和 5,625 B 稳态 traced peak；这些数据用于比较逻辑
 工作量，不替代真机堆或 SPI 时延。
@@ -356,7 +358,7 @@ framebuffer 峰值、16,000 us 最大阻塞步和 5,625 B 稳态 traced peak；�
 
 该脚本是唯一正式验收入口，依次执行 resident 启动缓冲探针、最大用户状态应用矩阵、五轮运行时
 目标导航、五轮捕获边沿到屏幕提交的交互探针，以及 16 帧秒表局部刷新分配探针；每阶段后都复位
-设备并让 OLED 休眠。COM5 的最终五阶段调用报告：单一 framebuffer 为 8192 B、固定 Plot 工作区
+设备并让 OLED 休眠。1.3.0 的上一轮 COM5 动效门禁基线报告：单一 framebuffer 为 8192 B、固定 Plot 工作区
 为 104 B；20 条历史（共 768 字符）、16 个变量、20 个秒表圈和 3 个插件连续五轮无错误，稳态
 最低空闲堆 6416 B、观测到的瞬态最低值 592 B；125 个 runtime step 最大 30.116 ms、最低空闲堆
 4752 B；OLED 唤醒时捕获边沿到可见提交最大 18.699 ms、堆漂移 0；16 个秒表帧的堆增量全部为 0。
@@ -367,7 +369,7 @@ framebuffer 峰值、16,000 us 最大阻塞步和 5,625 B 稳态 traced peak；�
 2. 计算、赋值、重启，确认变量持久化；开关插件后再次进入函数选择器。
 3. 快速输入、长按 DEL/ESC、Shift+RPN、Shift+Tab，确认没有重复事件。
 4. 运行 `tools/run_device_acceptance.ps1` 完成统一验收；必须看到
-   `ACCEPTANCE_COMPLETE PORTNAME stages=5 animation=removed_heap_below_12k`。
+   `ACCEPTANCE_COMPLETE PORTNAME stages=5 animation=removed_heap_below_12k`。1.4.0 必须在部署后重新得到同一结果。
 5. 运行秒表 30 分钟，并检查绘图、缩放、求解和错误弹窗。
 
 诊断模式每五秒输出平均渲染耗时、present 耗时和空闲堆。统一验收目标仍是输入到可见像素小于
