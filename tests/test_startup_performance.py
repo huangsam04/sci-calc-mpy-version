@@ -6,10 +6,10 @@ import main
 import pytest
 from display.xglcd_font import XglcdFont
 from runtime_handle import (
-    RuntimeHandle,
     get_resident_runtime,
     set_resident_runtime,
 )
+from runtime_materialize import RuntimeHandle
 
 
 SOURCE = Path(__file__).parents[1] / "source"
@@ -45,22 +45,42 @@ class SplashDisplay:
 class _BootDisplay:
     height = 64
 
+    def __init__(self):
+        self.sleep_calls = 0
+
     def set_brightness(self, value):
         pass
+
+    def sleep(self):
+        self.sleep_calls += 1
 
 
 class _BootRegistry:
     angle_mode = 0
     plugin_functions = {}
     plugin_dependencies = {}
+    plugin_files = ()
     plugin_errors = ()
 
 
+class _BootMenu:
+    cursor = object()
+
+
 class _BootScreen:
+    menu = _BootMenu()
+
     def __init__(self, *args, **kwargs):
         self.input_box = object()
+        self._state = [None] * 8
 
     def activate(self):
+        pass
+
+    def _reserve_menu_rows(self):
+        pass
+
+    def _build_rows(self):
         pass
 
     def add_screen(self, label, screen):
@@ -81,6 +101,7 @@ class _BootStorage:
 class _BootNav:
     def __init__(self, display, font_small, registry):
         self.current = None
+        self.registered_screens = ()
         self.memory = type("Memory", (), {"_buffers": {}})()
         self.renderer = type(
             "Renderer", (), {
@@ -89,7 +110,7 @@ class _BootNav:
             })()
 
     def register_screens(self, screens):
-        pass
+        self.registered_screens = tuple(screens)
 
     def boot(self, root):
         self.current = root
@@ -120,10 +141,10 @@ def _install_minimal_boot_adapters(
     screen_names = (
         ("screens.main_menu", "MainMenu"),
         ("screens.calculator", "CalculatorScreen"),
+        ("screens.variable_panel", "VariablePanel"),
+        ("screens.function_picker", "FunctionPicker"),
         ("screens.about", "AboutScreen"),
         ("screens.letter_panel", "LetterPanel"),
-        ("screens.function_picker", "FunctionPicker"),
-        ("screens.variable_panel", "VariablePanel"),
         ("screens.function_panel", "FunctionPanel"),
         ("screens.plot", "PlotScreen"),
         ("screens.settings", "SettingsScreen"),
@@ -136,10 +157,11 @@ def _install_minimal_boot_adapters(
     for module_name, class_name in screen_names:
         module = types.ModuleType(module_name)
         setattr(module, class_name, _BootScreen)
+        if module_name == "screens.stopwatch":
+            module.STOPWATCH_FRAME_MS = 50
         monkeypatch.setitem(sys.modules, module_name, module)
     monkeypatch.setattr(main, "_init_display", _BootDisplay)
     monkeypatch.setattr(main, "_boot_progress", lambda *args: None)
-    monkeypatch.setattr(main, "XglcdFont", lambda *args: object())
     monkeypatch.setattr(
         main, "_reload_functions", lambda settings: _BootRegistry())
     monkeypatch.setattr(main, "Nav", _BootNav)
@@ -156,18 +178,40 @@ def test_shipped_fonts_load_despite_legacy_non_utf8_comments():
     for filename, font_width, font_height, letter_width in fonts:
         font = XglcdFont(str(SOURCE / "fonts" / filename),
                           font_width, font_height)
-        _, width, height = font.get_letter("A")
-        assert (width, height) == (letter_width, font_height)
+        offset = (ord("A") - font.start_letter) * font.bytes_per_letter
+        assert (font.letters[offset], font.height) == (
+            letter_width, font_height)
 
 
-def test_boot_uses_generated_binary_font_assets():
+def test_boot_uses_the_bounded_builtin_font_path():
     main_source = (SOURCE / "main.py").read_text(encoding="utf-8")
 
-    # Font files are slot-managed assets and must resolve against the
-    # application root, not a hardcoded flat /sd path.
-    assert "app_root()" in main_source
-    assert "/Bally7x9.xglcd" in main_source
-    assert "/Neato5x7.xglcd" in main_source
+    assert "font_main = None" in main_source
+    assert "font_small = None" in main_source
+    assert "XglcdFont(" not in main_source
+
+
+def test_boot_releases_the_rebuildable_function_loader(monkeypatch):
+    calc_package = types.ModuleType("calc")
+    loader_module = types.ModuleType("calc.loader")
+    app_root_module = types.ModuleType("approot")
+    calc_package.loader = loader_module
+    monkeypatch.setitem(sys.modules, "calc", calc_package)
+    monkeypatch.setitem(sys.modules, "calc.loader", loader_module)
+    monkeypatch.setitem(sys.modules, "approot", app_root_module)
+    monkeypatch.setattr(main.gc, "mem_free", lambda: 1, raising=False)
+    for helper_name in (
+            "_init_display", "_boot_progress", "_boot_fail",
+            "_release_function_loader"):
+        # Device boot deliberately deletes these globals.  Record them with
+        # monkeypatch so the host module is restored for the remaining tests.
+        monkeypatch.setattr(main, helper_name, getattr(main, helper_name))
+
+    main._release_function_loader()
+
+    assert "calc.loader" not in sys.modules
+    assert "approot" not in sys.modules
+    assert not hasattr(calc_package, "loader")
 
 
 def test_boot_presents_core_frame_before_run_loop_can_return():
@@ -185,24 +229,63 @@ def test_boot_presents_core_frame_before_run_loop_can_return():
     assert "lazy_screen" not in main_source
 
 
-def test_boot_publishes_an_explicit_runtime_handle_not_metrics_state():
+def test_boot_imports_fragmentation_sensitive_pages_in_measured_order():
+    main_source = (SOURCE / "main.py").read_text(encoding="utf-8")
+    screens = main_source.index("from screens.main_menu import MainMenu")
+    about = main_source.index("from screens.about import AboutScreen", screens)
+    calculator = main_source.index(
+        "from screens.calculator import CalculatorScreen", about)
+    panel = main_source.index(
+        "from screens.function_panel import FunctionPanel", calculator)
+    plot = main_source.index("from screens.plot import PlotScreen", panel)
+    letters = main_source.index(
+        "from screens.letter_panel import LetterPanel", plot)
+    picker = main_source.index(
+        "from screens.function_picker import FunctionPicker", letters)
+    stopwatch = main_source.index(
+        "from screens.stopwatch import StopwatchScreen", picker)
+    settings = main_source.index(
+        "from screens.settings import SettingsScreen", stopwatch)
+    variables = main_source.index(
+        "from screens.variable_panel import VariablePanel", settings)
+
+    plot_construct = main_source.index(
+        "plot_screen = PlotScreen", variables)
+    plot_collect = main_source.index("gc.collect()", plot_construct)
+    calc_construct = main_source.index(
+        "calc_screen = CalculatorScreen", plot_collect)
+
+    assert (screens < about < calculator < panel < plot < letters < picker
+            < stopwatch < settings < variables < plot_construct
+            < plot_collect < calc_construct)
+
+
+def test_boot_uses_binding_normally_and_builds_a_diagnostic_handle_on_request():
     main_source = (SOURCE / "main.py").read_text(encoding="utf-8")
 
-    handle = main_source.index("RuntimeHandle(")
+    binding = main_source.index("application_binding = ApplicationBinding(")
+    handle = main_source.index(
+        "runtime = application_binding if run_loop else RuntimeHandle(",
+        binding)
     ready = main_source.index('metrics.mark_boot("ui_ready")', handle)
-    return_gate = main_source.index("if not run_loop:", ready)
+    first_frame = main_source.index(
+        "_present_first_ui_frame(nav, main_menu)", ready)
+    return_gate = main_source.index("if not run_loop:", first_frame)
     diagnostic_publish = main_source.index(
-        "set_resident_runtime(runtime)", return_gate)
+        "set_resident_runtime(runtime)", handle)
     returned = main_source.index("return runtime", return_gate)
     power = main_source.index("power = DisplayPower(", returned)
     handler = main_source.index("def _handle_event(", power)
     resident_publish = main_source.index(
-        "set_resident_runtime(runtime)", handler)
+        '__import__("runtime_handle")._resident_runtime = runtime',
+        handler)
 
-    assert (handle < ready < return_gate < diagnostic_publish < returned
-            < power < handler < resident_publish)
+    assert (binding < handle < ready < first_frame < return_gate
+            < diagnostic_publish < returned < power < handler
+            < resident_publish)
     assert "metrics.bind_runtime" not in main_source
-    assert "from runtime_handle import RuntimeHandle" in main_source
+    assert "from runtime_materialize import RuntimeHandle" in main_source
+    assert "if not run_loop:" in main_source[:binding]
     assert "from runtime_acceptance import RuntimeHandle" not in main_source
 
 
@@ -221,6 +304,112 @@ def test_failed_startup_clears_the_previous_resident_runtime(monkeypatch):
         assert get_resident_runtime() is None
     finally:
         set_resident_runtime(None)
+
+
+def test_function_startup_memory_error_is_not_converted_to_a_fallback(
+        monkeypatch):
+    class Metrics:
+        def start_boot(self):
+            pass
+
+        def mark_boot(self, phase):
+            pass
+
+    _install_minimal_boot_adapters(monkeypatch, Metrics())
+
+    def exhaust_heap(settings):
+        raise MemoryError("injected function startup")
+
+    monkeypatch.setattr(main, "_reload_functions", exhaust_heap)
+    monkeypatch.setattr(
+        main, "_boot_fail",
+        lambda *args: pytest.fail("boot fallback must not handle MemoryError"))
+
+    with pytest.raises(MemoryError, match="injected function startup"):
+        main.main(run_loop=False)
+
+
+def test_page_startup_memory_error_sleeps_oled_before_reraising(monkeypatch):
+    class Metrics:
+        def start_boot(self):
+            pass
+
+        def mark_boot(self, phase):
+            pass
+
+    _install_minimal_boot_adapters(monkeypatch, Metrics())
+    display = _BootDisplay()
+    failure = MemoryError("injected page startup")
+
+    class FailingVariablePanel:
+        def __init__(self, *args, **kwargs):
+            raise failure
+
+    monkeypatch.setattr(main, "_init_display", lambda: display)
+    monkeypatch.setattr(
+        sys.modules["screens.variable_panel"],
+        "VariablePanel", FailingVariablePanel)
+
+    with pytest.raises(MemoryError) as caught:
+        main.main(run_loop=False)
+
+    assert caught.value is failure
+    assert display.sleep_calls == 1
+
+
+def test_late_page_startup_memory_error_sleeps_oled_before_reraising(
+        monkeypatch):
+    class Metrics:
+        def start_boot(self):
+            pass
+
+        def mark_boot(self, phase):
+            pass
+
+    _install_minimal_boot_adapters(monkeypatch, Metrics())
+    display = _BootDisplay()
+    failure = MemoryError("injected late page startup")
+
+    class FailingMainMenu(_BootScreen):
+        def add_screen(self, label, screen):
+            raise failure
+
+    monkeypatch.setattr(main, "_init_display", lambda: display)
+    monkeypatch.setattr(
+        sys.modules["screens.main_menu"], "MainMenu", FailingMainMenu)
+
+    with pytest.raises(MemoryError) as caught:
+        main.main(run_loop=False)
+
+    assert caught.value is failure
+    assert display.sleep_calls == 1
+
+
+def test_first_ui_frame_memory_error_sleeps_oled_before_reraising(
+        monkeypatch):
+    class Metrics:
+        def start_boot(self):
+            pass
+
+        def mark_boot(self, phase):
+            pass
+
+    _install_minimal_boot_adapters(monkeypatch, Metrics())
+    display = _BootDisplay()
+    failure = MemoryError("injected first UI frame")
+
+    monkeypatch.setattr(main, "_init_display", lambda: display)
+
+    def fail_first_frame(nav, root):
+        raise failure
+
+    monkeypatch.setattr(main, "_present_first_ui_frame", fail_first_frame)
+
+    with pytest.raises(MemoryError) as caught:
+        main.main(run_loop=False)
+
+    assert caught.value is failure
+    assert display.sleep_calls == 1
 
 
 def test_late_startup_failure_cannot_publish_a_partial_runtime(monkeypatch):
@@ -243,6 +432,26 @@ def test_late_startup_failure_cannot_publish_a_partial_runtime(monkeypatch):
         assert get_resident_runtime() is None
     finally:
         set_resident_runtime(None)
+
+
+def test_runtime_reuses_the_registered_resident_screen_tuple(
+        monkeypatch):
+    class Metrics:
+        def start_boot(self):
+            pass
+
+        def mark_boot(self, phase):
+            pass
+
+    _install_minimal_boot_adapters(monkeypatch, Metrics())
+
+    runtime = main.main(run_loop=False, publish_runtime=False)
+
+    assert runtime.nav.registered_screens[0] is runtime.root
+    assert len(runtime.nav.registered_screens) == 10
+    assert runtime.targets is runtime.application_binding.screens
+    assert runtime.targets == runtime.nav.registered_screens
+    assert runtime.optional_buffer_target is runtime.application_binding.plot
 
 
 def test_power_setup_failure_cannot_publish_a_partial_runtime(monkeypatch):
@@ -348,14 +557,69 @@ def test_angle_toggle_immediately_invalidates_sidebar():
         def invalidate_sidebar(self):
             self.invalidations += 1
 
+    class Plot:
+        def __init__(self):
+            self.invalidations = 0
+
+        def on_angle_mode_changed(self):
+            self.invalidations += 1
+
     registry = Registry()
     settings = {}
     persistence = Persistence()
     renderer = Renderer()
+    plot = Plot()
 
-    main._toggle_angle_mode(registry, settings, persistence, renderer)
+    main._toggle_angle_mode(registry, settings, persistence, renderer, plot)
 
     assert registry.angle_mode == 1
     assert settings["angle_mode"] == 1
     assert persistence.saved is settings
     assert renderer.invalidations == 1
+    assert plot.invalidations == 1
+
+
+def test_context_letter_routing_respects_modal_and_visible_editor_contracts():
+    class Screen:
+        def __init__(self, modal=False, target=None):
+            self.modal = modal
+            self.target = target
+
+        def blocks_global_shortcuts(self):
+            return self.modal
+
+        def letter_input_target(self):
+            return self.target
+
+    class Letter:
+        def __init__(self):
+            self._state = [None]
+
+    class Nav:
+        def __init__(self):
+            self.calls = []
+
+        def go_to(self, screen, event):
+            self.calls.append((screen, event))
+
+    target = object()
+    letter = Letter()
+    nav = Nav()
+
+    assert main._open_context_letter_panel(
+        Screen(target=target), (3, 5, True), letter, nav) is True
+    assert letter._state[0] is target
+    assert nav.calls == [(letter, (3, 5, True))]
+
+    assert main._open_context_letter_panel(
+        Screen(modal=True, target=target), (3, 5, True), letter, nav) is False
+    assert main._open_context_letter_panel(
+        Screen(target=None), (3, 5, True), letter, nav) is False
+
+
+def test_global_angle_waits_for_non_modal_page_context_to_decline_the_event():
+    angle = (4, 4, False)
+
+    assert main._global_angle_allowed(angle, False, None) is True
+    assert main._global_angle_allowed(angle, True, None) is False
+    assert main._global_angle_allowed(angle, False, "REDRAW") is False

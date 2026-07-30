@@ -1,80 +1,32 @@
-"""Narrow captured-edge-to-screen tracer for the resident device runtime."""
+"""Five-round captured-edge-to-OLED tracer for the resident application."""
 import gc
-import sys
+import time
 
-
-if "/sd" not in sys.path:
-    sys.path.insert(0, "/sd")
+from ui.element import SETTLE_COLLECT, SETTLE_MORE, SETTLE_REDRAW
 
 
 TOTAL_ROUNDS = 5
 MAX_INPUT_FRAME_US = 20_000
-MAX_SETTLE_STEPS = 256
-MODE_RELEASE = "release"
-MODE_BENCHMARK = "benchmark"
-SCENARIO_NAME = "interaction_screen_tracer"
+MAX_BLOCKING_STEP_US = 32_000
+MAX_HEAP_DRIFT_BYTES = 512
 
 _MENU_DOWN = ((3, 1, False),)
 _MENU_UP = ((1, 1, False),)
-_DIGIT_EVENTS = (
-    (3, 0, False),
-    (3, 1, False),
-    (3, 2, False),
-    (2, 0, False),
-    (2, 1, False),
+_DIGITS = (
+    (3, 0, False), (3, 1, False), (3, 2, False),
+    (2, 0, False), (2, 1, False),
 )
 
 
-def _resident_runtime():
-    from runtime_acceptance import get_resident_runtime
-
-    return get_resident_runtime()
-
-
-def _benchmark_runtime():
-    from benchmarks import build_runtime
-
-    return build_runtime(mode=MODE_BENCHMARK)
-
-
-def _resolve_runtime(runtime, mode):
-    if mode not in (MODE_RELEASE, MODE_BENCHMARK):
-        raise ValueError("Unknown interaction mode: " + str(mode))
-    if runtime is None:
-        runtime = (
-            _resident_runtime()
-            if mode == MODE_RELEASE
-            else _benchmark_runtime())
-    if runtime is None:
-        if mode == MODE_RELEASE:
-            raise RuntimeError("Release mode requires a resident runtime")
-        raise RuntimeError("Benchmark runtime build failed")
-    expected_mode = "resident" if mode == MODE_RELEASE else MODE_BENCHMARK
-    if getattr(runtime, "mode", None) != expected_mode:
-        raise RuntimeError(
-            mode + " mode requires a " + expected_mode + " runtime")
-    return runtime
-
-
-def _buffer_text(buffers):
-    if not buffers:
-        return "-"
-    return ";".join(
-        name + ":" + str(length) + ":" + str(identity)
-        for name, length, identity in buffers)
-
-
 class QueuedKeyboard:
-    """Fixed tuple Adapter for edges already captured by the matrix scanner."""
-
     __slots__ = ("events", "index")
 
-    def __init__(self, events):
-        self.events = events if isinstance(events, tuple) else tuple(events)
+    def __init__(self):
+        self.events = _MENU_DOWN
         self.index = 0
 
     def reset(self, events):
-        self.events = events if isinstance(events, tuple) else tuple(events)
+        self.events = events
         self.index = 0
         return self
 
@@ -84,9 +36,6 @@ class QueuedKeyboard:
             return None
         self.index = index + 1
         return self.events[index]
-
-    def any_pressed(self):
-        return False
 
     def is_pressed(self, row, col):
         return False
@@ -98,231 +47,202 @@ class QueuedKeyboard:
         return False
 
 
-class _InteractionActions:
-    __slots__ = (
-        "calculator", "drain_input", "saved_input", "_menu_keyboard",
-        "_calculator_keyboard", "_active_keyboard", "_active_screen",
-        "_stable_handler")
+class _Dispatch:
+    __slots__ = ("keyboard", "screen")
 
-    def __init__(self, calculator, drain_input):
-        self.calculator = calculator
-        self.drain_input = drain_input
-        self.saved_input = calculator.input_box.get_str()
-        self._menu_keyboard = QueuedKeyboard(_MENU_DOWN)
-        self._calculator_keyboard = QueuedKeyboard(_DIGIT_EVENTS)
-        self._active_keyboard = None
-        self._active_screen = None
-        self._stable_handler = self._update_active_screen
+    def __init__(self, keyboard):
+        self.keyboard = keyboard
+        self.screen = None
 
-    def _update_active_screen(self, event):
-        return self._active_screen.update(
-            self._active_keyboard, event)
-
-    @staticmethod
-    def quiet_settle(runtime, round_index):
-        from ui.element import SETTLE_COLLECT, SETTLE_MORE, SETTLE_REDRAW
-
-        nav = runtime.nav
-        redraw = False
-        for _ in range(MAX_SETTLE_STEPS):
-            flags = nav.settle_current()
-            if flags & SETTLE_COLLECT:
-                gc.collect()
-            if flags & SETTLE_REDRAW:
-                redraw = True
-            if not flags & SETTLE_MORE:
-                if redraw:
-                    nav.present_current()
-                return
-        raise RuntimeError("Quiet settle work exceeded its fixed bound")
-
-    def menu_edges(self, runtime, round_index):
-        root = runtime.root
-        menu = root.menu
-        cursor_before = menu.cursor_pos
-        events = (
-            _MENU_DOWN
-            if menu.cursor_pos < len(menu.items) - 1
-            else _MENU_UP)
-        keyboard = self._menu_keyboard.reset(events)
-        self._active_keyboard = keyboard
-        self._active_screen = root
-        handled = self.drain_input(
-            runtime.nav,
-            keyboard,
-            self._stable_handler,
-        )
-        if handled != len(events):
-            raise AssertionError("Captured menu edges were not all dispatched")
-        if menu.cursor_pos == cursor_before:
-            raise AssertionError(
-                "Captured menu edge did not move the visible cursor")
-        runtime.nav.present_current()
-
-    def open_calculator(self, runtime, round_index):
-        self.calculator.input_box.clear_str()
-        runtime.nav.go_to(self.calculator)
-        runtime.nav.present_current()
-
-    def calculator_edges(self, runtime, round_index):
-        keyboard = self._calculator_keyboard.reset(_DIGIT_EVENTS)
-        self._active_keyboard = keyboard
-        self._active_screen = self.calculator
-        handled = self.drain_input(
-            runtime.nav,
-            keyboard,
-            self._stable_handler,
-        )
-        if handled != len(_DIGIT_EVENTS):
-            raise AssertionError(
-                "Captured Calculator edges were not all dispatched")
-        if self.calculator.input_box.get_str() != "12345":
-            raise AssertionError("Five-digit captured edge batch was lost")
-        runtime.nav.present_current()
-
-    def close_calculator(self, runtime, round_index):
-        self.calculator.input_box.set_str(
-            self.saved_input, immediate=True)
-        runtime.nav.go_back()
-        runtime.nav.present_current()
+    def update(self, event):
+        return self.screen.update(self.keyboard, event)
 
 
-class _InteractionObserver:
-    __slots__ = ("emit", "edge_max_us")
+def _record(stats, started, edge, phase):
+    elapsed = time.ticks_diff(time.ticks_us(), started)
+    stats[3] += 1
+    if elapsed > stats[4]:
+        stats[4] = elapsed
+        stats[6] = phase
+    if edge and elapsed > stats[5]:
+        stats[5] = elapsed
+        stats[7] = phase
+    return elapsed
 
-    def __init__(self, emit):
-        self.emit = emit
-        self.edge_max_us = 0
 
-    def __call__(self, event, report):
-        from runtime_acceptance import (
-            RUN_END, RUN_ERROR, RUN_MEMORY_ERROR, RUN_START, RUN_STEP)
-
-        if event == RUN_START:
-            from input.keyboard import DEBOUNCE_MS, SCAN_INTERVAL
-
-            self.emit(
-                "INTERACTION_SCREEN_TRACER_START"
-                + " tool=interaction_screen_tracer"
-                + " mode=" + report.mode
-                + " rounds=" + str(report.rounds_expected)
-                + " coverage=captured_edge_to_screen_update_present"
-                + " main_dispatch=not_measured"
-                + " scan_debounce=contract_only"
-                + " scan_interval_us=" + str(SCAN_INTERVAL * 1000)
-                + " debounce_us=" + str(DEBOUNCE_MS * 1000)
-                + " heap_before=" + str(report.heap_before)
-                + " buffers=" + _buffer_text(report.buffers_before))
+def _settle(nav, stats, phase):
+    redraw = False
+    for _ in range(256):
+        started = time.ticks_us()
+        flags = nav.settle_current()
+        if flags & SETTLE_COLLECT:
+            gc.collect()
+        if flags & SETTLE_REDRAW:
+            redraw = True
+        if not flags & SETTLE_MORE and redraw:
+            nav.present_current()
+        _record(stats, started, False, phase)
+        if not flags & SETTLE_MORE:
             return
-
-        if event in (RUN_STEP, RUN_MEMORY_ERROR, RUN_ERROR):
-            edge_step = report.step_name in (
-                "menu_edge_to_present",
-                "calculator_edge_to_present",
-            )
-            if edge_step and report.step_us > self.edge_max_us:
-                self.edge_max_us = report.step_us
-            timing_name = (
-                "edge_to_present_us" if edge_step else "step_us")
-            self.emit(
-                "INTERACTION_SCREEN_TRACER_STEP event=" + str(event)
-                + " round=" + str(report.round_index + 1)
-                + " name=" + str(report.step_name)
-                + " " + timing_name + "=" + str(report.step_us)
-                + " heap_free=" + str(report.step_heap_free)
-                + " heap_min=" + str(report.heap_min)
-                + " buffers=" + _buffer_text(report.step_buffers))
-            return
-
-        if event == RUN_END:
-            self.emit(
-                "INTERACTION_SCREEN_TRACER_END rounds_completed="
-                + str(report.rounds_completed)
-                + " runtime_steps=" + str(report.runtime_steps)
-                + " memory_errors=" + str(report.memory_errors)
-                + " errors=" + str(report.errors)
-                + " edge_to_present_max_us=" + str(self.edge_max_us)
-                + " blocking_max_us=" + str(report.blocking_max_us)
-                + " heap_after=" + str(report.heap_after)
-                + " heap_delta=" + str(report.heap_delta)
-                + " heap_min=" + str(report.heap_min)
-                + " buffer_peak_bytes=" + str(report.buffer_peak_bytes)
-                + " buffer_changes=" + str(report.buffer_change_count)
-                + " buffers_before=" + _buffer_text(
-                    report.buffers_before)
-                + " buffers_after=" + _buffer_text(
-                    report.buffers_after))
+    raise RuntimeError("Interaction settle exceeded its bound")
 
 
-def _scenario(actions):
-    from runtime_acceptance import RUN_ACTION
-
-    return (
-        SCENARIO_NAME,
-        TOTAL_ROUNDS,
-        (
-            ("menu_edge_to_present", RUN_ACTION, actions.menu_edges),
-            ("menu_quiet_settle", RUN_ACTION, actions.quiet_settle),
-            ("calculator_open", RUN_ACTION, actions.open_calculator),
-            (
-                "calculator_edge_to_present",
-                RUN_ACTION,
-                actions.calculator_edges,
-            ),
-            (
-                "calculator_quiet_settle",
-                RUN_ACTION,
-                actions.quiet_settle,
-            ),
-            ("calculator_close", RUN_ACTION, actions.close_calculator),
-        ),
-    )
+def _free():
+    reporter = getattr(gc, "mem_free", None)
+    return reporter() if reporter is not None else -1
 
 
-def run(runtime=None, mode=MODE_RELEASE, emit=print):
-    """Trace captured edges through screen update and visible presentation."""
-    from main import _drain_input_batch
-    from runtime_acceptance import run as run_acceptance
-
-    runtime = _resolve_runtime(runtime, mode)
-    calculator = runtime.find_target("Calculator")
-    root = runtime.root
-    if calculator is None or not hasattr(root, "menu"):
-        raise RuntimeError(
-            "Resident menu or Calculator screen is unavailable")
-    if getattr(calculator, "mode", None) != 0:
-        raise RuntimeError(
-            "Calculator must be in input mode for interaction tracing")
-
+def _exercise_round(
+        nav, root, calculator, keyboard, dispatch, handler, drain, stats,
+        round_index, saved_input):
     menu = root.menu
-    if not menu.items:
-        raise RuntimeError("Main menu has no entries")
+    cursor_before = menu.cursor_pos
+    events = _MENU_DOWN if cursor_before == 0 else _MENU_UP
+    dispatch.keyboard = keyboard.reset(events)
+    dispatch.screen = root
+    started = time.ticks_us()
+    if drain(nav, keyboard, handler) != 1:
+        raise RuntimeError("Menu edge was lost")
+    if menu.cursor_pos == cursor_before:
+        raise RuntimeError("Menu edge did not move")
+    nav.present_current()
+    _record(stats, started, True, 1)
+    _settle(nav, stats, 2)
+
+    started = time.ticks_us()
+    calculator.input_box.clear_str()
+    nav.go_to(calculator)
+    nav.present_current()
+    _record(stats, started, False, 3)
+
+    dispatch.keyboard = keyboard.reset(_DIGITS)
+    dispatch.screen = calculator
+    started = time.ticks_us()
+    if drain(nav, keyboard, handler) != len(_DIGITS):
+        raise RuntimeError("Calculator edges were lost")
+    if calculator.input_box.get_str() != "12345":
+        raise RuntimeError("Calculator edge value is wrong")
+    nav.present_current()
+    stats[8 + round_index] = _record(stats, started, True, 4)
+    _settle(nav, stats, 5)
+
+    started = time.ticks_us()
+    calculator.input_box.set_str(saved_input, immediate=True)
+    nav.go_back()
+    nav.present_current()
+    _record(stats, started, False, 6)
+    collector = getattr(nav, "collect_pending", None)
+    if collector is not None:
+        collector()
+    stats[2] = round_index + 1
+
+
+def run(runtime=None, emit=print):
+    from input.keyboard import DEBOUNCE_MS, SCAN_INTERVAL
+    from main import _drain_input_batch
+
+    if runtime is None:
+        from runtime_handle import get_resident_runtime
+
+        runtime = get_resident_runtime()
+    if runtime is None:
+        raise RuntimeError("Release mode requires a resident runtime")
+    screens = runtime.screens
+    if len(screens) != 10:
+        raise RuntimeError("Canonical resident screens are unavailable")
+    nav = runtime._nav
+    root = screens[0]
+    calculator = screens[1]
+    menu = root.menu
+    if (not menu._state[5]
+            or getattr(calculator, "mode", None) != 0):
+        raise RuntimeError("Resident interaction state is unavailable")
+
     saved_cursor = menu.cursor_pos
     saved_offset = menu.view_offset
-    actions = _InteractionActions(calculator, _drain_input_batch)
-    observer = _InteractionObserver(emit)
-    report = None
-    try:
-        report = run_acceptance(
-            runtime, _scenario(actions), observer)
-    finally:
-        calculator.input_box.set_str(
-            actions.saved_input, immediate=True)
-        menu.cursor_pos = saved_cursor
-        menu.view_offset = saved_offset
-        root.activate()
-        runtime.reset_root(present=True)
+    saved_input = calculator.input_box.get_str()
+    keyboard = QueuedKeyboard()
+    dispatch = _Dispatch(keyboard)
+    handler = dispatch.update
+    # Memory errors, other errors, rounds, steps, blocking max, edge max,
+    # blocking phase, edge phase, and five Calculator edge samples.
+    stats = [0] * 13
+    if nav.current is not root:
+        nav.reset(root)
+    gc.collect()
+    heap_before = _free()
+    emit("INTERACTION_SCREEN_TRACER_START mode=resident rounds=5"
+         + " coverage=captured_edge_to_screen_update_present"
+         + " oled=awake"
+         + " scan_interval_us=" + str(SCAN_INTERVAL * 1000)
+         + " debounce_us=" + str(DEBOUNCE_MS * 1000)
+         + " heap_before=" + str(heap_before))
 
-    accepted = (
-        report.accepted
-        and observer.edge_max_us < MAX_INPUT_FRAME_US)
+    display = nav.renderer.display
+    display.wake()
+    try:
+        for round_index in range(TOTAL_ROUNDS):
+            _exercise_round(
+                nav, root, calculator, keyboard, dispatch, handler,
+                _drain_input_batch, stats, round_index, saved_input)
+    except MemoryError:
+        stats[0] += 1
+    except Exception:
+        stats[1] += 1
+    finally:
+        try:
+            calculator.input_box.set_str(saved_input, immediate=True)
+            menu.cursor_pos = saved_cursor
+            menu.view_offset = saved_offset
+            root.activate()
+            if nav.current is not root:
+                nav.reset(root)
+            nav.present_current()
+        except MemoryError:
+            stats[0] += 1
+        except Exception:
+            stats[1] += 1
+        finally:
+            display.sleep()
+
+    gc.collect()
+    heap_after = _free()
+    heap_delta = (
+        heap_after - heap_before
+        if heap_before >= 0 and heap_after >= 0 else -1)
+    failure_mask = 0
+    if stats[0]:
+        failure_mask |= 1
+    if stats[1]:
+        failure_mask |= 2
+    if stats[4] >= MAX_BLOCKING_STEP_US:
+        failure_mask |= 4
+    if stats[5] >= MAX_INPUT_FRAME_US:
+        failure_mask |= 8
+    if heap_delta != -1 and abs(heap_delta) > MAX_HEAP_DRIFT_BYTES:
+        failure_mask |= 16
+    if stats[2] != TOTAL_ROUNDS:
+        failure_mask |= 32
+
+    emit("INTERACTION_SCREEN_TRACER_END rounds_completed=" + str(stats[2])
+         + " runtime_steps=" + str(stats[3])
+         + " memory_errors=" + str(stats[0])
+         + " errors=" + str(stats[1])
+         + " edge_to_present_max_us=" + str(stats[5])
+         + " edge_phase=" + str(stats[7])
+         + " blocking_max_us=" + str(stats[4])
+         + " blocking_phase=" + str(stats[6])
+         + " heap_after=" + str(heap_after)
+         + " heap_delta=" + str(heap_delta)
+         + " calc_edge_round_us=" + str(stats[8]) + ","
+         + str(stats[9]) + "," + str(stats[10]) + ","
+         + str(stats[11]) + "," + str(stats[12]))
     emit("INTERACTION_SCREEN_TRACER_RESULT "
-         + ("PASS" if accepted else "FAIL")
-         + " failure_mask=" + str(report.failure_mask)
-         + " edge_to_present_max_us=" + str(observer.edge_max_us))
-    if not accepted:
+         + ("PASS" if failure_mask == 0 else "FAIL")
+         + " failure_mask=" + str(failure_mask))
+    if failure_mask:
         raise RuntimeError("Device interaction screen tracer failed")
-    return report
+    return stats
 
 
 if __name__ == "__main__":

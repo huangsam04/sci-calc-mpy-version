@@ -21,6 +21,11 @@ def text_width(text, font):
     return font.measure_text(text) if font else len(text) * 8
 
 
+def get_direct_text_draw(display):
+    """Return the class-level direct drawer without binding it per frame."""
+    return getattr(type(display), "draw_text_direct", None)
+
+
 def fit_text(text, width, font):
     if text_width(text, font) <= width:
         return text
@@ -33,8 +38,14 @@ def fit_text(text, width, font):
 def draw_text(display, x, y, text, font=None, gs=GS_TEXT, invert=False,
               raw=False):
     if font:
-        display.draw_text(
-            x, y, text, font, invert=invert, gs=gs, raw=raw)
+        direct = get_direct_text_draw(display)
+        if direct is not None:
+            # Every production caller paints its row or panel first.  Drawing
+            # packed glyphs directly avoids both glyph and string FrameBuffers.
+            direct(display, x, y, text, font, gs=0 if invert else gs)
+        else:
+            display.draw_text(
+                x, y, text, font, invert=invert, gs=gs, raw=raw)
     else:
         display.draw_text8x8(x, y, text, gs=0 if invert else gs)
 
@@ -45,13 +56,26 @@ def draw_header(display, title, font=None, raw=False):
     display.draw_hline(0, TITLE_LINE_Y, CONTENT_W, GS_LINE)
 
 
+def draw_header_fast(display, title, title_bytes, font=None):
+    """Draw a screen-owned, pre-fitted title without per-frame fitting."""
+    if font and title_bytes:
+        direct = get_direct_text_draw(display)
+        if direct is not None:
+            direct(display, TEXT_X, TITLE_Y, title_bytes, font, gs=GS_TEXT)
+        else:
+            draw_text(display, TEXT_X, TITLE_Y, title, font, raw=True)
+    else:
+        draw_text(display, TEXT_X, TITLE_Y, title, font, raw=True)
+    display.draw_hline(0, TITLE_LINE_Y, CONTENT_W, GS_LINE)
+
+
 def draw_footer(display, hint, font=None, right="", raw=False):
     display.fill_rectangle(0, FOOTER_Y, CONTENT_W, SCREEN_H - FOOTER_Y, 0)
     display.draw_hline(0, FOOTER_Y, CONTENT_W, GS_LINE)
     fitted_hint = fit_text(hint, 126, font)
-    direct = getattr(display, "draw_text_direct", None)
+    direct = get_direct_text_draw(display)
     if font and direct is not None:
-        direct(TEXT_X, FOOTER_Y + 2, fitted_hint, font, gs=GS_MUTED)
+        direct(display, TEXT_X, FOOTER_Y + 2, fitted_hint, font, gs=GS_MUTED)
     else:
         draw_text(display, TEXT_X, FOOTER_Y + 2,
                   fitted_hint, font, GS_MUTED, raw=raw)
@@ -59,10 +83,30 @@ def draw_footer(display, hint, font=None, right="", raw=False):
         fitted = fit_text(right, 76, font)
         x = max(130, CONTENT_W - text_width(fitted, font) - 2)
         if font and direct is not None:
-            direct(x, FOOTER_Y + 2, fitted, font, gs=GS_TEXT)
+            direct(display, x, FOOTER_Y + 2, fitted, font, gs=GS_TEXT)
         else:
             draw_text(display, x, FOOTER_Y + 2, fitted, font, GS_TEXT,
                       raw=raw)
+
+
+def draw_footer_cached(display, hint, hint_bytes, font=None, right="",
+                       right_bytes=b"", right_x=0):
+    """Draw one screen-owned, pre-fitted footer cache without formatting."""
+    display.fill_rectangle(0, FOOTER_Y, CONTENT_W, SCREEN_H - FOOTER_Y, 0)
+    display.draw_hline(0, FOOTER_Y, CONTENT_W, GS_LINE)
+    direct = get_direct_text_draw(display)
+    if font and hint_bytes and direct is not None:
+        direct(display, TEXT_X, FOOTER_Y + 2, hint_bytes, font, gs=GS_MUTED)
+    else:
+        draw_text(display, TEXT_X, FOOTER_Y + 2, hint, font, GS_MUTED,
+                  raw=True)
+    if right:
+        if font and right_bytes and direct is not None:
+            direct(display, right_x, FOOTER_Y + 2, right_bytes, font,
+                   gs=GS_TEXT)
+        else:
+            draw_text(display, right_x, FOOTER_Y + 2, right, font, GS_TEXT,
+                      raw=True)
 
 
 def draw_footer_fast(display, hint, hint_bytes, font=None, right=""):

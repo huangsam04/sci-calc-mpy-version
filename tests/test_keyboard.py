@@ -1,8 +1,13 @@
 from input.keyboard import (
+    COL_PINS,
     COLS,
     DEBOUNCE_MS,
     EVENT_QUEUE_CAPACITY,
     Keyboard,
+    ROW_PINS,
+    ROWS,
+    _CALC_MAP,
+    _CALC_SHIFT_MAP,
     get_key_label,
 )
 
@@ -89,3 +94,37 @@ def test_key_labels_keep_numeric_and_shift_navigation_layouts():
     assert get_key_label(3, 0, False) == "1"
     assert get_key_label(3, 1, False) == "2"
     assert get_key_label(3, 1, True) == "down"
+
+
+def test_key_labels_use_fixed_position_tables_and_reject_invalid_positions():
+    expected_normal = (
+        "ESC", "/", "*", "-", "sin", "sec",
+        "7", "8", "9", "+", "cos", "csc",
+        "4", "5", "6", "^", "tan", "cot",
+        "1", "2", "3", "ENT", "exp", "rpn",
+        "shift", "0", ".", "DEL", "ang", "tab",
+    )
+    expected_shift = (
+        "ESC", "(", ")", "-", "asin", "sec",
+        "7", "up", "9", "+", "acos", "csc",
+        "left", "5", "right", "sqrt", "atan", "cot",
+        "1", "down", "3", "ENT", "ln", "rpn",
+        "shift", "0", ",", "DEL", "ang", "stab",
+    )
+
+    assert type(ROW_PINS) is tuple
+    assert type(COL_PINS) is tuple
+    assert _CALC_MAP == expected_normal
+    assert _CALC_SHIFT_MAP == expected_shift
+    assert len(_CALC_MAP) == ROWS * COLS == 30
+    assert len(_CALC_SHIFT_MAP) == ROWS * COLS == 30
+    assert tuple(
+        get_key_label(row, col)
+        for row in range(ROWS) for col in range(COLS)
+    ) == expected_normal
+    assert tuple(
+        get_key_label(row, col, True)
+        for row in range(ROWS) for col in range(COLS)
+    ) == expected_shift
+    for row, col in ((-1, 0), (ROWS, 0), (0, -1), (0, COLS), (None, 0)):
+        assert get_key_label(row, col) == ""

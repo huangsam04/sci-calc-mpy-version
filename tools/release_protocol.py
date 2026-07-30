@@ -4,10 +4,40 @@ from dataclasses import dataclass
 from typing import Optional
 
 
+OWNER_MARKER_NAME = ".sci-calc-owner"
+_OWNER_MARKER_HEADER = b"SCI-CALC-OWNER-1\n"
+_LOWER_HEX = frozenset("0123456789abcdef")
+
+
+def owner_marker_payload(release_id, manifest_sha256):
+    """Return the canonical content-bound slot ownership marker."""
+    if (type(release_id) is not str
+            or type(manifest_sha256) is not str
+            or len(release_id) != 64
+            or len(manifest_sha256) != 64
+            or any(char not in _LOWER_HEX for char in release_id)
+            or any(char not in _LOWER_HEX for char in manifest_sha256)):
+        raise ValueError("invalid release ownership identity")
+    return (
+        _OWNER_MARKER_HEADER
+        + b"release=" + release_id.encode("ascii") + b"\n"
+        + b"manifest=" + manifest_sha256.encode("ascii") + b"\n"
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class PhaseFailure:
     phase: str
     error: BaseException
+
+
+@dataclass(frozen=True, slots=True)
+class HashReceipt:
+    """Fixed-size evidence returned by a device-side streaming hash pass."""
+
+    matched_mask: int
+    missing_mask: int
+    fault: bool
 
 
 class ReleaseFailure(Exception):

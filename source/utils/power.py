@@ -11,6 +11,10 @@ LOCKED = "locked"
 class DisplayPower:
     """Own the display sleep deadline and safe wake/release sequence."""
 
+    __slots__ = (
+        "display", "timeout_ms", "sleeping", "_wake_locked",
+        "_last_activity")
+
     def __init__(self, display, timeout_ms, now=None):
         self.display = display
         self.timeout_ms = max(0, int(timeout_ms))

@@ -17,9 +17,27 @@ import device_runtime_monitor
 import device_interaction_acceptance
 
 
+def test_runtime_monitor_device_path_does_not_load_the_generic_runner():
+    source = (TOOLS / "device_runtime_monitor.py").read_text(encoding="utf-8")
+
+    assert "from runtime_acceptance import" not in source
+    assert "import runtime_acceptance" not in source
+    assert device_runtime_monitor.MIN_HEAP_FREE_BYTES == 4 * 1024
+
+
+def test_interaction_device_path_does_not_load_the_generic_runner():
+    source = (TOOLS / "device_interaction_acceptance.py").read_text(
+        encoding="utf-8")
+
+    assert "from runtime_acceptance import" not in source
+    assert "import runtime_acceptance" not in source
+    assert "from benchmarks import" not in source
+
+
 class _Memory:
     def __init__(self, buffers=None):
-        self._buffers = {} if buffers is None else buffers
+        buffers = {} if buffers is None else buffers
+        self._plot_curve = buffers.get("plot_curve", bytearray(104))
 
 
 class _Renderer:
@@ -44,7 +62,7 @@ class _Nav:
         self.current = target
         self.visited.append(target)
         if self._replace_buffer:
-            self.memory._buffers["plot_curve"] = bytearray(8)
+            self.memory._plot_curve = bytearray(104)
             self._replace_buffer = False
 
     def go_back(self):
@@ -99,7 +117,8 @@ class _PlotTarget:
 
 class _MenuState:
     def __init__(self):
-        self.items = [(str(index), object()) for index in range(5)]
+        self._state = [None] * 6
+        self._state[5] = [(str(index), object()) for index in range(5)]
         self.cursor_pos = 0
         self.view_offset = 0
 
@@ -119,7 +138,7 @@ class _InteractionRoot:
         self.log.append("update:root")
         if event[:2] == (3, 1):
             self.menu.cursor_pos = min(
-                len(self.menu.items) - 1, self.menu.cursor_pos + 1)
+                len(self.menu._state[5]) - 1, self.menu.cursor_pos + 1)
         elif event[:2] == (1, 1):
             self.menu.cursor_pos = max(0, self.menu.cursor_pos - 1)
 
@@ -161,10 +180,22 @@ class _FailingCalculatorTarget(_CalculatorTarget):
         raise RuntimeError("injected calculator update failure")
 
 
+class _InteractionDisplay:
+    def __init__(self, log):
+        self.log = log
+
+    def wake(self):
+        self.log.append("display:wake")
+
+    def sleep(self):
+        self.log.append("display:sleep")
+
+
 class _InteractionRenderer(_Renderer):
     def __init__(self, root, log):
         super().__init__(root)
         self.log = log
+        self.display = _InteractionDisplay(log)
 
     def invalidate(self):
         pass
@@ -201,6 +232,10 @@ class _InteractionNav(_Nav):
         self.log.append("settle:" + name)
         return 0
 
+    def collect_pending(self):
+        self.log.append("collect:root")
+        return False
+
 
 class _CollectRequestedInteractionNav(_InteractionNav):
     def settle_current(self):
@@ -208,6 +243,15 @@ class _CollectRequestedInteractionNav(_InteractionNav):
 
         super().settle_current()
         return SETTLE_COLLECT
+
+
+class _InteractionBinding:
+    def __init__(self, nav, root, calculator):
+        self._nav = nav
+        self.screens = (
+            root, calculator, object(), object(), object(),
+            object(), object(), object(), object(), object(),
+        )
 
 
 _ROOT = object()
@@ -220,25 +264,23 @@ def test_runtime_monitor_release_mode_requires_a_resident_runtime():
         with pytest.raises(RuntimeError, match="resident runtime"):
             device_runtime_monitor.run(
                 runtime=None,
-                mode="release",
                 emit=lambda _line: None,
             )
     finally:
         set_resident_runtime(previous)
 
 
-def test_runtime_monitor_labels_an_explicit_benchmark_run():
+def test_runtime_monitor_labels_the_resident_run():
     lines = []
 
     device_runtime_monitor.run(
         runtime=RuntimeHandle(
-            _Nav(_ROOT), _ROOT, (_Target(),), mode="benchmark"),
-        mode="benchmark",
+            _Nav(_ROOT), _ROOT, (_Target(),), mode="resident"),
         emit=lines.append,
     )
 
     assert lines
-    assert "mode=benchmark" in lines[0]
+    assert "mode=resident" in lines[0]
 
 
 def test_runtime_monitor_rejects_gc_heap_drift_over_512_bytes(monkeypatch):
@@ -257,8 +299,7 @@ def test_runtime_monitor_rejects_gc_heap_drift_over_512_bytes(monkeypatch):
     with pytest.raises(RuntimeError, match="acceptance failed"):
         device_runtime_monitor.run(
             runtime=RuntimeHandle(
-                _Nav(_ROOT), _ROOT, (_Target(),), mode="benchmark"),
-            mode="benchmark",
+                _Nav(_ROOT), _ROOT, (_Target(),), mode="resident"),
             emit=lambda _line: None,
         )
 
@@ -270,9 +311,8 @@ def test_runtime_monitor_rejects_same_named_buffer_replacement():
                 _Nav(_ROOT, replace_buffer=True),
                 _ROOT,
                 (_Target(),),
-                mode="benchmark",
+                mode="resident",
             ),
-            mode="benchmark",
             emit=lambda _line: None,
         )
 
@@ -282,8 +322,7 @@ def test_runtime_monitor_restores_the_users_plot_expression():
 
     device_runtime_monitor.run(
         runtime=RuntimeHandle(
-            _Nav(_ROOT), _ROOT, (plot,), mode="benchmark"),
-        mode="benchmark",
+            _Nav(_ROOT), _ROOT, (plot,), mode="resident"),
         emit=lambda _line: None,
     )
 
@@ -300,9 +339,8 @@ def test_runtime_monitor_restores_plot_state_after_memory_error():
                 _Nav(_ROOT, fail_navigation=True),
                 _ROOT,
                 (plot,),
-                mode="benchmark",
+                mode="resident",
             ),
-            mode="benchmark",
             emit=lambda _line: None,
         )
 
@@ -317,8 +355,7 @@ def test_runtime_monitor_runs_every_target_in_each_of_five_rounds():
 
     device_runtime_monitor.run(
         runtime=RuntimeHandle(
-            nav, _ROOT, (first, second), mode="benchmark"),
-        mode="benchmark",
+            nav, _ROOT, (first, second), mode="resident"),
         emit=lambda _line: None,
     )
 
@@ -331,8 +368,7 @@ def test_runtime_monitor_returns_to_root_after_unexpected_failure():
     with pytest.raises(RuntimeError, match="injected present failure"):
         device_runtime_monitor.run(
             runtime=RuntimeHandle(
-                nav, _ROOT, (_Target(),), mode="benchmark"),
-            mode="benchmark",
+                nav, _ROOT, (_Target(),), mode="resident"),
             emit=lambda _line: None,
         )
 
@@ -346,27 +382,30 @@ def test_interaction_release_mode_requires_a_resident_runtime():
         with pytest.raises(RuntimeError, match="resident runtime"):
             device_interaction_acceptance.run(
                 runtime=None,
-                mode="release",
                 emit=lambda _line: None,
             )
     finally:
         set_resident_runtime(previous)
 
 
+def test_interaction_scenario_contains_no_frames_for_removed_animations():
+    source = (TOOLS / "device_interaction_acceptance.py").read_text(
+        encoding="utf-8")
+
+    assert "menu_animation_frame" not in source
+    assert "page_fade_frame" not in source
+    assert "def _scenario(" not in source
+
+
 def test_interaction_presents_captured_edges_before_quiet_settle_work():
     log = []
     root = _InteractionRoot(log)
     calculator = _CalculatorTarget(log)
-    runtime = RuntimeHandle(
-        _InteractionNav(root, log),
-        root,
-        (calculator,),
-        mode="benchmark",
-    )
+    runtime = _InteractionBinding(
+        _InteractionNav(root, log), root, calculator)
 
     report = device_interaction_acceptance.run(
         runtime=runtime,
-        mode="benchmark",
         emit=lambda _line: None,
     )
 
@@ -376,11 +415,32 @@ def test_interaction_presents_captured_edges_before_quiet_settle_work():
     first_calc_update = log.index("update:calculator")
     calc_present = log.index("present:calculator", first_calc_update)
     calc_settle = log.index("settle:calculator", first_calc_update)
+    first_root_collect = log.index("collect:root")
     assert first_root_update < root_present < root_settle
     assert first_calc_update < calc_present < calc_settle
+    assert first_root_collect > calc_present
     assert log.count("update:root") == 5
     assert log.count("update:calculator") == 25
-    assert report.rounds_completed == 5
+    assert log.count("collect:root") == 5
+    assert report[2] == 5
+
+
+def test_interaction_times_visible_frames_with_oled_awake():
+    log = []
+    root = _InteractionRoot(log)
+    calculator = _CalculatorTarget(log)
+    runtime = _InteractionBinding(
+        _InteractionNav(root, log), root, calculator)
+
+    device_interaction_acceptance.run(
+        runtime=runtime,
+        emit=lambda _line: None,
+    )
+
+    assert log.count("display:wake") == 1
+    assert log.count("display:sleep") == 1
+    assert log.index("display:wake") < log.index("update:root")
+    assert log[-1] == "display:sleep"
 
 
 def test_interaction_defers_requested_gc_until_after_visible_commit(
@@ -388,12 +448,8 @@ def test_interaction_defers_requested_gc_until_after_visible_commit(
     log = []
     root = _InteractionRoot(log)
     calculator = _CalculatorTarget(log)
-    runtime = RuntimeHandle(
-        _CollectRequestedInteractionNav(root, log),
-        root,
-        (calculator,),
-        mode="benchmark",
-    )
+    runtime = _InteractionBinding(
+        _CollectRequestedInteractionNav(root, log), root, calculator)
     monkeypatch.setattr(
         device_interaction_acceptance.gc,
         "collect",
@@ -402,7 +458,6 @@ def test_interaction_defers_requested_gc_until_after_visible_commit(
 
     device_interaction_acceptance.run(
         runtime=runtime,
-        mode="benchmark",
         emit=lambda _line: None,
     )
 
@@ -416,17 +471,12 @@ def test_interaction_rejects_a_dispatched_menu_edge_that_does_not_move_cursor():
     log = []
     root = _NoOpInteractionRoot(log)
     calculator = _CalculatorTarget(log)
-    runtime = RuntimeHandle(
-        _InteractionNav(root, log),
-        root,
-        (calculator,),
-        mode="benchmark",
-    )
+    runtime = _InteractionBinding(
+        _InteractionNav(root, log), root, calculator)
 
     with pytest.raises(RuntimeError, match="interaction"):
         device_interaction_acceptance.run(
             runtime=runtime,
-            mode="benchmark",
             emit=lambda _line: None,
         )
 
@@ -438,13 +488,11 @@ def test_interaction_restores_user_state_after_update_failure():
     root.menu.view_offset = 1
     calculator = _FailingCalculatorTarget(log, value="9+8")
     nav = _InteractionNav(root, log)
-    runtime = RuntimeHandle(
-        nav, root, (calculator,), mode="benchmark")
+    runtime = _InteractionBinding(nav, root, calculator)
 
     with pytest.raises(RuntimeError, match="interaction screen tracer failed"):
         device_interaction_acceptance.run(
             runtime=runtime,
-            mode="benchmark",
             emit=lambda _line: None,
         )
 
@@ -460,37 +508,30 @@ def test_interaction_screen_tracer_reports_its_narrow_measurement_scope():
     lines = []
     root = _InteractionRoot(log)
     calculator = _CalculatorTarget(log)
-    runtime = RuntimeHandle(
-        _InteractionNav(root, log),
-        root,
-        (calculator,),
-        mode="benchmark",
-    )
+    runtime = _InteractionBinding(
+        _InteractionNav(root, log), root, calculator)
 
     device_interaction_acceptance.run(
         runtime=runtime,
-        mode="benchmark",
         emit=lines.append,
     )
 
     text = "\n".join(lines)
     assert lines[0].startswith("INTERACTION_SCREEN_TRACER_START ")
-    assert "tool=interaction_screen_tracer" in lines[0]
-    assert "mode=benchmark" in lines[0]
+    assert "mode=resident" in lines[0]
     assert (
         "coverage=captured_edge_to_screen_update_present"
         in lines[0]
     )
-    assert "main_dispatch=not_measured" in lines[0]
-    assert "scan_debounce=contract_only" in lines[0]
     assert "scan_interval_us=8000" in lines[0]
     assert "debounce_us=8000" in lines[0]
-    assert "edge_to_present_us=" in text
-    assert "heap_min=" in text
-    assert "buffers=" in text
+    assert "edge_to_present_max_us=" in text
+    assert "heap_after=" in text
+    assert "heap_delta=" in text
     assert "input_batch_us" not in text
     assert "INTERACTION_ACCEPTANCE" not in text
     assert lines[-1].startswith("INTERACTION_SCREEN_TRACER_RESULT PASS ")
+    assert "animation_frames=" not in text
 
 
 def test_interaction_requires_captured_edge_frames_below_20_ms(monkeypatch):
@@ -501,25 +542,21 @@ def test_interaction_requires_captured_edge_frames_below_20_ms(monkeypatch):
         now[0] += 20_000
         return value
 
-    monkeypatch.setattr(runtime_acceptance.time, "ticks_us", ticks_us)
     monkeypatch.setattr(
-        runtime_acceptance.time,
+        device_interaction_acceptance.time, "ticks_us", ticks_us)
+    monkeypatch.setattr(
+        device_interaction_acceptance.time,
         "ticks_diff",
         lambda end, start: end - start,
     )
     log = []
     root = _InteractionRoot(log)
     calculator = _CalculatorTarget(log)
-    runtime = RuntimeHandle(
-        _InteractionNav(root, log),
-        root,
-        (calculator,),
-        mode="benchmark",
-    )
+    runtime = _InteractionBinding(
+        _InteractionNav(root, log), root, calculator)
 
     with pytest.raises(RuntimeError, match="interaction screen tracer failed"):
         device_interaction_acceptance.run(
             runtime=runtime,
-            mode="benchmark",
             emit=lambda _line: None,
         )

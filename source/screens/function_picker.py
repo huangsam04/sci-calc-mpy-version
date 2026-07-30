@@ -1,146 +1,122 @@
-"""Function picker: Shift+RPN — 2-column scrollable list of all functions."""
 from ui.element import UIElement
-from input.keyboard import get_key_label
-from ui.theme import draw_footer_fast, draw_header
-
-VISIBLE = 4      # rows visible at once
-ROW_H = 10       # pixel height per row
-COL_W = 100      # pixel width per column
-COL2_X = 105     # x start of right column
-FOOTER_HINT = "UP/DN move  4/6 column"
-FOOTER_HINT_BYTES = b"UP/DN move  4/6 column"
-EMPTY_HINT = "[No functions loaded]"
-EMPTY_HINT_BYTES = b"[No functions loaded]"
+from ui import theme as _theme
 
 
 class FunctionPicker(UIElement):
     transition_title = "Functions"
+    x = 0
+    y = 0
+    width = 210
+    height = 64
+
+    __slots__ = ("_state",)
 
     def __init__(self, font, calc_screen):
-        super().__init__(0, 0, 210, 64)
-        self.font = font
-        self.calc_screen = calc_screen
-        self._names = []
-        self._registry_revision = -1
-        self._cursor = 0     # flat index into _names
-        self._offset = 0     # first visible row's base index (multiple of VISIBLE)
+        # calc, names, cursor, offset, notice, scenario lease.
+        # Build the only names backing block while the boot heap is contiguous.
+        # Later activations refill and sort the same list in place.
+        names = sorted(calc_screen.context.registry.keys())
+        self._state = [calc_screen, names, 0, 0, "", None]
 
     def activate(self):
-        ft = self.calc_screen.context.registry
-        revision = getattr(ft, "revision", None)
-        if revision != self._registry_revision:
-            self._names = sorted(ft.keys())
-            self._registry_revision = revision
-        self._cursor = 0
-        self._offset = 0
+        state = self._state
+        if state[5] is not None:
+            raise RuntimeError("Function picker scenario transaction is active")
+        names = state[1]
+        names[:] = ()
+        for name in state[0].context.registry.keys():
+            names.append(name)
+        names.sort()
+        state[2] = 0
+        state[3] = 0
+        state[4] = ""
 
-    def _clamp(self):
-        n = len(self._names)
-        if n == 0:
-            return
-        self._cursor = max(0, min(self._cursor, n - 1))
-        PAGE = VISIBLE * 2  # 8 items = one full 2-col page
-        # If cursor left the current page, flip to cursor's page
-        if self._cursor < self._offset or self._cursor >= self._offset + PAGE:
-            self._offset = (self._cursor // PAGE) * PAGE
-        max_off = max(0, ((n - 1) // PAGE) * PAGE)
-        self._offset = max(0, min(self._offset, max_off))
+    def release_memory(self):
+        state = self._state
+        released = bool(state[4])
+        state[2] = 0
+        state[3] = 0
+        state[4] = ""
+        return released
 
-    def _insert_selected(self):
-        if not self._names:
-            return
-        name = self._names[self._cursor]
-        ft = self.calc_screen.context.registry
-        entry = ft.get(name)
-        if entry:
-            kind = entry[2]
-            if kind in ("prefix", "list"):
-                self.calc_screen.input_box.insert_str(name + "(")
-            else:
-                self.calc_screen.input_box.insert_str(name)
-        else:
-            self.calc_screen.input_box.insert_str(name)
-
-    def _draw_item(self, display, x, y, name, selected):
-        font_h = self.font.height if self.font else 8
-        label = name
-        if self.font and self.font.measure_text(label) > COL_W - 12:
-            while len(label) > 0 and self.font.measure_text(label + "~") > COL_W - 12:
-                label = label[:-1]
-            label += "~"
-        if selected:
-            display.fill_rectangle(x, y, COL_W - 4, font_h, 12)
-        if self.font:
-            direct = getattr(display, "draw_text_direct", None)
-            if direct is not None:
-                direct(x + 2, y, label.encode(), self.font,
-                       gs=0 if selected else 15)
-            else:
-                display.draw_text(
-                    x + 2, y, label, self.font,
-                    invert=selected, gs=14 if selected else 15, raw=True)
-        else:
-            display.draw_text8x8(
-                x + 2, y, label[:12], gs=0 if selected else 15)
+    def open_scenario_transaction(self):
+        from screens.function_picker_scenario import (
+            FunctionPickerScenarioTransaction)
+        return FunctionPickerScenarioTransaction(self)
 
     def draw(self, display):
-        draw_header(display, "Functions", self.font)
+        state = self._state
+        names = state[1]
+        _theme.draw_header_fast(display, "Functions", b"Functions", None)
         display.draw_rectangle(0, 13, self.width, 40, 15)
-
-        self._clamp()
-        n = len(self._names)
-
-        visible_rows = VISIBLE
-        for row in range(visible_rows):
-            y = 15 + row * ROW_H
-            # Left column
-            li = self._offset + row
-            if li < n:
-                self._draw_item(display, 4, y, self._names[li], li == self._cursor)
-            # Right column
-            ri = self._offset + VISIBLE + row
-            if ri < n:
-                self._draw_item(display, COL2_X, y, self._names[ri], ri == self._cursor)
-
-        # Status
-        total = len(self._names)
-        hint = FOOTER_HINT
-        hint_bytes = FOOTER_HINT_BYTES
-        right = (str(self._cursor + 1) + "/" + str(total) + " ENT"
-                 if total else "")
-        if total == 0:
-            hint = EMPTY_HINT
-            hint_bytes = EMPTY_HINT_BYTES
-        draw_footer_fast(
-            display, hint, hint_bytes, self.font, right)
+        count = len(names)
+        if count:
+            state[2] = max(0, min(state[2], count - 1))
+            if not state[3] <= state[2] < state[3] + 8:
+                state[3] = state[2] // 8 * 8
+            state[3] = min(state[3], (count - 1) // 8 * 8)
+        row = 0
+        while row < 4:
+            y = 15 + row * 10
+            column = 0
+            while column < 2:
+                index = state[3] + row + column * 4
+                if index < count:
+                    selected = index == state[2]
+                    x = 4 if column == 0 else 105
+                    if selected:
+                        display.fill_rectangle(x, y, 96, 8, 12)
+                    display.draw_text8x8(
+                        x + 2, y, names[index][:12],
+                        gs=0 if selected else 15)
+                column += 1
+            row += 1
+        if not count:
+            hint = "[No functions loaded]"
+            hint_bytes = b"[No functions loaded]"
+            right = ""
+        elif state[4]:
+            hint = "Input full"
+            hint_bytes = b"Input full"
+            right = str(state[2] + 1) + "/" + str(count) + " ENT"
+        else:
+            hint = "UP/DN move  4/6 column"
+            hint_bytes = b"UP/DN move  4/6 column"
+            right = str(state[2] + 1) + "/" + str(count) + " ENT"
+        _theme.draw_footer_fast(display, hint, hint_bytes, None, right)
 
     def update(self, kb, event=None):
-        if event is None:
+        state = self._state
+        if state[5] is not None or event is None:
             return None
-
-        r, c, shift = event
-        label = get_key_label(r, c, shift)
-        n = len(self._names)
-
-        if label in ("2", "down"):
-            if self._cursor < n - 1:
-                self._cursor += 1
-        elif label in ("8", "up"):
-            if self._cursor > 0:
-                self._cursor -= 1
-        # Left/Right: physical 4/6 keys jump between columns
-        elif r == 2 and c == 0:
-            nc = self._cursor - VISIBLE
-            if nc >= 0:
-                self._cursor = nc
-        elif r == 2 and c == 2:
-            nc = self._cursor + VISIBLE
-            if nc < n:
-                self._cursor = nc
-        elif label == "ENT":
-            self._insert_selected()
+        row, col, _shift = event
+        names = state[1]
+        count = len(names)
+        previous = state[2]
+        if row == 3 and col == 1 and state[2] < count - 1:
+            state[2] += 1
+        elif row == 1 and col == 1 and state[2] > 0:
+            state[2] -= 1
+        elif row == 2 and col == 0 and state[2] >= 4:
+            state[2] -= 4
+        elif row == 2 and col == 2 and state[2] + 4 < count:
+            state[2] += 4
+        elif row == 3 and col == 3:
+            if not names:
+                return "FUNC_PICKER_DONE"
+            name = names[state[2]]
+            calc_screen = state[0]
+            entry = calc_screen.context.registry.get(name)
+            kind = entry[2] if entry else None
+            text = (name + "(" if kind == "prefix" or kind == "list"
+                    else name)
+            if calc_screen.input_box.try_insert(text):
+                state[4] = ""
+                return "FUNC_PICKER_DONE"
+            if state[4] == "Input full":
+                return None
+            state[4] = "Input full"
+            return "REDRAW"
+        elif row == 0 and col == 0:
             return "FUNC_PICKER_DONE"
-        elif label == "ESC":
-            return "FUNC_PICKER_DONE"
-
-        return None
+        return "REDRAW" if state[2] != previous else None

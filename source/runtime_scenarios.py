@@ -1,17 +1,20 @@
-"""Seven application capabilities behind one acceptance Adapter seam.
+"""Seven application capabilities behind one bounded acceptance seam.
 
-Device tools only select a scenario and consume its verdict.  They never need
-screen fields, key coordinates, storage paths, or plugin internals.
+Device tools select a canonical scenario and consume its verdict.  They never
+need screen fields, key coordinates, storage paths, or plugin internals.  The
+scenario descriptor resolves the application-owned adapter only when its one
+transaction is opened, so it never captures or constructs another runtime.
 
-The diagnostic scenarios deliberately have independent heap/drift/buffer
-baselines.  Only :func:`application_matrix` represents one complete A-to-G
-matrix under a single runner baseline.  Each capability is still one aggregate
-``RUN_ACTION``, so transient allocation peaks inside an action are invisible.
-The resident device gate must remain unavailable until those actions become a
-bounded multi-step state machine.
+Diagnostics retain independent heap/drift/buffer baselines.  The matrix uses
+one descriptor for all seven ordered capabilities, giving the acceptance
+runner a physical action boundary for each controller ``step()``.  The release
+gates are open only because the resident controller, trusted adoption, and the
+required host/device protections are all present.
 """
 
-from runtime_acceptance import RUN_ACTION
+from runtime_acceptance import (
+    MAX_BOUNDED_NO_PROGRESS_STEPS, MAX_BOUNDED_STEPS, RUN_BOUNDED,
+    STEP_DONE, STEP_MORE, STEP_WAIT)
 
 
 PASS = 1
@@ -53,8 +56,17 @@ APPLICATION_CAPABILITIES = (
     "page_round_trips",
 )
 
-# Hard release gate: aggregate RUN_ACTION capabilities are not device-safe.
-APPLICATION_MATRIX_DEVICE_READY = False
+# These are the observable operation totals of the legacy aggregate scenarios.
+# A bounded controller reports their cumulative sum as its completion proof.
+APPLICATION_OPERATION_COUNTS = (60, 40, 37, 5, 8, 60, 18)
+
+# The production runtime owns a sealed resident bounded controller.  Host-only
+# compatibility bridges still cannot satisfy the device acceptance binding.
+APPLICATION_MATRIX_DEVICE_READY = True
+
+# Device contact remains behind the transactional adoption/deployment path and
+# the orchestrator's reset-after-every-stage contract.
+APPLICATION_DEVICE_OPERATIONS_READY = True
 
 
 class ScenarioUnavailable(RuntimeError):
@@ -90,37 +102,436 @@ def _new_verdicts():
     ]
 
 
+def _action_for_capability(capability):
+    for index, known_capability in enumerate(APPLICATION_CAPABILITIES):
+        if capability == known_capability:
+            return index + 1
+    raise ValueError("Unknown application capability")
+
+
+def _operations_for_capability(capability):
+    return APPLICATION_OPERATION_COUNTS[
+        _action_for_capability(capability) - 1]
+
+
+class _ApplicationScenarioSession:
+    """Immutable capability descriptor bound to an adapter only in ``open``."""
+
+    __slots__ = (
+        "capabilities", "step_limits", "no_progress_limits",
+        "_bound_session", "completed_capability", "completed_count",
+        "completed_operations")
+
+    def __init__(self, capabilities):
+        if not isinstance(capabilities, tuple) or not capabilities:
+            raise ValueError("Scenario capabilities must be a nonempty tuple")
+        for capability in capabilities:
+            _action_for_capability(capability)
+        self.capabilities = capabilities
+        self.step_limits = ()
+        self.no_progress_limits = ()
+        self._bound_session = None
+        self.completed_capability = None
+        self.completed_count = 0
+        self.completed_operations = 0
+
+    def open(self, runtime):
+        if self._bound_session is not None:
+            raise RuntimeError("Scenario transaction is already open")
+        self.step_limits = ()
+        self.no_progress_limits = ()
+        try:
+            adapter = runtime.scenario_adapter
+        except AttributeError:
+            adapter = None
+        if adapter is None:
+            raise ScenarioUnavailable("Runtime bounded scenario adapter unavailable")
+        try:
+            opener = adapter.open_bounded_session
+        except AttributeError:
+            raise ScenarioUnavailable(
+                "Runtime bounded scenario adapter unavailable")
+        if opener is None:
+            raise ScenarioUnavailable("Runtime bounded scenario adapter unavailable")
+        bound_session = opener(runtime, self.capabilities)
+        if bound_session is None:
+            raise ScenarioUnavailable("Application bounded session unavailable")
+        self._bound_session = bound_session
+        self.completed_capability = None
+        self.completed_count = 0
+        self.completed_operations = 0
+        self.step_limits = bound_session.step_limits
+        self.no_progress_limits = bound_session.no_progress_limits
+
+    def step(self, round_index, capability_index):
+        bound_session = self._bound_session
+        if bound_session is None:
+            raise RuntimeError("Scenario transaction is not open")
+        status = bound_session.step(round_index, capability_index)
+        if status == STEP_DONE:
+            self.completed_capability = bound_session.completed_capability
+            self.completed_count = bound_session.completed_count
+            self.completed_operations = bound_session.completed_operations
+        return status
+
+    def close(self):
+        bound_session = self._bound_session
+        if bound_session is None:
+            return True
+        restored = bound_session.close()
+        if restored is True:
+            self._bound_session = None
+        return restored
+
+
+class _LegacyApplicationBoundedSession:
+    """Host-only compatibility bridge around the old aggregate ``perform``."""
+
+    __slots__ = (
+        "capabilities", "_adapter", "_runtime", "completed_capability",
+        "completed_count", "completed_operations", "step_limits",
+        "no_progress_limits")
+
+    def __init__(self, adapter, runtime, capabilities):
+        self.capabilities = capabilities
+        self._adapter = adapter
+        self._runtime = runtime
+        self.completed_capability = None
+        self.completed_count = 0
+        self.completed_operations = 0
+        self.step_limits = (1,) * len(capabilities)
+        self.no_progress_limits = (1,) * len(capabilities)
+
+    def step(self, round_index, capability_index):
+        capability = self.capabilities[capability_index]
+        action = _action_for_capability(capability)
+        verdict = self._adapter.verdict(action)
+        operations_before = verdict.operations
+        self._adapter.perform(self._runtime, action, round_index)
+        self.completed_capability = capability
+        self.completed_count += 1
+        self.completed_operations += verdict.operations - operations_before
+        return STEP_DONE
+
+    def close(self):
+        # Legacy perform restores each host action before it returns.
+        return True
+
+
+class _ControllerApplicationBoundedSession:
+    """Adapter-owned proof and verdict accounting around a controller session."""
+
+    __slots__ = (
+        "_adapter", "_controller_session", "capabilities",
+        "completed_capability", "completed_count", "completed_operations",
+        "_step_limits", "_no_progress_limits")
+
+    def __init__(self, adapter, controller_session, capabilities):
+        self._adapter = adapter
+        self._controller_session = controller_session
+        self.capabilities = capabilities
+        self.completed_capability = None
+        self.completed_count = 0
+        self.completed_operations = 0
+        self._step_limits = None
+        self._no_progress_limits = None
+
+    def _limits(self, name):
+        try:
+            values = getattr(self._controller_session, name)
+        except MemoryError:
+            for capability in self.capabilities:
+                self._failed(capability, "MemoryError")
+            raise
+        except Exception:
+            for capability in self.capabilities:
+                self._failed(capability, "Scenario transaction limits failed")
+            raise
+        if (not isinstance(values, tuple)
+                or len(values) != len(self.capabilities)):
+            for capability in self.capabilities:
+                self._failed(capability, "Invalid bounded session limits")
+            raise ValueError("Invalid bounded session limits")
+        if name == "step_limits":
+            maximum = MAX_BOUNDED_STEPS
+        else:
+            maximum = MAX_BOUNDED_NO_PROGRESS_STEPS
+        for index, value in enumerate(values):
+            if (isinstance(value, bool) or not isinstance(value, int)
+                    or value <= 0 or value > maximum):
+                self._failed(
+                    self.capabilities[index], "Invalid bounded session limits")
+                raise ValueError("Invalid bounded session limits")
+        return values
+
+    @property
+    def step_limits(self):
+        values = self._step_limits
+        if values is None:
+            values = self._limits("step_limits")
+            self._step_limits = values
+        return values
+
+    @property
+    def no_progress_limits(self):
+        values = self._no_progress_limits
+        if values is None:
+            values = self._limits("no_progress_limits")
+            self._no_progress_limits = values
+        return values
+
+    def _failed(self, capability, reason):
+        verdict = self._adapter.verdict(_action_for_capability(capability))
+        verdict.status = FAILED
+        verdict.reason = reason
+
+    def _restored(self):
+        for capability in self.capabilities:
+            verdict = self._adapter.verdict(_action_for_capability(capability))
+            verdict.restored = True
+
+    def _restore_failed(self):
+        for capability in self.capabilities:
+            verdict = self._adapter.verdict(_action_for_capability(capability))
+            verdict.status = FAILED
+            verdict.restored = False
+            verdict.reason = "Scenario restore failed"
+
+    def step(self, round_index, capability_index):
+        capability = self.capabilities[capability_index]
+        controller_session = self._controller_session
+        if controller_session is None:
+            self._failed(capability, "Scenario transaction is closed")
+            raise RuntimeError("Scenario transaction is closed")
+        try:
+            status = controller_session.step(round_index, capability_index)
+        except MemoryError:
+            self._failed(capability, "MemoryError")
+            raise
+        except ScenarioUnavailable:
+            self._adapter._mark_unavailable((capability,))
+            raise
+        except Exception:
+            self._failed(capability, "Scenario execution failed")
+            raise
+
+        if status == STEP_DONE:
+            expected_count = self.completed_count + 1
+            operations_before = self.completed_operations
+            expected_operations = (
+                operations_before
+                + _operations_for_capability(capability))
+            try:
+                completed_capability = controller_session.completed_capability
+                completed_count = controller_session.completed_count
+                completed_operations = getattr(
+                    controller_session, "completed_operations", None)
+            except MemoryError:
+                self._failed(capability, "MemoryError")
+                raise
+            except Exception:
+                self._failed(capability, "Scenario completion proof failed")
+                raise
+            invalid_count = (
+                isinstance(completed_count, bool)
+                or not isinstance(completed_count, int)
+                or completed_count != expected_count)
+            invalid_operations = (
+                isinstance(completed_operations, bool)
+                or not isinstance(completed_operations, int)
+                or completed_operations != expected_operations)
+            if (completed_capability != capability
+                    or invalid_count
+                    or invalid_operations):
+                self.completed_capability = completed_capability
+                # The runner also rejects the malformed scalar.  A bool must
+                # not compare equal to its integer counterpart and slip past.
+                # Operation proofs are not part of the runner protocol, so an
+                # invalid one deliberately makes the completion proof invalid.
+                self.completed_count = (
+                    None if invalid_count or invalid_operations
+                    else completed_count)
+                self.completed_operations = (
+                    None if invalid_operations else completed_operations)
+                self._failed(capability, "Invalid bounded completion proof")
+            else:
+                self.completed_capability = completed_capability
+                self.completed_count = completed_count
+                self.completed_operations = completed_operations
+                verdict = self._adapter.verdict(
+                    _action_for_capability(capability))
+                verdict.status = PASS
+                verdict.rounds_completed += 1
+                verdict.operations += completed_operations - operations_before
+                verdict.reason = None
+        elif status not in (STEP_MORE, STEP_WAIT):
+            self._failed(capability, "Invalid bounded step status")
+        return status
+
+    def close(self):
+        controller_session = self._controller_session
+        if controller_session is None:
+            return True
+        try:
+            restored = controller_session.close()
+        except MemoryError:
+            self._restore_failed()
+            raise
+        except Exception:
+            self._restore_failed()
+            raise
+        if restored is not True:
+            self._restore_failed()
+            raise RuntimeError("Scenario restore failed")
+        self._controller_session = None
+        self._restored()
+        return True
+
+
 class ResidentApplicationScenarioAdapter:
     """Production Adapter for an application-owned scenario controller.
 
-    RuntimeKernel/main can later supply a controller with this minimal
-    interface:
+    A production controller must expose this minimal bounded interface:
 
     - ``supports(capability) -> bool``
-    - ``snapshot(capability) -> opaque snapshot``
-    - ``perform(runtime, capability, round_index) -> operation count``
-    - ``restore(capability, snapshot) -> True``
+    - ``open_bounded_session(runtime, capabilities) -> controller_session``
+    - ``controller_session.step(round_index, capability_index) -> STEP_*``
+    - ``controller_session.completed_capability``,
+      ``controller_session.completed_count``, and strictly cumulative
+      ``controller_session.completed_operations`` after ``STEP_DONE``
+    - immutable ``controller_session.step_limits`` and
+      ``controller_session.no_progress_limits`` tuples, one positive scalar
+      per requested capability
+    - ``controller_session.close() -> True``
 
-    ``snapshot`` must not mutate application state; ``restore`` must be safe in
-    a ``finally`` path.  The current application has no such controller.
-    Without it, every action returns an explicit ``UNAVAILABLE`` verdict and
-    raises, preventing a false device pass.
+    The controller session owns its transaction snapshot/restore.  This
+    adapter copies its completion proof, accounts each capability verdict, and
+    turns an unsuccessful close into a restore failure.  The production
+    runtime supplies this controller through its sealed construction binding;
+    missing or foreign bindings still fail closed.  The older
+    snapshot/perform/restore contract is retained only for explicit
+    ``in_memory`` host adapters.
     """
 
-    __slots__ = ("_controller", "_verdicts")
+    __slots__ = ("_controller", "_verdicts", "_controller_sealed")
 
     def __init__(self, controller=None):
+        self._controller_sealed = False
         self._controller = controller
         self._verdicts = _new_verdicts()
+        self._controller_sealed = True
+
+    def __setattr__(self, name, value):
+        if (name == "_controller"
+                and getattr(self, "_controller_sealed", False)):
+            raise AttributeError("Resident application controller is immutable")
+        object.__setattr__(self, name, value)
+
+    def require_resident_application_binding(self, binding):
+        """Return the sealed real controller only for its construction binding."""
+        from runtime_application_controller import (
+            _ResidentApplicationScenarioController)
+
+        controller = self._controller
+        if not isinstance(controller, _ResidentApplicationScenarioController):
+            raise RuntimeError("Resident application controller is unavailable")
+        if controller._require_resident_application_binding(binding) is not binding:
+            raise RuntimeError("Resident application controller is foreign")
+        return controller
 
     def verdict(self, action):
         if action <= 0 or action >= len(self._verdicts):
             raise ValueError("Unknown application scenario")
         return self._verdicts[action]
 
+    def _mark_unavailable(self, capabilities):
+        for capability in capabilities:
+            verdict = self.verdict(_action_for_capability(capability))
+            verdict.status = UNAVAILABLE
+            verdict.restored = True
+            verdict.reason = capability
+
+    def _mark_failed(self, capabilities, reason):
+        for capability in capabilities:
+            verdict = self.verdict(_action_for_capability(capability))
+            verdict.status = FAILED
+            verdict.reason = reason
+
+    def open_bounded_session(self, runtime, capabilities):
+        """Open one controller transaction or the marked host compatibility path."""
+        if not isinstance(capabilities, tuple) or not capabilities:
+            raise ValueError("Scenario capabilities must be a nonempty tuple")
+        for capability in capabilities:
+            _action_for_capability(capability)
+
+        controller = self._controller
+        if controller is None:
+            self._mark_unavailable(capabilities)
+            raise ScenarioUnavailable(capabilities[0])
+        try:
+            supports = controller.supports
+        except MemoryError:
+            self._mark_failed(capabilities, "MemoryError")
+            raise
+        except Exception:
+            self._mark_failed(capabilities, "Scenario capability check failed")
+            raise
+        if not callable(supports):
+            self._mark_unavailable(capabilities)
+            raise ScenarioUnavailable(capabilities[0])
+        for capability in capabilities:
+            try:
+                supported = supports(capability)
+            except MemoryError:
+                self._mark_failed((capability,), "MemoryError")
+                raise
+            except Exception:
+                self._mark_failed(
+                    (capability,), "Scenario capability check failed")
+                raise
+            if not supported:
+                self._mark_unavailable((capability,))
+                raise ScenarioUnavailable(capability)
+
+        try:
+            opener = controller.open_bounded_session
+        except MemoryError:
+            self._mark_failed(capabilities, "MemoryError")
+            raise
+        except AttributeError:
+            opener = None
+        except Exception:
+            self._mark_failed(capabilities, "Scenario transaction open failed")
+            raise
+        if callable(opener):
+            try:
+                controller_session = opener(runtime, capabilities)
+            except MemoryError:
+                self._mark_failed(capabilities, "MemoryError")
+                raise
+            except Exception:
+                self._mark_failed(
+                    capabilities, "Scenario transaction open failed")
+                raise
+            if controller_session is None:
+                self._mark_unavailable(capabilities)
+                raise ScenarioUnavailable(capabilities[0])
+            return _ControllerApplicationBoundedSession(
+                self, controller_session, capabilities)
+
+        if getattr(runtime, "mode", None) == "in_memory":
+            return _LegacyApplicationBoundedSession(
+                self, runtime, capabilities)
+
+        self._mark_unavailable(capabilities)
+        raise ScenarioUnavailable(capabilities[0])
+
     def perform(self, runtime, action, round_index):
         verdict = self.verdict(action)
         capability = APPLICATION_CAPABILITIES[action - 1]
+        if getattr(runtime, "mode", None) != "in_memory":
+            self._mark_unavailable((capability,))
+            raise ScenarioUnavailable(capability)
         controller = self._controller
         if controller is None or not controller.supports(capability):
             verdict.status = UNAVAILABLE
@@ -192,91 +603,36 @@ class ResidentApplicationScenarioAdapter:
         verdict.operations += operations
         verdict.reason = None
 
-
-def _calculator_history(runtime, round_index):
-    runtime.perform(ACTION_CALCULATOR_HISTORY, round_index)
-
-
-def _error_lifecycle(runtime, round_index):
-    runtime.perform(ACTION_ERROR_LIFECYCLE, round_index)
-
-
-def _variable_quota_restart(runtime, round_index):
-    runtime.perform(ACTION_VARIABLE_QUOTA_RESTART, round_index)
-
-
-def _plot_pipeline(runtime, round_index):
-    runtime.perform(ACTION_PLOT_PIPELINE, round_index)
-
-
-def _plugin_reload(runtime, round_index):
-    runtime.perform(ACTION_PLUGIN_RELOAD, round_index)
-
-
-def _stopwatch_laps(runtime, round_index):
-    runtime.perform(ACTION_STOPWATCH_LAPS, round_index)
-
-
-def _page_round_trips(runtime, round_index):
-    runtime.perform(ACTION_PAGE_ROUND_TRIPS, round_index)
-
-
-_CALCULATOR_HISTORY_STEPS = (
-    ("history_fill_and_traverse", RUN_ACTION, _calculator_history),
-)
-_ERROR_LIFECYCLE_STEPS = (
-    ("twenty_errors_show_and_close", RUN_ACTION, _error_lifecycle),
-)
-_VARIABLE_QUOTA_RESTART_STEPS = (
-    ("quota_save_restart_delete_refill", RUN_ACTION,
-     _variable_quota_restart),
-)
-_PLOT_PIPELINE_STEPS = (
-    ("reserve_compile_autoscale_draw_exit", RUN_ACTION, _plot_pipeline),
-)
-_PLUGIN_RELOAD_STEPS = (
-    ("enable_disable_rescan_reload_failure", RUN_ACTION, _plugin_reload),
-)
-_STOPWATCH_LAPS_STEPS = (
-    ("run_twenty_laps_scroll_and_return", RUN_ACTION, _stopwatch_laps),
-)
-_PAGE_ROUND_TRIPS_STEPS = (
-    ("all_main_and_auxiliary_pages", RUN_ACTION, _page_round_trips),
-)
-
-_APPLICATION_MATRIX_STEPS = (
-    _CALCULATOR_HISTORY_STEPS[0],
-    _ERROR_LIFECYCLE_STEPS[0],
-    _VARIABLE_QUOTA_RESTART_STEPS[0],
-    _PLOT_PIPELINE_STEPS[0],
-    _PLUGIN_RELOAD_STEPS[0],
-    _STOPWATCH_LAPS_STEPS[0],
-    _PAGE_ROUND_TRIPS_STEPS[0],
-)
+def _bounded_steps(session):
+    return tuple(
+        (capability, RUN_BOUNDED, session)
+        for capability in session.capabilities)
 
 
 def application_scenarios(rounds=5):
-    """Return seven diagnostic scenarios with independent runner baselines.
+    """Return seven independent one-capability bounded transactions.
 
-    These reports help localize failures.  They do not constitute one complete
-    application-matrix heap, drift, timing, or buffer baseline.
+    Each report has its own session descriptor and baseline.  The descriptor
+    does not resolve the runtime adapter until the acceptance runner opens it.
+    These diagnostics help localize failures; they are not the complete matrix
+    heap, drift, timing, or buffer baseline.
     """
-    return (
-        (APPLICATION_CAPABILITIES[0], rounds, _CALCULATOR_HISTORY_STEPS),
-        (APPLICATION_CAPABILITIES[1], rounds, _ERROR_LIFECYCLE_STEPS),
-        (APPLICATION_CAPABILITIES[2], rounds, _VARIABLE_QUOTA_RESTART_STEPS),
-        (APPLICATION_CAPABILITIES[3], rounds, _PLOT_PIPELINE_STEPS),
-        (APPLICATION_CAPABILITIES[4], rounds, _PLUGIN_RELOAD_STEPS),
-        (APPLICATION_CAPABILITIES[5], rounds, _STOPWATCH_LAPS_STEPS),
-        (APPLICATION_CAPABILITIES[6], rounds, _PAGE_ROUND_TRIPS_STEPS),
-    )
+    return tuple(
+        (
+            capability,
+            rounds,
+            _bounded_steps(_ApplicationScenarioSession((capability,))),
+        )
+        for capability in APPLICATION_CAPABILITIES)
 
 
 def application_matrix(rounds=5):
-    """Return one ordered A-to-G matrix with one aggregate runner baseline.
+    """Return one ordered A-to-G matrix under one bounded transaction.
 
-    This is host-verifiable only while ``APPLICATION_MATRIX_DEVICE_READY`` is
-    false: each capability remains one ``RUN_ACTION`` and its transient
-    heap/buffer peak is not observable between runner steps.
+    All seven entries deliberately share one session identity.  The runner can
+    therefore prove one ordered completion at a time without retaining seven
+    simultaneous snapshots.  The resident runtime supplies the real bounded
+    controller selected by the release gate.
     """
-    return ("application_matrix", rounds, _APPLICATION_MATRIX_STEPS)
+    session = _ApplicationScenarioSession(APPLICATION_CAPABILITIES)
+    return ("application_matrix", rounds, _bounded_steps(session))

@@ -11,17 +11,18 @@ import pytest
 
 PROJECT = pathlib.Path(__file__).parents[1].resolve()
 PYTEST_TEMP_ROOT = PROJECT / ".pytest_tmp"
+PYTEST_SESSION_ROOT = PYTEST_TEMP_ROOT / "sessions"
 _GUID_NAME = re.compile(r"[0-9a-f]{32}")
 
 
 def _cleanup_project_temp(session_temp):
-    if session_temp.parent != PYTEST_TEMP_ROOT:
-        raise RuntimeError("refusing pytest cleanup outside the project temp root")
+    if session_temp.parent != PYTEST_SESSION_ROOT:
+        raise RuntimeError("refusing pytest cleanup outside the session temp root")
     if _GUID_NAME.fullmatch(session_temp.name) is None:
         raise RuntimeError("refusing pytest cleanup for a non-GUID directory")
     if not session_temp.exists():
         return
-    if session_temp.resolve().parent != PYTEST_TEMP_ROOT.resolve():
+    if session_temp.resolve().parent != PYTEST_SESSION_ROOT.resolve():
         raise RuntimeError("refusing pytest cleanup through a redirected path")
     shutil.rmtree(session_temp)
 
@@ -37,7 +38,11 @@ def pytest_configure(config):
     if PYTEST_TEMP_ROOT.resolve() != PYTEST_TEMP_ROOT:
         raise RuntimeError("project pytest temp root must not be redirected")
 
-    session_temp = PYTEST_TEMP_ROOT / uuid.uuid4().hex
+    PYTEST_SESSION_ROOT.mkdir(exist_ok=True)
+    if PYTEST_SESSION_ROOT.resolve().parent != PYTEST_TEMP_ROOT.resolve():
+        raise RuntimeError("project pytest session root must not be redirected")
+
+    session_temp = PYTEST_SESSION_ROOT / uuid.uuid4().hex
     config.option.basetemp = str(session_temp)
     config.add_cleanup(lambda: _cleanup_project_temp(session_temp))
 

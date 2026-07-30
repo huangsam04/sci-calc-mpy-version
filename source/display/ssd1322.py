@@ -1,9 +1,8 @@
 """MicroPython SSD1322 OLED monochrom display driver."""
 import sys
-from math import cos, sin, pi, radians
 import micropython  # type: ignore
 from micropython import const  # type: ignore
-from framebuf import FrameBuffer, GS8, MONO_HMSB, GS4_HMSB  # type: ignore
+from framebuf import FrameBuffer, GS4_HMSB  # type: ignore
 from utime import sleep_ms  # type: ignore
 from display.mono_palette import MonoPalette
 
@@ -11,13 +10,31 @@ from display.mono_palette import MonoPalette
 _HAS_FAST_TEXT_DRAW = sys.implementation.name == "micropython"
 
 
+def _cached_row_view(cached_views, start, end):
+    """Return one of the display's finite preseeded row views.
+
+    A missing range is deliberately not cached at present time.  The caller
+    promotes it to a full transfer, preserving correct pixels without a new
+    memoryview object in the frame path.
+    """
+    index = 0
+    cache_count = len(cached_views)
+    while index < cache_count:
+        cached = cached_views[index]
+        if cached[0] == start and cached[1] == end:
+            return cached[2]
+        index += 1
+    return None
+
+
 if _HAS_FAST_TEXT_DRAW:
     @micropython.viper
     def _draw_packed_text(target: ptr8, data: ptr8, text: ptr8,
-                          text_length: int, x: int, y: int, stride: int,
-                          shade: int, height: int, byte_height: int,
-                          bytes_per_letter: int, start_letter: int,
-                          end_letter: int, spacing: int) -> int:
+                           text_length: int, x: int, y: int, stride: int,
+                           shade: int, font_height: int, byte_height: int,
+                           bytes_per_letter: int, start_letter: int,
+                           end_letter: int, spacing: int,
+                           screen_width: int, screen_height: int) -> int:
         char_index: int = 0
         while char_index < text_length:
             code: int = int(text[char_index])
@@ -32,23 +49,29 @@ if _HAS_FAST_TEXT_DRAW:
                     bits: int = int(
                         data[glyph_offset + 1 + column * byte_height + chunk])
                     row_base: int = chunk * 8
-                    row_limit: int = height - row_base
+                    row_limit: int = font_height - row_base
                     if row_limit > 8:
                         row_limit = 8
                     row: int = 0
                     while row < row_limit:
                         if bits & (1 << row):
+                            pixel_y: int = y + row_base + row
                             pixel_x: int = x + column
-                            output_offset: int = (
-                                (y + row_base + row) * stride
-                                + (pixel_x >> 1))
-                            value: int = int(target[output_offset])
-                            if pixel_x & 1:
-                                target[output_offset] = (
-                                    value & 0xF0) | shade
-                            else:
-                                target[output_offset] = (
-                                    value & 0x0F) | (shade << 4)
+                            # Viper pointer writes do not bounds-check.  Keep
+                            # all four edge tests immediately before deriving
+                            # the buffer offset so clipped text is safe too.
+                            if (pixel_x >= 0 and pixel_x < screen_width
+                                    and pixel_y >= 0
+                                    and pixel_y < screen_height):
+                                output_offset: int = (
+                                    pixel_y * stride + (pixel_x >> 1))
+                                value: int = int(target[output_offset])
+                                if pixel_x & 1:
+                                    target[output_offset] = (
+                                        value & 0xF0) | shade
+                                else:
+                                    target[output_offset] = (
+                                        value & 0x0F) | (shade << 4)
                         row += 1
                     chunk += 1
                 column += 1
@@ -138,6 +161,52 @@ class Display(object):
         self.buffer_length = self.byte_width * height
         # Buffer
         self.gs4_buf = bytearray(self.buffer_length)
+        # ``present_rows()`` keeps one main view and preseeded fixed hot-band
+        # views.  The normal 64-row display covers Calculator/Plot editor
+        # bands, the Stopwatch's 13-row timer band, the shared footer, and all
+        # six finite root-menu spans before the first measured transfer.
+        self._gs4_view = memoryview(self.gs4_buf)
+        if height >= 64:
+            top_12_end = self.byte_width * 12
+            top_13_end = self.byte_width * 13
+            top_14_end = self.byte_width * 14
+            top_22_end = self.byte_width * 22
+            footer_start = self.byte_width * 54
+            footer_end = self.byte_width * 64
+            menu_01_start = self.byte_width * 13
+            menu_01_end = self.byte_width * 39
+            menu_12_start = self.byte_width * 25
+            menu_12_end = self.byte_width * 51
+            menu_23_start = self.byte_width * 37
+            menu_23_end = self.byte_width * 63
+            menu_012_end = self.byte_width * 51
+            menu_123_start = self.byte_width * 25
+            menu_123_end = self.byte_width * 63
+            menu_0123_end = self.byte_width * 63
+            self._row_views = [
+                [0, top_12_end, self._gs4_view[0:top_12_end]],
+                [0, top_13_end, self._gs4_view[0:top_13_end]],
+                [0, top_14_end, self._gs4_view[0:top_14_end]],
+                [0, top_22_end, self._gs4_view[0:top_22_end]],
+                [footer_start, footer_end,
+                 self._gs4_view[footer_start:footer_end]],
+                [menu_01_start, menu_01_end,
+                 self._gs4_view[menu_01_start:menu_01_end]],
+                [menu_12_start, menu_12_end,
+                 self._gs4_view[menu_12_start:menu_12_end]],
+                [menu_23_start, menu_23_end,
+                 self._gs4_view[menu_23_start:menu_23_end]],
+                [menu_01_start, menu_012_end,
+                 self._gs4_view[menu_01_start:menu_012_end]],
+                [menu_123_start, menu_123_end,
+                 self._gs4_view[menu_123_start:menu_123_end]],
+                [menu_01_start, menu_0123_end,
+                 self._gs4_view[menu_01_start:menu_0123_end]],
+            ]
+        else:
+            # Generic/test displays have no known hot bands.  Their valid
+            # compatibility path is a bounded full transfer.
+            self._row_views = []
         # Frame Buffer
         self.gs4_fb = FrameBuffer(self.gs4_buf, width, height, GS4_HMSB)
         # Reused by write_cmd() so the animation hot path does not allocate
@@ -221,258 +290,6 @@ class Display(object):
         """
         self.gs4_fb.fill(gs)
 
-    def draw_bitmap_GS4(self, path, x, y, w, h, invert=False, rotate=0):
-        """Load GS4_HMSB bitmap from disc and draw to screen.
-
-        Args:
-            path (string): Image file path.
-            x (int): x-coord of image.
-            y (int): y-coord of image.
-            w (int): Width of image.
-            h (int): Height of image.
-            invert (bool): True = invert image, False (Default) = normal image.
-            rotate(int): 0, 90, 180, 270
-        Notes:
-            w x h cannot exceed 2048
-        """
-        array_size = w * h
-        with open(path, "rb") as f:
-            buf = bytearray(f.read(array_size))
-            fb = FrameBuffer(buf, w, h, GS4_HMSB)
-            if rotate == 0 and invert is False:
-                self.gs4_fb.blit(fb, x, y)
-            elif rotate == 0:  # 0 degrees
-                for y1 in range(h):
-                    for x1 in range(w):
-                        self.gs4_fb.pixel(x1 + x, y1 + y,
-                                          15 - fb.pixel(x1, y1))
-            elif rotate == 90:  # 90 degrees
-                for y1 in range(h):
-                    for x1 in range(w):
-                        if invert is True:
-                            self.gs4_fb.pixel(y1 + x, x1 + y,
-                                              15 - fb.pixel(x1, (h - 1) - y1))
-                        else:
-                            self.gs4_fb.pixel(y1 + x, x1 + y,
-                                              fb.pixel(x1, (h - 1) - y1))
-            elif rotate == 180:  # 180 degrees
-                for y1 in range(h):
-                    for x1 in range(w):
-                        if invert is True:
-                            self.gs4_fb.pixel(x1 + x, y1 + y,
-                                              15 - fb.pixel((w - 1) - x1,
-                                                            (h - 1) - y1))
-                        else:
-                            self.gs4_fb.pixel(x1 + x, y1 + y,
-                                              fb.pixel((w - 1) - x1,
-                                                       (h - 1) - y1))
-            elif rotate == 270:  # 270 degrees
-                for y1 in range(h):
-                    for x1 in range(w):
-                        if invert is True:
-                            self.gs4_fb.pixel(y1 + x, x1 + y,
-                                              15 - fb.pixel((w - 1) - x1, y1))
-                        else:
-                            self.gs4_fb.pixel(y1 + x, x1 + y,
-                                              fb.pixel((w - 1) - x1, y1))
-
-            # Clean up because this function can use a lot of memory
-            del fb
-            del buf
-
-    def draw_bitmap_mono(self, path, x, y, w, h, invert=False,
-                         gs=15, rotate=0):
-        """Load MONO_HMSB bitmap from disc and draw to screen.
-
-        Args:
-            path (string): Image file path.
-            x (int): x-coord of image.
-            y (int): y-coord of image.
-            w (int): Width of image.
-            h (int): Height of image.
-            invert (bool): True = invert image, False (Default) = normal image.
-            gs (int): Grayscale 0=Black to 15=White (default grayscale table)
-            rotate(int): 0, 90, 180, 270
-        Notes:
-            w x h cannot exceed 2048
-        """
-        GSMAP = ((0, 15), (15, 0))
-        array_size = w * h
-        with open(path, "rb") as f:
-            buf = bytearray(f.read(array_size))
-            fb = FrameBuffer(buf, w, h, MONO_HMSB)
-
-            if rotate == 0:  # 0 degrees (can you blit for better speed)
-                if invert:
-                    self.palette.bg(gs)
-                    self.palette.fg(0)
-                else:
-                    self.palette.bg(0)
-                    self.palette.fg(gs)
-                self.gs4_fb.blit(fb, x, y, -1, self.palette)
-            elif rotate == 90:  # 90 degrees
-                for y1 in range(h):
-                    for x1 in range(w):
-                        self.gs4_fb.pixel(y1 + x, x1 + y,
-                                          GSMAP[fb.pixel(x1,
-                                                         (h - 1) - y1)]
-                                               [invert])
-            elif rotate == 180:  # 180 degrees
-                for y1 in range(h):
-                    for x1 in range(w):
-                        self.gs4_fb.pixel(x1 + x, y1 + y,
-                                          GSMAP[fb.pixel((w - 1) - x1,
-                                                         (h - 1) - y1)]
-                                               [invert])
-            elif rotate == 270:  # 270 degrees
-                for y1 in range(h):
-                    for x1 in range(w):
-                        self.gs4_fb.pixel(y1 + x, x1 + y,
-                                          GSMAP[fb.pixel((w - 1) - x1,
-                                                         y1)]
-                                               [invert])
-            # Clean up because this function can use a lot of memory
-            del fb
-            del buf
-
-    def draw_bitmap_raw(self, path, x, y, w, h, invert=False, rotate=0):
-        """Load raw bitmap from disc and draw to screen.
-
-        Args:
-            path (string): Image file path.
-            x (int): x-coord of image.
-            y (int): y-coord of image.
-            w (int): Width of image.
-            h (int): Height of image.
-            invert (bool): True = invert image, False (Default) = normal image.
-            rotate(int): 0, 90, 180, 270
-        Notes:
-            w x h cannot exceed 2048
-        """
-        if rotate == 90 or rotate == 270:
-            w, h = h, w  # Swap width & height if landscape
-
-        buf_size = w * h
-        with open(path, "rb") as f:
-            if rotate == 0:
-                buf = bytearray(f.read(buf_size))
-            elif rotate == 90:
-                buf = bytearray(buf_size)
-                for x1 in range(w - 1, -1, -1):
-                    for y1 in range(h):
-                        index = (w * y1) + x1
-                        buf[index] = f.read(1)[0]
-            elif rotate == 180:
-                buf = bytearray(buf_size)
-                for index in range(buf_size - 1, -1, -1):
-                    buf[index] = f.read(1)[0]
-            elif rotate == 270:
-                buf = bytearray(buf_size)
-                for x1 in range(1, w + 1):
-                    for y1 in range(h - 1, -1, -1):
-                        index = (w * y1) + x1 - 1
-                        buf[index] = f.read(1)[0]
-            if invert:
-                for i, _ in enumerate(buf):
-                    buf[i] ^= 0xFF
-
-            fbuf = FrameBuffer(buf, w, h, GS8)
-            self.gs4_fb.blit(fbuf, x, y)
-
-    def draw_circle(self, x0, y0, r, gs=15):
-        """Draw a circle.
-
-        Args:
-            x0 (int): X coordinate of center point.
-            y0 (int): Y coordinate of center point.
-            r (int): Radius.
-            gs (int): Grayscale 0=Black to 15=White (default grayscale table)
-        """
-        f = 1 - r
-        dx = 1
-        dy = -r - r
-        x = 0
-        y = r
-        self.draw_pixel(x0, y0 + r, gs)
-        self.draw_pixel(x0, y0 - r, gs)
-        self.draw_pixel(x0 + r, y0, gs)
-        self.draw_pixel(x0 - r, y0, gs)
-        while x < y:
-            if f >= 0:
-                y -= 1
-                dy += 2
-                f += dy
-            x += 1
-            dx += 2
-            f += dx
-            self.draw_pixel(x0 + x, y0 + y, gs)
-            self.draw_pixel(x0 - x, y0 + y, gs)
-            self.draw_pixel(x0 + x, y0 - y, gs)
-            self.draw_pixel(x0 - x, y0 - y, gs)
-            self.draw_pixel(x0 + y, y0 + x, gs)
-            self.draw_pixel(x0 - y, y0 + x, gs)
-            self.draw_pixel(x0 + y, y0 - x, gs)
-            self.draw_pixel(x0 - y, y0 - x, gs)
-
-    def draw_ellipse(self, x0, y0, a, b, gs=15):
-        """Draw an ellipse.
-
-        Args:
-            x0, y0 (int): Coordinates of center point.
-            a (int): Semi axis horizontal.
-            b (int): Semi axis vertical.
-            gs (int): Grayscale 0=Black to 15=White (default grayscale table)
-        Note:
-            The center point is the center of the x0,y0 pixel.
-            Since pixels are not divisible, the axes are integer rounded
-            up to complete on a full pixel.  Therefore the major and
-            minor axes are increased by 1.
-        """
-        a2 = a * a
-        b2 = b * b
-        twoa2 = a2 + a2
-        twob2 = b2 + b2
-        x = 0
-        y = b
-        px = 0
-        py = twoa2 * y
-        # Plot initial points
-        self.draw_pixel(x0 + x, y0 + y, gs)
-        self.draw_pixel(x0 - x, y0 + y, gs)
-        self.draw_pixel(x0 + x, y0 - y, gs)
-        self.draw_pixel(x0 - x, y0 - y, gs)
-        # Region 1
-        p = round(b2 - (a2 * b) + (0.25 * a2))
-        while px < py:
-            x += 1
-            px += twob2
-            if p < 0:
-                p += b2 + px
-            else:
-                y -= 1
-                py -= twoa2
-                p += b2 + px - py
-            self.draw_pixel(x0 + x, y0 + y, gs)
-            self.draw_pixel(x0 - x, y0 + y, gs)
-            self.draw_pixel(x0 + x, y0 - y, gs)
-            self.draw_pixel(x0 - x, y0 - y, gs)
-        # Region 2
-        p = round(b2 * (x + 0.5) * (x + 0.5) +
-                  a2 * (y - 1) * (y - 1) - a2 * b2)
-        while y > 0:
-            y -= 1
-            py -= twoa2
-            if p > 0:
-                p += a2 - py
-            else:
-                x += 1
-                px += twob2
-                p += a2 - py + px
-            self.draw_pixel(x0 + x, y0 + y, gs)
-            self.draw_pixel(x0 - x, y0 + y, gs)
-            self.draw_pixel(x0 + x, y0 - y, gs)
-            self.draw_pixel(x0 - x, y0 - y, gs)
-
     def draw_hline(self, x, y, w, gs=15):
         """Draw a horizontal line.
 
@@ -486,80 +303,6 @@ class Display(object):
             return
         self.gs4_fb.hline(x, y, w, gs)
 
-    def draw_letter(self, x, y, letter, font,
-                    invert=False, gs=15, rotate=False):
-        """Draw a letter.
-
-        Args:
-            x (int): Starting X position.
-            y (int): Starting Y position.
-            letter (string): Letter to draw.
-            font (XglcdFont object): Font.
-            invert (bool): Invert Font.
-            gs (int): Grayscale 0=Black to 15=White (default grayscale table)
-            rotate (int): Rotation of letter
-        """
-        fb, w, h = font.get_letter(letter, rotate=rotate)
-        # Check for errors
-        if w == 0:
-            return w, h
-        # Offset y for 270 degrees and x for 180 degrees
-        if rotate == 180:
-            x -= w
-        elif rotate == 270:
-            y -= h
-
-        if invert:
-            self.palette.bg(gs)
-            self.palette.fg(0)
-        else:
-            self.palette.bg(0)
-            self.palette.fg(gs)
-        self.gs4_fb.blit(fb, x, y, -1, self.palette)
-
-        return w, h
-
-    def draw_line(self, x1, y1, x2, y2, gs=15):
-        """Draw a line using Bresenham's algorithm.
-
-        Args:
-            x1, y1 (int): Starting coordinates of the line
-            x2, y2 (int): Ending coordinates of the line
-            gs (int): Grayscale 0=Black to 15=White (default grayscale table)
-        """
-        # Check for horizontal line
-        if y1 == y2:
-            if x1 > x2:
-                x1, x2 = x2, x1
-            self.draw_hline(x1, y1, x2 - x1 + 1, gs)
-            return
-        # Check for vertical line
-        if x1 == x2:
-            if y1 > y2:
-                y1, y2 = y2, y1
-            self.draw_vline(x1, y1, y2 - y1 + 1, gs)
-            return
-        # Confirm coordinates in boundary
-        if self.is_off_grid(min(x1, x2), min(y1, y2),
-                            max(x1, x2), max(y1, y2)):
-            return
-        self.gs4_fb.line(x1, y1, x2, y2, gs)
-
-    def draw_lines(self, coords, gs=15):
-        """Draw multiple lines.
-
-        Args:
-            coords ([[int, int],...]): Line coordinate X, Y pairs
-            gs (int): Grayscale 0=Black to 15=White (default grayscale table)
-        """
-        # Starting point
-        x1, y1 = coords[0]
-        # Iterate through coordinates
-        for i in range(1, len(coords)):
-            x2, y2 = coords[i]
-            self.draw_line(x1, y1, x2, y2, gs)
-            x1, y1 = x2, y2
-
     def draw_pixel(self, x, y, gs=15):
         """Draw a single pixel.
 
@@ -571,30 +314,6 @@ class Display(object):
         if self.is_off_grid(x, y, x, y):
             return
         self.gs4_fb.pixel(x, y, gs)
-
-    def draw_polygon(self, sides, x0, y0, r, gs=15, rotate=0):
-        """Draw an n-sided regular polygon.
-
-        Args:
-            sides (int): Number of polygon sides.
-            x0, y0 (int): Coordinates of center point.
-            r (int): Radius.
-            gs (int): Grayscale 0=Black to 15=White (default grayscale table)
-            rotate (Optional float): Rotation in degrees relative to origin.
-        Note:
-            The center point is the center of the x0,y0 pixel.
-            Since pixels are not divisible, the radius is integer rounded
-            up to complete on a full pixel.  Therefore diameter = 2 x r + 1.
-        """
-        coords = []
-        theta = radians(rotate)
-        n = sides + 1
-        for s in range(n):
-            t = 2.0 * pi * s / sides + theta
-            coords.append([int(r * cos(t) + x0), int(r * sin(t) + y0)])
-
-        # Cast to python float first to fix rounding errors
-        self.draw_lines(coords, gs)
 
     def draw_rectangle(self, x, y, w, h, gs=15):
         """Draw a rectangle.
@@ -608,81 +327,12 @@ class Display(object):
         """
         self.gs4_fb.rect(x, y, w, h, gs)
 
-    def draw_sprite(self, fb, x, y, w, h, invert=False, gs=15):
-        """Draw a sprite.
-        Args:
-            fb (FrameBuffer): Buffer to draw.
-            x (int): Starting X position.
-            y (int): Starting Y position.
-            w (int): Width of drawing.
-            h (int): Height of drawing.
-            invert (bool): Invert color
-            gs (int): Grayscale 0=Black to 15=White (default grayscale table)
-        """
-        x2 = x + w - 1
-        y2 = y + h - 1
-        if self.is_off_grid(x, y, x2, y2):
-            return
-
-        if invert:
-            self.palette.bg(gs)
-            self.palette.fg(0)
-        else:
-            self.palette.bg(0)
-            self.palette.fg(gs)
-        self.gs4_fb.blit(fb, x, y, -1, self.palette)
-
-    def draw_text(self, x, y, text, font, invert=False, gs=15,
-                  rotate=0, spacing=1, raw=False):
-        """Draw text. Uses string-level cache for 1-blit rendering unless raw=True."""
-        if not text:
-            return
-
-        # Fast path: 1 blit via string cache (unless raw — for live-updating text)
-        if rotate == 0 and not raw:
-            fb, tw, th = font.get_text_fb(text, spacing)
-            if tw == 0:
-                return
-            if invert:
-                self.palette.bg(gs)
-                self.palette.fg(0)
-            else:
-                self.palette.bg(0)
-                self.palette.fg(gs)
-            self.gs4_fb.blit(fb, x, y, -1, self.palette)
-            return
-
-        # Slow path: glyph-by-glyph — no allocation, safe for frequently-changing text
-        GSMAP = (0, gs)
-        need_spacing_fill = invert and rotate == 0
-        for letter in text:
-            w, h = self.draw_letter(x, y, letter, font, invert, gs, rotate)
-            if w == 0 or h == 0:
-                return
-            if rotate == 0:
-                if spacing and need_spacing_fill:
-                    self.fill_rectangle(x + w, y, spacing, h, GSMAP[invert])
-                x += (w + spacing)
-            elif rotate == 90:
-                if spacing:
-                    self.fill_rectangle(x, y + h, w, spacing, GSMAP[invert])
-                y += (h + spacing)
-            elif rotate == 180:
-                if spacing:
-                    self.fill_rectangle(x - w - spacing, y, spacing, h,
-                                        GSMAP[invert])
-                x -= (w + spacing)
-            elif rotate == 270:
-                if spacing:
-                    self.fill_rectangle(x, y - h - spacing, w, spacing,
-                                        GSMAP[invert])
-                y -= (h + spacing)
-
     def draw_text_direct(self, x, y, text, font, gs=15, spacing=1):
         """Draw an XGLCD string directly from its packed source bytes.
 
-        Transition shells use this path while automatic GC is disabled.  It
-        creates neither glyph FrameBuffers nor string-cache entries.
+        This path creates neither glyph FrameBuffers nor string-cache entries.
+        It clips each packed pixel before writing because the MicroPython Viper
+        implementation operates on a raw framebuffer pointer.
         """
         if not text:
             return
@@ -695,12 +345,20 @@ class Display(object):
         bytes_per_letter = font.bytes_per_letter
         start_letter = font.start_letter
         end_letter = start_letter + font.letter_count
+        screen_width = self.width
+        screen_height = self.height
+        # Text advances only rightward and glyphs only downward.  Rejecting
+        # wholly off-screen runs avoids unnecessary glyph traversal while the
+        # inner loops still clip partial left/top/right/bottom glyphs.
+        if (x >= screen_width or y >= screen_height
+                or y + height <= 0):
+            return
         encoded = not isinstance(text, str)
         if encoded and _HAS_FAST_TEXT_DRAW:
             _draw_packed_text(
                 target, data, text, len(text), x, y, stride, shade, height,
                 byte_height, bytes_per_letter, start_letter, end_letter,
-                spacing)
+                spacing, screen_width, screen_height)
             return
         char_index = 0
         text_length = len(text)
@@ -721,17 +379,20 @@ class Display(object):
                     row_limit = min(8, height - row_base)
                     while row < row_limit:
                         if bits & (1 << row):
+                            pixel_y = y + row_base + row
                             pixel_x = x + column
-                            offset_out = (
-                                (y + row_base + row) * stride
-                                + (pixel_x >> 1))
-                            value = target[offset_out]
-                            if pixel_x & 1:
-                                target[offset_out] = (
-                                    value & 0xF0) | shade
-                            else:
-                                target[offset_out] = (
-                                    value & 0x0F) | (shade << 4)
+                            if (pixel_x >= 0 and pixel_x < screen_width
+                                    and pixel_y >= 0
+                                    and pixel_y < screen_height):
+                                offset_out = (
+                                    pixel_y * stride + (pixel_x >> 1))
+                                value = target[offset_out]
+                                if pixel_x & 1:
+                                    target[offset_out] = (
+                                        value & 0xF0) | shade
+                                else:
+                                    target[offset_out] = (
+                                        value & 0x0F) | (shade << 4)
                         row += 1
                     chunk += 1
                 column += 1
@@ -768,86 +429,6 @@ class Display(object):
             return
         self.gs4_fb.vline(x, y, h, gs)
 
-    def fill_circle(self, x0, y0, r, gs=15):
-        """Draw a filled circle.
-
-        Args:
-            x0 (int): X coordinate of center point.
-            y0 (int): Y coordinate of center point.
-            r (int): Radius.
-            gs (int): Grayscale 0=Black to 15=White (default grayscale table)
-        """
-        f = 1 - r
-        dx = 1
-        dy = -r - r
-        x = 0
-        y = r
-        self.draw_vline(x0, y0 - r, 2 * r + 1, gs)
-        while x < y:
-            if f >= 0:
-                y -= 1
-                dy += 2
-                f += dy
-            x += 1
-            dx += 2
-            f += dx
-            self.draw_vline(x0 + x, y0 - y, 2 * y + 1, gs)
-            self.draw_vline(x0 - x, y0 - y, 2 * y + 1, gs)
-            self.draw_vline(x0 - y, y0 - x, 2 * x + 1, gs)
-            self.draw_vline(x0 + y, y0 - x, 2 * x + 1, gs)
-
-    def fill_ellipse(self, x0, y0, a, b, gs=15):
-        """Draw a filled ellipse.
-
-        Args:
-            x0, y0 (int): Coordinates of center point.
-            a (int): Semi axis horizontal.
-            b (int): Semi axis vertical.
-            gs (int): Grayscale 0=Black to 15=White (default grayscale table)
-        Note:
-            The center point is the center of the x0,y0 pixel.
-            Since pixels are not divisible, the axes are integer rounded
-            up to complete on a full pixel.  Therefore the major and
-            minor axes are increased by 1.
-        """
-        a2 = a * a
-        b2 = b * b
-        twoa2 = a2 + a2
-        twob2 = b2 + b2
-        x = 0
-        y = b
-        px = 0
-        py = twoa2 * y
-        # Plot initial points
-        self.draw_line(x0, y0 - y, x0, y0 + y, gs)
-        # Region 1
-        p = round(b2 - (a2 * b) + (0.25 * a2))
-        while px < py:
-            x += 1
-            px += twob2
-            if p < 0:
-                p += b2 + px
-            else:
-                y -= 1
-                py -= twoa2
-                p += b2 + px - py
-            self.draw_line(x0 + x, y0 - y, x0 + x, y0 + y, gs)
-            self.draw_line(x0 - x, y0 - y, x0 - x, y0 + y, gs)
-        # Region 2
-        p = round(b2 * (x + 0.5) * (x + 0.5) +
-                  a2 * (y - 1) * (y - 1) - a2 * b2)
-        while y > 0:
-            y -= 1
-            py -= twoa2
-            if p > 0:
-                p += a2 - py
-            else:
-                x += 1
-                px += twob2
-                p += a2 - py + px
-            self.draw_line(x0 + x, y0 - y, x0 + x, y0 + y, gs)
-            self.draw_line(x0 - x, y0 - y, x0 - x, y0 + y, gs)
-
     def fill_rectangle(self, x, y, w, h, gs=15):
         """Draw a filled rectangle.
 
@@ -861,88 +442,6 @@ class Display(object):
         if self.is_off_grid(x, y, x + w - 1, y + h - 1):
             return
         self.gs4_fb.fill_rect(x, y, w, h, gs)
-
-    def fill_polygon(self, sides, x0, y0, r, gs=15, rotate=0):
-        """Draw a filled n-sided regular polygon.
-
-        Args:
-            sides (int): Number of polygon sides.
-            x0, y0 (int): Coordinates of center point.
-            r (int): Radius.
-            gs (int): Grayscale 0=Black to 15=White (default grayscale table)
-            rotate (Optional float): Rotation in degrees relative to origin.
-        Note:
-            The center point is the center of the x0,y0 pixel.
-            Since pixels are not divisible, the radius is integer rounded
-            up to complete on a full pixel.  Therefore diameter = 2 x r + 1.
-        """
-        # Determine side coordinates
-        coords = []
-        theta = radians(rotate)
-        n = sides + 1
-        for s in range(n):
-            t = 2.0 * pi * s / sides + theta
-            coords.append([int(r * cos(t) + x0), int(r * sin(t) + y0)])
-        # Starting point
-        x1, y1 = coords[0]
-        # Minimum Maximum X dict
-        xdict = {y1: [x1, x1]}
-        # Iterate through coordinates
-        for row in coords[1:]:
-            x2, y2 = row
-            xprev, yprev = x2, y2
-            # Calculate perimeter
-            # Check for horizontal side
-            if y1 == y2:
-                if x1 > x2:
-                    x1, x2 = x2, x1
-                if y1 in xdict:
-                    xdict[y1] = [min(x1, xdict[y1][0]), max(x2, xdict[y1][1])]
-                else:
-                    xdict[y1] = [x1, x2]
-                x1, y1 = xprev, yprev
-                continue
-            # Non horizontal side
-            # Changes in x, y
-            dx = x2 - x1
-            dy = y2 - y1
-            # Determine how steep the line is
-            is_steep = abs(dy) > abs(dx)
-            # Rotate line
-            if is_steep:
-                x1, y1 = y1, x1
-                x2, y2 = y2, x2
-            # Swap start and end points if necessary
-            if x1 > x2:
-                x1, x2 = x2, x1
-                y1, y2 = y2, y1
-            # Recalculate differentials
-            dx = x2 - x1
-            dy = y2 - y1
-            # Calculate error
-            error = dx >> 1
-            ystep = 1 if y1 < y2 else -1
-            y = y1
-            # Calcualte minimum and maximum x values
-            for x in range(x1, x2 + 1):
-                if is_steep:
-                    if x in xdict:
-                        xdict[x] = [min(y, xdict[x][0]), max(y, xdict[x][1])]
-                    else:
-                        xdict[x] = [y, y]
-                else:
-                    if y in xdict:
-                        xdict[y] = [min(x, xdict[y][0]), max(x, xdict[y][1])]
-                    else:
-                        xdict[y] = [x, x]
-                error -= abs(dy)
-                if error < 0:
-                    y += ystep
-                    error += dx
-            x1, y1 = xprev, yprev
-        # Fill polygon
-        for y, x in xdict.items():
-            self.draw_hline(x[0], y, x[1] - x[0] + 2, gs)
 
     def is_off_grid(self, xmin, ymin, xmax, ymax):
         """Check if coordinates extend past display boundaries.
@@ -959,67 +458,6 @@ class Display(object):
         if xmin < 0 or ymin < 0 or xmax >= self.width or ymax >= self.height:
             return True
         return False
-
-    def load_sprite(self, path, w, h, invert=False, rotate=0):
-        """Load MONO_HMSB bitmap from disc to sprite.
-
-        Args:
-            path (string): Image file path.
-            w (int): Width of image.
-            h (int): Height of image.
-            invert (bool): True = invert image, False (Default) = normal image.
-            rotate(int): 0, 90, 180, 270
-        Notes:
-            w x h cannot exceed 2048
-        """
-        array_size = w * h
-        with open(path, "rb") as f:
-            buf = bytearray(f.read(array_size))
-            fb = FrameBuffer(buf, w, h, MONO_HMSB)
-
-            if rotate == 0 and invert is True:  # 0 degrees
-                fb2 = FrameBuffer(bytearray(array_size), w, h, MONO_HMSB)
-                for y1 in range(h):
-                    for x1 in range(w):
-                        fb2.pixel(x1, y1, fb.pixel(x1, y1) ^ 0x01)
-                fb = fb2
-            elif rotate == 90:  # 90 degrees
-                byte_width = (w - 1) // 8 + 1
-                adj_size = h * byte_width
-                fb2 = FrameBuffer(bytearray(adj_size), h, w, MONO_HMSB)
-                for y1 in range(h):
-                    for x1 in range(w):
-                        if invert is True:
-                            fb2.pixel(y1, x1,
-                                      fb.pixel(x1, (h - 1) - y1) ^ 0x01)
-                        else:
-                            fb2.pixel(y1, x1, fb.pixel(x1, (h - 1) - y1))
-                fb = fb2
-            elif rotate == 180:  # 180 degrees
-                fb2 = FrameBuffer(bytearray(array_size), w, h, MONO_HMSB)
-                for y1 in range(h):
-                    for x1 in range(w):
-                        if invert is True:
-                            fb2.pixel(x1, y1, fb.pixel((w - 1) - x1,
-                                                       (h - 1) - y1) ^ 0x01)
-                        else:
-                            fb2.pixel(x1, y1,
-                                      fb.pixel((w - 1) - x1, (h - 1) - y1))
-                fb = fb2
-            elif rotate == 270:  # 270 degrees
-                byte_width = (w - 1) // 8 + 1
-                adj_size = h * byte_width
-                fb2 = FrameBuffer(bytearray(adj_size), h, w, MONO_HMSB)
-                for y1 in range(h):
-                    for x1 in range(w):
-                        if invert is True:
-                            fb2.pixel(y1, x1,
-                                      fb.pixel((w - 1) - x1, y1) ^ 0x01)
-                        else:
-                            fb2.pixel(y1, x1, fb.pixel((w - 1) - x1, y1))
-                fb = fb2
-
-            return fb
 
     def present(self):
         """Present image to display.
@@ -1040,32 +478,41 @@ class Display(object):
         """
         row_bytes = self.byte_width
         last_column = self.width // 4 - 1
-        data = memoryview(self.gs4_buf)
-        for row_start, row_count in row_ranges:
-            row_start = max(0, int(row_start))
-            row_end = min(self.height, row_start + max(0, int(row_count)))
-            if row_end <= row_start:
-                continue
-            self.set_address(0, row_start, last_column, row_end - 1)
-            self.write_data(data[row_start * row_bytes:row_end * row_bytes])
-
-    def present_region(self, column_start, column_count, data):
-        """Write packed rows to a contiguous SSD1322 column window.
-
-        One controller column contains four horizontal GS4 pixels (two
-        bytes).  ``data`` is packed row-major for only this window, allowing
-        page reveals to use the panel's existing RAM as the outgoing layer.
-        """
-        if column_count <= 0:
+        try:
+            cached_views = self._row_views
+        except AttributeError:
+            # Host tests sometimes construct a minimal Display with __new__.
+            # Production preseeded all supported partial views at boot.
+            cached_views = []
+            self._row_views = cached_views
+        try:
+            range_total = len(row_ranges)
+        except TypeError:
+            # The resident renderer passes DamageMap's fixed indexable
+            # backing.  For a one-off external iterable, preserve visible
+            # correctness with a full transfer instead of allocating one.
+            self.present()
             return
-        column_end = column_start + column_count - 1
-        offset = 28
-        self._write_cmd2(
-            self.SET_COLUMN_ADDRESS,
-            column_start + offset, column_end + offset)
-        self._write_cmd2(self.SET_ROW_ADDRESS, 0, self.height - 1)
-        self._write_cmd0(self.WRITE_RAM)
-        self.write_data(data)
+        range_index = 0
+        while range_index < range_total:
+            row_range = row_ranges[range_index]
+            row_start = max(0, int(row_range[0]))
+            row_end = min(
+                self.height, row_start + max(0, int(row_range[1])))
+            if row_end <= row_start:
+                range_index += 1
+                continue
+            start = row_start * row_bytes
+            end = row_end * row_bytes
+            row_view = _cached_row_view(cached_views, start, end)
+            if row_view is None:
+                # Do not make any arbitrary view in a partial frame.  A full
+                # transfer is slower but remains correct and bounded.
+                self.present()
+                return
+            self.set_address(0, row_start, last_column, row_end - 1)
+            self.write_data(row_view)
+            range_index += 1
 
     def _write_cmd0(self, command):
         self.dc(0)
@@ -1109,61 +556,6 @@ class Display(object):
         self._write_cmd2(self.SET_ROW_ADDRESS, y0, y1)
         self._write_cmd0(self.WRITE_RAM)
 
-    def set_column_address(self, column_start, column_end):
-        """Set column start and end address of display data RAM.
-
-        Args:
-            column_start (byte): Start column
-            column_end (byte): End column
-        """
-        self.write_cmd(self.SET_COLUMN_ADDRESS, column_start, column_end)
-
-    def set_display_enhancement_a(self, external_vsl=True,
-                                  enhanced_gs_quality=True):
-        """Enhance the display performance A.
-
-        Args:
-            external_vsl (bool): True (Default)=External, False=Internal
-            enhanced_gs_quality (bool): True (Default)=Enhanced, False=Normal
-        """
-        if external_vsl:
-            vsl = self.ENABLE_EXTERNAL_VSL
-        else:
-            vsl = self.ENABLE_INTERNAL_VSL
-
-        if enhanced_gs_quality:
-            enhanced_gs = self.ENHANCED_LOW_GRAY_SCALE_QUALITY
-        else:
-            enhanced_gs = self.NORMAL_GRAYSCALE_QUALITY
-
-        self.write_cmd(self.DISPLAY_ENHANCEMENT_A,
-                       vsl | 0xA0,
-                       enhanced_gs | 0x05)
-
-    def set_display_enhancement_b(self, enhanced=True):
-        """Enhance the display performance B.
-
-        Args:
-            enhance (bool): True (Default)=Recommended, False=Normal
-        """
-        if enhanced:
-            deb = self.RESERVED_ENHANCEMENT
-        else:
-            deb = self.NORMAL_ENHANCEMENT
-
-        self.write_cmd(self.DISPLAY_ENHANCEMENT_B,
-                       deb | 0x82,
-                       0x20)
-
-    def set_row_address(self, row_start, row_end):
-        """Set row start and end address of display data RAM.
-
-        Args:
-            row_start (byte): Start row
-            row_end (byte): End row
-        """
-        self.write_cmd(self.SET_ROW_ADDRESS, row_start, row_end)
-
     def sleep(self):
         """Put display to sleep."""
         self.write_cmd(self.DISPLAY_SLEEP_ON)
@@ -1183,16 +575,6 @@ class Display(object):
         current = max(1, min(15, (percent * 15 + 50) // 100))
         self._write_cmd1(self.MASTER_CURRENT_CONTROL, current)
         self.brightness = percent
-
-    def set_transition_current(self, level):
-        """Set a temporary raw current for an allocation-free page fade.
-
-        Unlike ``set_brightness`` this accepts zero and does not replace the
-        user's stored brightness.  Navigation restores that setting when the
-        fade completes.
-        """
-        level = max(0, min(15, int(level)))
-        self._write_cmd1(self.MASTER_CURRENT_CONTROL, level)
 
     def write_cmd(self, command, *args):
         """Write command to display.

@@ -5,6 +5,10 @@ register callbacks by kind.  Internally definitions stay as compact tuples to
 keep heap use predictable on MicroPython.
 """
 from calc import number as numeric
+from calc.limits import (MAX_FUNCTION_NAME_LENGTH, MAX_PLUGIN_EXPORTS,
+                         MAX_VARIABLES,
+                         MAX_VARIABLE_TEXT_LENGTH,
+                         is_ascii_identifier, is_plugin_name)
 from calc.number import Number, coerce
 
 
@@ -13,6 +17,7 @@ KIND_PREFIX = "prefix"
 KIND_POSTFIX = "postfix"
 KIND_LIST = "list"
 _KINDS = (KIND_INFIX, KIND_PREFIX, KIND_POSTFIX, KIND_LIST)
+_DICT_TYPE = dict
 
 
 def _is_alpha(char):
@@ -29,14 +34,17 @@ class EvalContext:
     """Mutable state shared by one or more evaluations."""
 
     def __init__(self, variables, registry):
+        if len(variables) > MAX_VARIABLES:
+            raise ValueError("Variable limit exceeded")
         self.variables = variables
         self.registry = registry
         # Variables loaded from older JSON files are ordinary ints/floats.
         # Normalize them once at the evaluation seam so old persisted values
         # participate in the new arithmetic without a migration step.
-        for name in list(variables):
+        for name in variables:
             value = variables[name]
-            if isinstance(value, (Number, int, float)):
+            if (isinstance(value, (Number, int, float))
+                    and not isinstance(value, bool)):
                 variables[name] = coerce(value)
         # Add-ons can use the high-precision helpers without importing a
         # particular internal implementation file.
@@ -48,9 +56,21 @@ class EvalContext:
         return self.registry.angle_mode
 
     def set_var(self, name, value):
-        if isinstance(value, (Number, int, float)):
+        if not is_ascii_identifier(name):
+            raise ValueError("Invalid or too long variable name")
+        is_boolean = isinstance(value, bool)
+        if isinstance(value, (Number, int, float)) and not is_boolean:
             value = coerce(value)
-        if self.variables.get(name, _MISSING) != value:
+        if (not isinstance(value, (Number, int, float, str))
+                or is_boolean
+                or (isinstance(value, str)
+                    and len(value) > MAX_VARIABLE_TEXT_LENGTH)):
+            raise ValueError("Unsupported variable value")
+        existing = self.variables.get(name, _MISSING)
+        if existing is _MISSING:
+            if len(self.variables) >= MAX_VARIABLES:
+                raise ValueError("Variable limit reached")
+        if existing != value:
             self.variables[name] = value
             self.dirty = True
         return value
@@ -83,8 +103,9 @@ class FunctionRegistry:
     Definition tuple: (name, precedence, kind, min_args, associativity, callback)
     """
 
-    def __init__(self):
+    def __init__(self, max_functions=None):
         self._defs = {}
+        self._function_limit = max_functions
         self._revision = 0
         self.angle_mode = 0
         self.plugin_errors = []
@@ -93,6 +114,7 @@ class FunctionRegistry:
         # compiling every SD source file for a second time during boot.
         self.plugin_functions = {}
         self.plugin_dependencies = {}
+        self.plugin_files = ()
         self._plugin_exports = {}
         self._dependency_exports = {}
         self._symbolic_names = None
@@ -100,6 +122,8 @@ class FunctionRegistry:
     def _add(self, name, callback, kind, precedence, associativity, min_args):
         if not isinstance(name, str) or not name:
             raise ValueError("Function name must be a non-empty string")
+        if len(name) > MAX_FUNCTION_NAME_LENGTH:
+            raise ValueError("Function name is too long")
         if (any(c in "(),;'\"" for c in name)
                 or any(c.isspace() for c in name)):
             raise ValueError("Reserved or whitespace function name: " + name)
@@ -125,7 +149,24 @@ class FunctionRegistry:
             raise ValueError("min_args must be a non-negative integer")
         if name in self._defs:
             raise ValueError("Function already registered: " + name)
+        if (self._function_limit is not None
+                and len(self._defs) >= self._function_limit):
+            raise ValueError("Function registration limit reached")
         self._defs[name] = (name, precedence, kind, min_args, associativity, callback)
+        self._symbolic_names = None
+        self._revision += 1
+        return self
+
+    def _add_known(self, name, callback, kind, precedence, associativity,
+                   min_args):
+        """Insert a firmware-owned definition whose constants were reviewed."""
+        if name in self._defs:
+            raise ValueError("Function already registered: " + name)
+        if (self._function_limit is not None
+                and len(self._defs) >= self._function_limit):
+            raise ValueError("Function registration limit reached")
+        self._defs[name] = (
+            name, precedence, kind, min_args, associativity, callback)
         self._symbolic_names = None
         self._revision += 1
         return self
@@ -171,29 +212,180 @@ class FunctionRegistry:
         self._dependency_exports.clear()
         self.plugin_functions = {}
         self.plugin_dependencies = {}
+        self.plugin_files = ()
+
+    def clear_for_reload(self):
+        """Forget callbacks while retaining the live definition table.
+
+        MicroPython releases a dict's whole hash table from ``clear()``.
+        Reallocating that 640-byte run after Calculator state has fragmented
+        the heap was the remaining supported reload failure.  Repeated
+        ``popitem()`` calls avoid a full key snapshot while preserving the
+        already-paid table for replacement definitions.
+        """
+        if self._defs:
+            while self._defs:
+                self._defs.popitem()
+            self._symbolic_names = None
+            self._revision += 1
+        self._plugin_exports.clear()
+        self._dependency_exports.clear()
+        self.plugin_functions = {}
+        self.plugin_dependencies = {}
+        self.plugin_files = ()
 
     def replace(self, other):
-        """Replace definitions in-place so existing users keep a live reference."""
-        self._defs.clear()
-        self._defs.update(other._defs)
+        """Atomically adopt a fully built registry without changing our identity.
+
+        ``other`` is a private staging registry.  All copying and plug-in
+        execution must have completed before this method is called: assigning
+        its already-built tables makes the live registry change as one small,
+        non-allocating commit.  That keeps callers holding ``self`` valid when
+        staging exhausts the heap.
+        """
+        if not isinstance(other, FunctionRegistry):
+            raise TypeError("Replacement must be a FunctionRegistry")
+
+        # Precompute the only potentially allocating value before changing any
+        # live reference.  Small integers are immediate values on the target,
+        # but this ordering keeps the rollback contract correct on every port.
+        next_revision = self._revision + 1
+
+        self._defs = other._defs
         self.angle_mode = other.angle_mode
-        self.plugin_errors = list(other.plugin_errors)
+        self.plugin_errors = other.plugin_errors
         self.plugin_functions = other.plugin_functions
         self.plugin_dependencies = other.plugin_dependencies
-        self._plugin_exports = dict(other._plugin_exports)
-        self._dependency_exports = {}
-        self._symbolic_names = None
-        self._revision += 1
+        self.plugin_files = other.plugin_files
+        self._plugin_exports = other._plugin_exports
+        self._dependency_exports = other._dependency_exports
+        self._symbolic_names = other._symbolic_names
+        self._revision = next_revision
+        return self
 
-    def merge(self, other):
+    def _merged_definitions(self, other):
+        """Build a combined definition table without touching the live one."""
         for name in other._defs:
             if name in self._defs:
                 raise ValueError("Function already registered: " + name)
-        self._defs.update(other._defs)
-        if other._defs:
-            self._symbolic_names = None
-            self._revision += 1
+        if not other._defs:
+            return self._defs
+        # Build the merged table before changing the live one.  ``dict.update``
+        # can fail part-way through on MicroPython; assigning only the finished
+        # table keeps the registry valid when a plugin exhausts the heap.
+        merged_defs = dict(self._defs)
+        merged_defs.update(other._defs)
+        return merged_defs
+
+    def merge(self, other):
+        merged_defs = self._merged_definitions(other)
+        if merged_defs is self._defs:
+            return self
+        # Preflight the revision before exposing the new table.  This is
+        # normally a tagged small integer on-device, but the transaction must
+        # not rely on that representation detail.
+        next_revision = self._revision + 1
+        self._defs = merged_defs
+        self._symbolic_names = None
+        self._revision = next_revision
         return self
+
+    def commit_plugin(self, name, staging, exports, in_place=False):
+        """Atomically make one staged add-on visible to live evaluations.
+
+        Every potentially allocating copy completes before the live definitions,
+        exports, parser cache or revision change.  The loader is therefore able
+        to let ``MemoryError`` reach the runtime recovery seam without a
+        partially registered plugin surviving it.
+        """
+        if not is_plugin_name(name):
+            raise ValueError("Plugin name is invalid or too long")
+        if not isinstance(exports, _DICT_TYPE):
+            raise ValueError("Plugin EXPORTS must be a dictionary")
+        if len(exports) > MAX_PLUGIN_EXPORTS:
+            raise ValueError("Plugin EXPORTS limit reached")
+        for export_name in exports:
+            if not is_ascii_identifier(export_name, MAX_FUNCTION_NAME_LENGTH):
+                raise ValueError("Plugin EXPORTS key is invalid or too long")
+
+        if in_place:
+            for function_name in staging._defs:
+                if function_name in self._defs:
+                    raise ValueError(
+                        "Function already registered: " + function_name)
+            plugin_exports = dict(exports)
+            next_revision = self._revision
+            if staging._defs:
+                next_revision += 1
+            # The caller has retained a sufficiently sized live table through
+            # clear_for_reload().  Populate that table directly; the outer
+            # reload seam restores built-ins if any bounded insertion fails.
+            for function_name in staging._defs:
+                self._defs[function_name] = staging._defs[function_name]
+            self._plugin_exports[name] = plugin_exports
+            if staging._defs:
+                self._symbolic_names = None
+            self._revision = next_revision
+            return self
+
+        merged_defs = self._merged_definitions(staging)
+        merged_exports = dict(self._plugin_exports)
+        merged_exports[name] = dict(exports)
+        next_revision = self._revision
+        if merged_defs is not self._defs:
+            # Complete the only arithmetic/allocation-sensitive operation
+            # before touching either live table.
+            next_revision = self._revision + 1
+
+        if merged_defs is not self._defs:
+            self._defs = merged_defs
+            self._symbolic_names = None
+        self._plugin_exports = merged_exports
+        self._revision = next_revision
+        return self
+
+    def _plugin_commit_state(self):
+        """Return a no-copy rollback token for the loader's final metadata step."""
+        return (
+            self._defs,
+            self._plugin_exports,
+            self._symbolic_names,
+            self._revision,
+        )
+
+    def _restore_plugin_commit_state(self, state):
+        """Restore a token produced by :meth:`_plugin_commit_state`."""
+        (self._defs, self._plugin_exports, self._symbolic_names,
+         self._revision) = state
+
+    def _plugin_reload_state(self):
+        """Return the complete no-copy checkpoint used by staged reloads.
+
+        A reload replaces more than definitions: its error/report tables and
+        dependency exports are live evaluator state too.  Keeping every field
+        in one token lets a late failure restore the original registry identity
+        without cloning any table or callback.
+        """
+        return (
+            self._defs,
+            self._function_limit,
+            self._revision,
+            self.angle_mode,
+            self.plugin_errors,
+            self.plugin_functions,
+            self.plugin_dependencies,
+            self._plugin_exports,
+            self._dependency_exports,
+            self._symbolic_names,
+            self.plugin_files,
+        )
+
+    def _restore_plugin_reload_state(self, state):
+        """Restore a token produced by :meth:`_plugin_reload_state`."""
+        (self._defs, self._function_limit, self._revision, self.angle_mode,
+         self.plugin_errors, self.plugin_functions, self.plugin_dependencies,
+         self._plugin_exports, self._dependency_exports,
+         self._symbolic_names, self.plugin_files) = state
 
     def set_plugin_dependencies(self, exports):
         """Internal loader hook exposing only declared dependencies to a plugin."""
@@ -201,10 +393,15 @@ class FunctionRegistry:
 
     def register_plugin(self, name, exports):
         """Store explicitly exported helpers after a plugin registered safely."""
-        if not isinstance(name, str) or not name:
-            raise ValueError("Plugin name must be a non-empty string")
+        if not is_plugin_name(name):
+            raise ValueError("Plugin name is invalid or too long")
         if not isinstance(exports, dict):
             raise ValueError("Plugin EXPORTS must be a dictionary")
+        if len(exports) > MAX_PLUGIN_EXPORTS:
+            raise ValueError("Plugin EXPORTS limit reached")
+        for export_name in exports:
+            if not is_ascii_identifier(export_name, MAX_FUNCTION_NAME_LENGTH):
+                raise ValueError("Plugin EXPORTS key is invalid or too long")
         self._plugin_exports[name] = dict(exports)
 
     def plugin(self, name):
@@ -354,31 +551,33 @@ DEFAULT_ENABLED_GROUPS = ("basic", "trig", "math", "list")
 
 def register_builtins(registry, enabled_groups=None):
     enabled = enabled_groups if enabled_groups is not None else DEFAULT_ENABLED_GROUPS
-    enabled = set(enabled)
     if "basic" in enabled:
-        registry.infix("+", _add, 20)
-        registry.infix("-", _sub, 20)
-        registry.infix("*", _mul, 30)
-        registry.infix("/", _div, 30)
-        registry.infix("^", _pow, 40, "right")
-        registry.infix("=", _assign, 10, "right")
+        registry._add_known("+", _add, KIND_INFIX, 20, "left", 0)
+        registry._add_known("-", _sub, KIND_INFIX, 20, "left", 0)
+        registry._add_known("*", _mul, KIND_INFIX, 30, "left", 0)
+        registry._add_known("/", _div, KIND_INFIX, 30, "left", 0)
+        registry._add_known("^", _pow, KIND_INFIX, 40, "right", 0)
+        registry._add_known("=", _assign, KIND_INFIX, 10, "right", 0)
     if "trig" in enabled:
         for name, callback in (("sin", _sin), ("cos", _cos), ("tan", _tan),
                                ("asin", _asin), ("acos", _acos), ("atan", _atan),
                                ("sec", _sec), ("csc", _csc), ("cot", _cot)):
-            registry.prefix(name, callback)
+            registry._add_known(
+                name, callback, KIND_PREFIX, 50, None, 0)
     if "math" in enabled:
         for name, callback in (("sqrt", _sqrt), ("ln", _ln), ("exp", _exp),
                                ("log", _log), ("abs", _abs)):
-            registry.prefix(name, callback)
+            registry._add_known(
+                name, callback, KIND_PREFIX, 50, None, 0)
     if "list" in enabled:
-        registry.list_function("max", _max, 1)
-        registry.list_function("min", _min, 1)
+        registry._add_known("max", _max, KIND_LIST, 50, None, 1)
+        registry._add_known("min", _min, KIND_LIST, 50, None, 1)
     return registry
 
 
-def build_registry(enabled_groups=None):
-    return register_builtins(FunctionRegistry(), enabled_groups)
+def build_registry(enabled_groups=None, max_functions=None):
+    """Build a private registry, optionally preserving a caller's quota."""
+    return register_builtins(FunctionRegistry(max_functions), enabled_groups)
 
 
 # Unary callbacks are parser grammar, but kept here so they share angle/context

@@ -7,11 +7,30 @@ import subprocess
 PROJECT = Path(__file__).parents[1]
 ORCHESTRATOR = PROJECT / "tools" / "run_device_acceptance.ps1"
 NATIVE_PROBE = PROJECT / "tests" / "_support" / "orchestrator_native_probe.ps1"
+_STAGE_SCRIPTS = (
+    "device_boot_probe.py",
+    "device_application_acceptance.py",
+    "device_runtime_monitor.py",
+    "device_interaction_acceptance.py",
+    "device_frame_allocation_probe.py",
+)
+
+
+def _copy_orchestrator(tmp_path, missing_stage=""):
+    project_copy = tmp_path / "workspace" / "mp_version"
+    tools_copy = project_copy / "tools"
+    tools_copy.mkdir(parents=True)
+    orchestrator_copy = tools_copy / ORCHESTRATOR.name
+    shutil.copyfile(ORCHESTRATOR, orchestrator_copy)
+    for script_name in _STAGE_SCRIPTS:
+        if script_name != missing_stage:
+            (tools_copy / script_name).write_text("", encoding="utf-8")
+    return orchestrator_copy
 
 
 def _run_native_orchestrator(
         tmp_path, *, orchestrator=ORCHESTRATOR, fail_stage_script="",
-        fail_reset=False, noisy_stage=False):
+        fail_reset=False, noisy_stage=False, expect_log=True):
     powershell = shutil.which("pwsh")
     assert powershell is not None
     log = tmp_path / "fake-mpremote.log"
@@ -38,11 +57,15 @@ def _run_native_orchestrator(
         text=True,
         check=False,
     )
-    assert log.exists(), result.stdout + result.stderr
-    commands = [
-        tuple(line.split("\t"))
-        for line in log.read_text(encoding="utf-8").splitlines()
-    ]
+    if expect_log:
+        assert log.exists(), result.stdout + result.stderr
+        commands = [
+            tuple(line.split("\t"))
+            for line in log.read_text(encoding="utf-8").splitlines()
+        ]
+    else:
+        assert not log.exists(), result.stdout + result.stderr
+        commands = []
     return result, commands
 
 
@@ -56,7 +79,62 @@ def _command_events(commands):
     return events
 
 
-def test_device_acceptance_dry_run_orders_every_stage_with_a_finally_reset():
+def _compiled_protocol_events(commands):
+    events = []
+    for command in commands:
+        if command[-1] == "reset":
+            events.append(("reset", command[1]))
+        elif "cp" in command:
+            events.append(("upload", Path(command[-2]).name))
+        elif "exec" in command:
+            if "_sci_accept_stage.run()" in command[-1]:
+                events.append(("execute", "_sci_accept_stage.run()"))
+            elif "gc.collect()" in command[-1]:
+                events.append(("prepare", "resident"))
+            else:
+                events.append(("execute", command[-1]))
+        elif "rm" in command:
+            events.append(("cleanup", Path(command[-1]).name))
+        else:
+            events.append(("unexpected", command[-1]))
+    return events
+
+
+def _expected_compiled_protocol_events():
+    events = [("reset", "TEST_PORT")]
+    for artifact in (
+        "device_boot_probe.mpy",
+        "device_application_acceptance.mpy",
+        "device_runtime_monitor.mpy",
+        "device_interaction_acceptance.mpy",
+        "device_frame_allocation_probe.mpy",
+    ):
+        events.extend((
+            ("prepare", "resident"),
+            ("upload", artifact),
+            ("execute", "_sci_accept_stage.run()"),
+            ("cleanup", "_sci_accept_stage.mpy"),
+            ("reset", "TEST_PORT"),
+        ))
+    return events
+
+
+def _expected_stage_events():
+    return [
+        ("run", "device_boot_probe.py"),
+        ("reset", "TEST_PORT"),
+        ("run", "device_application_acceptance.py"),
+        ("reset", "TEST_PORT"),
+        ("run", "device_runtime_monitor.py"),
+        ("reset", "TEST_PORT"),
+        ("run", "device_interaction_acceptance.py"),
+        ("reset", "TEST_PORT"),
+        ("run", "device_frame_allocation_probe.py"),
+        ("reset", "TEST_PORT"),
+    ]
+
+
+def test_device_acceptance_dry_run_orders_five_existing_tracers():
     powershell = shutil.which("pwsh")
     assert powershell is not None
 
@@ -82,79 +160,50 @@ def test_device_acceptance_dry_run_orders_every_stage_with_a_finally_reset():
         if line.startswith("ACCEPTANCE_")
     ]
     assert events == [
+        "ACCEPTANCE_RESET TEST_PORT",
         "ACCEPTANCE_STAGE boot_probe",
-        "ACCEPTANCE_COMMAND TEST_PORT tools/device_boot_probe.py",
-        "ACCEPTANCE_RESET TEST_PORT",
-        "ACCEPTANCE_STAGE runtime_target_tracer",
-        "ACCEPTANCE_COMMAND TEST_PORT tools/device_runtime_monitor.py",
-        "ACCEPTANCE_RESET TEST_PORT",
-        "ACCEPTANCE_STAGE interaction_screen_tracer",
-        "ACCEPTANCE_COMMAND TEST_PORT tools/device_interaction_acceptance.py",
+        ("ACCEPTANCE_COMMAND TEST_PORT "
+         ".mpy-build/device-tools/device_boot_probe.mpy"),
         "ACCEPTANCE_RESET TEST_PORT",
         "ACCEPTANCE_STAGE application_matrix",
-        "ACCEPTANCE_COMMAND TEST_PORT tools/device_application_acceptance.py",
-        "ACCEPTANCE_RESET TEST_PORT",
-        "ACCEPTANCE_COMPLETE TEST_PORT",
-    ]
-
-
-def test_device_acceptance_tracer_only_uses_a_narrow_completion_label():
-    powershell = shutil.which("pwsh")
-    assert powershell is not None
-
-    result = subprocess.run(
-        [
-            powershell,
-            "-NoProfile",
-            "-File",
-            str(ORCHESTRATOR),
-            "-Port",
-            "TEST_PORT",
-            "-DryRun",
-            "-TracerOnly",
-        ],
-        cwd=PROJECT,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-
-    assert result.returncode == 0, result.stdout + result.stderr
-    events = [
-        line for line in result.stdout.splitlines()
-        if line.startswith("ACCEPTANCE_")
-    ]
-    assert events == [
-        "ACCEPTANCE_STAGE boot_probe",
-        "ACCEPTANCE_COMMAND TEST_PORT tools/device_boot_probe.py",
+        ("ACCEPTANCE_COMMAND TEST_PORT "
+         ".mpy-build/device-tools/device_application_acceptance.mpy"),
         "ACCEPTANCE_RESET TEST_PORT",
         "ACCEPTANCE_STAGE runtime_target_tracer",
-        "ACCEPTANCE_COMMAND TEST_PORT tools/device_runtime_monitor.py",
+        ("ACCEPTANCE_COMMAND TEST_PORT "
+         ".mpy-build/device-tools/device_runtime_monitor.mpy"),
         "ACCEPTANCE_RESET TEST_PORT",
         "ACCEPTANCE_STAGE interaction_screen_tracer",
-        "ACCEPTANCE_COMMAND TEST_PORT tools/device_interaction_acceptance.py",
+        ("ACCEPTANCE_COMMAND TEST_PORT "
+         ".mpy-build/device-tools/device_interaction_acceptance.mpy"),
         "ACCEPTANCE_RESET TEST_PORT",
-        "ACCEPTANCE_TRACERS_COMPLETE TEST_PORT",
+        "ACCEPTANCE_STAGE frame_allocation_probe",
+        ("ACCEPTANCE_COMMAND TEST_PORT "
+         ".mpy-build/device-tools/device_frame_allocation_probe.mpy"),
+        "ACCEPTANCE_RESET TEST_PORT",
+        "ACCEPTANCE_DRY_RUN_COMPLETE TEST_PORT stages=5",
     ]
+    assert "application_matrix" in result.stdout
 
 
-def test_device_acceptance_failure_still_resets_before_stopping():
+def test_device_acceptance_failure_still_resets_before_stopping(tmp_path):
     powershell = shutil.which("pwsh")
     assert powershell is not None
+    orchestrator = _copy_orchestrator(tmp_path)
 
     result = subprocess.run(
         [
             powershell,
             "-NoProfile",
             "-File",
-            str(ORCHESTRATOR),
+            str(orchestrator),
             "-Port",
             "TEST_PORT",
             "-DryRun",
             "-DryRunFailureStage",
             "runtime_target_tracer",
         ],
-        cwd=PROJECT,
+        cwd=orchestrator.parents[1],
         capture_output=True,
         text=True,
         check=False,
@@ -166,11 +215,18 @@ def test_device_acceptance_failure_still_resets_before_stopping():
         if line.startswith("ACCEPTANCE_")
     ]
     assert events == [
+        "ACCEPTANCE_RESET TEST_PORT",
         "ACCEPTANCE_STAGE boot_probe",
-        "ACCEPTANCE_COMMAND TEST_PORT tools/device_boot_probe.py",
+        ("ACCEPTANCE_COMMAND TEST_PORT "
+         ".mpy-build/device-tools/device_boot_probe.mpy"),
+        "ACCEPTANCE_RESET TEST_PORT",
+        "ACCEPTANCE_STAGE application_matrix",
+        ("ACCEPTANCE_COMMAND TEST_PORT "
+         ".mpy-build/device-tools/device_application_acceptance.mpy"),
         "ACCEPTANCE_RESET TEST_PORT",
         "ACCEPTANCE_STAGE runtime_target_tracer",
-        "ACCEPTANCE_COMMAND TEST_PORT tools/device_runtime_monitor.py",
+        ("ACCEPTANCE_COMMAND TEST_PORT "
+         ".mpy-build/device-tools/device_runtime_monitor.mpy"),
         "ACCEPTANCE_RESET TEST_PORT",
     ]
 
@@ -178,25 +234,22 @@ def test_device_acceptance_failure_still_resets_before_stopping():
 def test_device_acceptance_missing_stage_script_still_resets(tmp_path):
     powershell = shutil.which("pwsh")
     assert powershell is not None
-    project_copy = tmp_path / "workspace" / "mp_version"
-    tools_copy = project_copy / "tools"
-    tools_copy.mkdir(parents=True)
-    orchestrator_copy = tools_copy / ORCHESTRATOR.name
-    shutil.copyfile(ORCHESTRATOR, orchestrator_copy)
+    orchestrator = _copy_orchestrator(
+        tmp_path, missing_stage="device_boot_probe.py")
 
     result = subprocess.run(
         [
             powershell,
             "-NoProfile",
             "-File",
-            str(orchestrator_copy),
+            str(orchestrator),
             "-Port",
             "TEST_PORT",
             "-DryRun",
             "-BootWaitMs",
             "0",
         ],
-        cwd=project_copy,
+        cwd=orchestrator.parents[1],
         capture_output=True,
         text=True,
         check=False,
@@ -208,6 +261,7 @@ def test_device_acceptance_missing_stage_script_still_resets(tmp_path):
         if line.startswith("ACCEPTANCE_")
     ]
     assert events == [
+        "ACCEPTANCE_RESET TEST_PORT",
         "ACCEPTANCE_STAGE boot_probe",
         "ACCEPTANCE_RESET TEST_PORT",
     ]
@@ -222,10 +276,9 @@ def test_stage_and_reset_failure_preserves_stage_error_and_reports_reset(
     )
 
     assert result.returncode != 0
-    assert [command[-1] for command in commands] == [
-        str(PROJECT / "tools" / "device_boot_probe.py"),
-        "reset",
-    ]
+    assert _compiled_protocol_events(commands) == (
+        _expected_compiled_protocol_events()[:6]
+    )
     assert "PROBE_CAUGHT Acceptance stage failed: boot_probe" in result.stdout
     assert (
         "Acceptance reset also failed: "
@@ -240,40 +293,13 @@ def test_native_stage_failure_resets_then_stops(tmp_path):
     )
 
     assert result.returncode != 0
-    assert _command_events(commands) == [
-        ("run", "device_boot_probe.py"),
-        ("reset", "TEST_PORT"),
-        ("run", "device_runtime_monitor.py"),
-        ("reset", "TEST_PORT"),
-    ]
+    assert _compiled_protocol_events(commands) == (
+        _expected_compiled_protocol_events()[:16]
+    )
     assert (
         "PROBE_CAUGHT Acceptance stage failed: runtime_target_tracer"
-    ) in (
-        result.stdout)
-
-
-def test_application_matrix_failure_resets_and_never_reports_completion(
-        tmp_path):
-    result, commands = _run_native_orchestrator(
-        tmp_path,
-        fail_stage_script="device_application_acceptance.py",
+        in result.stdout
     )
-
-    assert result.returncode != 0
-    assert _command_events(commands) == [
-        ("run", "device_boot_probe.py"),
-        ("reset", "TEST_PORT"),
-        ("run", "device_runtime_monitor.py"),
-        ("reset", "TEST_PORT"),
-        ("run", "device_interaction_acceptance.py"),
-        ("reset", "TEST_PORT"),
-        ("run", "device_application_acceptance.py"),
-        ("reset", "TEST_PORT"),
-    ]
-    assert (
-        "PROBE_CAUGHT Acceptance stage failed: application_matrix"
-    ) in result.stdout
-    assert "ACCEPTANCE_COMPLETE TEST_PORT" not in result.stdout
 
 
 def test_native_reset_failure_stops_before_the_next_stage(tmp_path):
@@ -283,46 +309,32 @@ def test_native_reset_failure_stops_before_the_next_stage(tmp_path):
     )
 
     assert result.returncode != 0
-    assert _command_events(commands) == [
-        ("run", "device_boot_probe.py"),
-        ("reset", "TEST_PORT"),
-    ]
+    assert _compiled_protocol_events(commands) == (
+        _expected_compiled_protocol_events()[:1]
+    )
     assert (
         "PROBE_CAUGHT "
         "Unable to reset TEST_PORT after acceptance stage"
     ) in result.stdout
 
 
-def test_injected_adapter_does_not_require_a_workspace_python(tmp_path):
-    project_copy = tmp_path / "workspace" / "mp_version"
-    tools_copy = project_copy / "tools"
-    tools_copy.mkdir(parents=True)
-    orchestrator_copy = tools_copy / ORCHESTRATOR.name
-    shutil.copyfile(ORCHESTRATOR, orchestrator_copy)
-    for script_name in (
-            "device_boot_probe.py",
-            "device_runtime_monitor.py",
-            "device_interaction_acceptance.py",
-            "device_application_acceptance.py"):
-        (tools_copy / script_name).write_text("", encoding="utf-8")
+def test_injected_adapter_runs_all_five_stages_without_workspace_python(
+        tmp_path):
+    orchestrator = _copy_orchestrator(tmp_path)
 
     result, commands = _run_native_orchestrator(
         tmp_path,
-        orchestrator=orchestrator_copy,
+        orchestrator=orchestrator,
     )
 
     assert result.returncode == 0, result.stdout + result.stderr
-    assert _command_events(commands) == [
-        ("run", "device_boot_probe.py"),
-        ("reset", "TEST_PORT"),
-        ("run", "device_runtime_monitor.py"),
-        ("reset", "TEST_PORT"),
-        ("run", "device_interaction_acceptance.py"),
-        ("reset", "TEST_PORT"),
-        ("run", "device_application_acceptance.py"),
-        ("reset", "TEST_PORT"),
-    ]
-    assert "ACCEPTANCE_COMPLETE TEST_PORT" in result.stdout
+    assert _compiled_protocol_events(commands) == (
+        _expected_compiled_protocol_events()
+    )
+    assert (
+        "ACCEPTANCE_COMPLETE TEST_PORT stages=5 "
+        "animation=removed_heap_below_12k"
+    ) in result.stdout
 
 
 def test_injected_adapter_rejects_ambiguous_pipeline_output(tmp_path):
@@ -332,8 +344,9 @@ def test_injected_adapter_rejects_ambiguous_pipeline_output(tmp_path):
     )
 
     assert result.returncode != 0
-    assert _command_events(commands) == [
-        ("run", "device_boot_probe.py"),
+    assert _compiled_protocol_events(commands) == [
+        ("reset", "TEST_PORT"),
+        ("prepare", "resident"),
         ("reset", "TEST_PORT"),
     ]
     assert (

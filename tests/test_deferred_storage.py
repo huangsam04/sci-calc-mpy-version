@@ -1,4 +1,6 @@
+from utils import storage as storage_module
 from utils.storage import DeferredStorage
+from calc.limits import MAX_VARIABLE_TEXT_LENGTH
 
 
 def test_deferred_storage_coalesces_settings_until_idle_flush():
@@ -34,6 +36,23 @@ def test_deferred_storage_retries_failed_atomic_write_without_dropping_data():
     assert storage.flush(1_200) == ("vars", True)
     assert attempts == [{"x": 7}, {"x": 7}]
     assert outcomes == [False, True]
+
+
+def test_deferred_storage_grows_backoff_for_structural_variable_failures(
+        tmp_path):
+    storage_module.configure_storage(str(tmp_path))
+    storage = DeferredStorage(retry_ms=100, structural_retry_max_ms=400)
+    storage.request_vars({"x": "x" * (MAX_VARIABLE_TEXT_LENGTH + 1)})
+
+    assert storage.flush(1_000) == ("vars", False)
+    assert storage.flush(1_099) is None
+    assert storage.flush(1_100) == ("vars", False)
+    assert storage.flush(1_299) is None
+    assert storage.flush(1_300) == ("vars", False)
+    assert storage.flush(1_699) is None
+    assert storage.flush(1_700) == ("vars", False)
+    assert storage.flush(2_099) is None
+    assert storage.flush(2_100) == ("vars", False)
 
 
 def test_deferred_storage_defers_snapshot_work_until_idle_flush():

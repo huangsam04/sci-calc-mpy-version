@@ -286,6 +286,11 @@ def _normalise_result(value):
 def evaluate_program(program, context):
     try:
         return _evaluate(program, context)
+    except MemoryError:
+        # Resource exhaustion is handled by the runtime recovery seam.  Turning
+        # it into a ParseError would allocate error UI state while the heap is
+        # already exhausted.
+        raise
     except ParseError:
         raise
     except Exception as error:

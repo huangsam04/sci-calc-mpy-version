@@ -4,94 +4,87 @@
 _resident_runtime = None
 
 
-class RuntimeHandle:
-    """Identity-stable view of one already-constructed calculator runtime."""
+_CANONICAL_SCREEN_COUNT = 10
 
-    __slots__ = (
-        "nav", "root", "targets", "mode", "version", "optional_buffers",
-        "optional_buffer_target", "scenario_adapter")
 
-    def __init__(
-            self, nav, root, targets, mode="resident", version=None,
-            optional_buffers=(), optional_buffer_target=None,
-            scenario_adapter=None):
-        self.nav = nav
-        self.root = root
-        self.targets = targets if isinstance(targets, tuple) else tuple(targets)
-        self.mode = mode
-        self.version = version
-        self.optional_buffers = (
-            optional_buffers
-            if isinstance(optional_buffers, tuple)
-            else tuple(optional_buffers))
-        self.optional_buffer_target = optional_buffer_target
-        self.scenario_adapter = scenario_adapter
+class ApplicationBinding:
+    """Immutable references to the one already-constructed application state."""
 
-    def at_root(self):
-        return getattr(self.nav, "current", None) is self.root
+    __slots__ = ("_binding_state",)
+    _sealed = True
 
-    def root_visible(self):
-        renderer = getattr(self.nav, "renderer", None)
-        return getattr(renderer, "_visible_screen", None) is self.root
+    def __init__(self, screens, registry, settings, persistence, nav=None):
+        if not isinstance(screens, tuple):
+            raise TypeError("Resident screens must be an existing tuple")
+        if (registry is None or settings is None or persistence is None):
+            raise ValueError("Application binding requires resident state")
+        # One immutable tuple is both smaller and stronger than duplicating ten
+        # writable page slots. Public names are absent from __slots__, so an
+        # external assignment remains structurally impossible.
+        self._binding_state = (
+            screens, registry, settings, persistence, nav)
 
-    def reset_root(self, present=True):
-        if not self.at_root():
-            self.nav.reset(self.root)
-        if present:
-            self.nav.present_current()
+    def __getattr__(self, name):
+        state = self._binding_state
+        if name == "screens":
+            return state[0]
+        if name == "registry":
+            return state[1]
+        if name == "settings":
+            return state[2]
+        if name == "persistence":
+            return state[3]
+        if name == "_nav":
+            return state[4]
+        screens = state[0]
+        canonical = len(screens) == _CANONICAL_SCREEN_COUNT
+        if name == "root":
+            return screens[0] if canonical else None
+        if name == "calculator":
+            return screens[1] if canonical else None
+        if name == "plot":
+            return screens[2] if canonical else None
+        if name == "function_panel":
+            return screens[3] if canonical else None
+        if name == "stopwatch":
+            return screens[4] if canonical else None
+        if name == "settings_screen":
+            return screens[5] if canonical else None
+        if name == "about":
+            return screens[6] if canonical else None
+        if name == "letters":
+            return screens[7] if canonical else None
+        if name == "function_picker":
+            return screens[8] if canonical else None
+        if name == "variables":
+            return screens[9] if canonical else None
+        raise AttributeError("Application binding attribute is unavailable")
 
-    def find_target(self, name):
-        for target in self.targets:
-            title = getattr(
-                target, "transition_title", target.__class__.__name__)
-            if title == name:
-                return target
-        return None
+    def require_canonical_screens(self, expected_root=None):
+        """Return this binding only for the one canonical resident topology."""
+        screens = self._binding_state[0]
+        if (not isinstance(screens, tuple)
+                or len(screens) != _CANONICAL_SCREEN_COUNT):
+            raise RuntimeError("Canonical resident screens are unavailable")
+        if expected_root is not None and screens[0] is not expected_root:
+            raise RuntimeError("Canonical resident screens are unavailable")
+        for index in range(_CANONICAL_SCREEN_COUNT):
+            screen = screens[index]
+            if screen is None:
+                raise RuntimeError("Canonical resident screens are unavailable")
+            for earlier in range(index):
+                if screen is screens[earlier]:
+                    raise RuntimeError("Canonical resident screens are unavailable")
+        return self
 
-    def perform(self, action, argument=None):
-        adapter = self.scenario_adapter
-        if adapter is None:
-            raise RuntimeError("Runtime scenario adapter is unavailable")
-        return adapter.perform(self, action, argument)
-
-    def buffer_snapshot(self):
-        snapshot = []
-        renderer = getattr(self.nav, "renderer", None)
-        display = getattr(renderer, "display", None)
-        main_buffer = getattr(display, "gs4_buf", None)
-        if main_buffer is not None:
-            snapshot.append(("main", len(main_buffer), id(main_buffer)))
-
-        memory = getattr(self.nav, "memory", None)
-        buffers = getattr(memory, "_buffers", None)
-        if buffers:
-            for name, value in buffers.items():
-                if name != "main" or main_buffer is None:
-                    snapshot.append((name, len(value), id(value)))
-        snapshot.sort()
-        return tuple(snapshot)
-
-    def accepts_buffer_snapshot(self, baseline, snapshot, optional_target):
-        for item in baseline:
-            if item not in snapshot:
-                return False
-        if len(snapshot) == len(baseline):
-            return True
-        if (optional_target is None
-                or optional_target is not self.optional_buffer_target):
-            return False
-        for name, length, identity in snapshot:
-            item = (name, length, identity)
-            if item in baseline:
-                continue
-            allowed = False
-            for optional_name, optional_length in self.optional_buffers:
-                if name == optional_name and length == optional_length:
-                    allowed = True
-                    break
-            if not allowed:
-                return False
-        return True
+    def open_page_scenario_transaction(self):
+        """Open Nav's canonical page transaction without exposing Nav."""
+        self.require_canonical_screens()
+        opener = getattr(
+            self._binding_state[4], "open_page_scenario_transaction", None)
+        if not callable(opener):
+            raise RuntimeError("Canonical page transaction is unavailable")
+        return opener(self.screens)
 
 
 def set_resident_runtime(runtime):

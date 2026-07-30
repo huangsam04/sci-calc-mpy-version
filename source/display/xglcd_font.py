@@ -1,47 +1,36 @@
-"""XGLCD Font Utility."""
+"""Packed X-GLCD font data for allocation-free direct rendering."""
 import gc
-from math import floor
-from framebuf import FrameBuffer, MONO_VLSB  # type: ignore
 
 
 _COMPACT_MAGIC = b"XGF1"
 _COMPACT_HEADER_SIZE = 8
-FONT_CACHE_MAX = 64
 
 
 class XglcdFont(object):
-    """Font data in X-GLCD format.
+    """Load one bounded ASCII font without retaining raster caches."""
 
-    Attributes:
-        letters: A bytearray of letters (columns consist of bytes)
-        width: Maximum pixel width of font
-        height: Pixel height of font
-        start_letter: ASCII number of first letter
-        height_bytes: How many bytes comprises letter height
-    """
     __slots__ = (
         "width", "height", "start_letter", "letter_count",
-        "bytes_per_letter", "_cache", "_cache_max", "letters")
+        "bytes_per_letter", "letters")
 
-    def __init__(self, path, width, height, start_letter=32, letter_count=96):
+    def __init__(self, path, width, height, start_letter=32, letter_count=96,
+                 cache_bytes=0):
+        # ``cache_bytes`` remains an accepted compatibility argument, but the
+        # resident renderer writes packed glyphs straight into its sole GS4
+        # framebuffer and therefore owns no optional raster cache.
         self.width = width
         self.height = height
         self.start_letter = start_letter
         self.letter_count = letter_count
-        self.bytes_per_letter = (floor(
-            (self.height - 1) / 8) + 1) * self.width + 1
-        # Cache rendered glyphs and strings. Hard cap prevents unbounded growth
-        # from frequently-changing text like clock displays (time strings).
-        self._cache = {}
-        self._cache_max = FONT_CACHE_MAX
-        self.__load_xglcd_font(path)
+        self.bytes_per_letter = (((height - 1) // 8 + 1) * width + 1)
+        self._load(path)
 
-    def __load_xglcd_font(self, path):
+    def _load(self, path):
         bytes_per_letter = self.bytes_per_letter
-        self.letters = bytearray(bytes_per_letter * self.letter_count)
-        mv = memoryview(self.letters)
-        with open(path, 'rb') as f:
-            header = f.read(_COMPACT_HEADER_SIZE)
+        letters = bytearray(bytes_per_letter * self.letter_count)
+        view = memoryview(letters)
+        with open(path, "rb") as font_file:
+            header = font_file.read(_COMPACT_HEADER_SIZE)
             if header[0:4] == _COMPACT_MAGIC:
                 if len(header) != _COMPACT_HEADER_SIZE:
                     raise ValueError("Incomplete compact X-GLCD font header")
@@ -49,156 +38,68 @@ class XglcdFont(object):
                 expected = (self.width, self.height, self.start_letter,
                             self.letter_count)
                 if metadata != expected:
-                    raise ValueError("Compact X-GLCD font metadata does not match requested font")
-                data = f.read(len(self.letters))
-                if len(data) != len(self.letters):
+                    raise ValueError(
+                        "Compact X-GLCD font metadata does not match requested font")
+                data = font_file.read(len(letters))
+                if len(data) != len(letters):
                     raise ValueError("Incomplete compact X-GLCD font data")
-                mv[:] = data
+                view[:] = data
+                self.letters = letters
                 return
 
-            f.seek(0)
+            font_file.seek(0)
             offset = 0
-            # X-GLCD sources can contain legacy single-byte glyph names in C
-            # comments. Parse the ASCII data tokens as bytes so those comments
-            # never make a valid font fail UTF-8 decoding on MicroPython.
-            for line in f:
-                if offset >= len(self.letters):
+            # Legacy C assets may contain non-UTF-8 glyph names in comments;
+            # parse only their ASCII byte tokens.
+            for line in font_file:
+                if offset >= len(letters):
                     break
                 line = line.strip()
-                if len(line) == 0 or line[0:2] != b'0x':
+                if len(line) == 0 or line[0:2] != b"0x":
                     continue
-                comment = line.find(b'//')
+                comment = line.find(b"//")
                 if comment != -1:
                     line = line[0:comment].strip()
-                if line.endswith(b','):
-                    line = line[0:len(line) - 1]
-                mv[offset: offset + bytes_per_letter] = bytearray(
-                    int(b, 16) for b in line.split(b','))
+                if line.endswith(b","):
+                    line = line[:-1]
+                view[offset:offset + bytes_per_letter] = bytearray(
+                    int(value, 16) for value in line.split(b","))
                 offset += bytes_per_letter
-
-    def get_letter(self, letter, rotate=0):
-        """Convert letter byte data to pixels. Results are cached."""
-        cache_key = (letter, rotate)
-        cached = self._cache.get(cache_key)
-        if cached is not None:
-            return cached
-
-        letter_ord = ord(letter) - self.start_letter
-        if letter_ord < 0 or letter_ord >= self.letter_count:
-            return b'', 0, 0
-        bytes_per_letter = self.bytes_per_letter
-        offset = letter_ord * bytes_per_letter
-        mv = memoryview(self.letters[offset:offset + bytes_per_letter])
-
-        width = mv[0]
-        height = self.height
-        byte_height = (height - 1) // 8 + 1
-        if byte_height > 6:
-            return b'', 0, 0
-        array_size = width * byte_height
-        ba = bytearray(mv[1:array_size + 1])
-        pos = 0
-        ba2 = bytearray(array_size)
-
-        for i in range(0, array_size, byte_height):
-            ba2[pos] = ba[i]
-            if byte_height > 1:
-                ba2[pos + width] = ba[i + 1]
-            if byte_height > 2:
-                ba2[pos + width * 2] = ba[i + 2]
-            if byte_height > 3:
-                ba2[pos + width * 3] = ba[i + 3]
-            if byte_height > 4:
-                ba2[pos + width * 4] = ba[i + 4]
-            if byte_height > 5:
-                ba2[pos + width * 5] = ba[i + 5]
-            pos += 1
-
-        fb = FrameBuffer(ba2, width, height, MONO_VLSB)
-
-        if rotate == 0:
-            result = (fb, width, height)
-        elif rotate == 90:
-            byte_width = (width - 1) // 8 + 1
-            adj_size = height * byte_width
-            fb2 = FrameBuffer(bytearray(adj_size), height, width, MONO_VLSB)
-            for y in range(height):
-                for x in range(width):
-                    fb2.pixel(y, x, fb.pixel(x, (height - 1) - y))
-            result = (fb2, height, width)
-        elif rotate == 180:
-            fb2 = FrameBuffer(bytearray(array_size), width, height, MONO_VLSB)
-            for y in range(height):
-                for x in range(width):
-                    fb2.pixel(x, y, fb.pixel((width - 1) - x, (height - 1) - y))
-            result = (fb2, width, height)
-        elif rotate == 270:
-            byte_width = (width - 1) // 8 + 1
-            adj_size = height * byte_width
-            fb2 = FrameBuffer(bytearray(adj_size), height, width, MONO_VLSB)
-            for y in range(height):
-                for x in range(width):
-                    fb2.pixel(y, x, fb.pixel((width - 1) - x, y))
-            result = (fb2, height, width)
-        else:
-            result = (fb, width, height)
-
-        if len(self._cache) < self._cache_max:
-            self._cache[cache_key] = result
-        return result
+        self.letters = letters
 
     def measure_text(self, text, spacing=1):
-        """Measure length of text string in pixels."""
-        length = 0
-        for letter in text:
-            letter_ord = ord(letter) - self.start_letter
-            if letter_ord < 0 or letter_ord >= self.letter_count:
-                # Glyph outside the font's range: get_letter returns w == 0 for
-                # it, and get_text_fb still advances the pen by spacing.  Count
-                # that same spacing here so measured width matches the render.
-                length += spacing
-                continue
-            offset = letter_ord * self.bytes_per_letter
-            length += self.letters[offset] + spacing
-        return length
+        """Measure packed text without creating glyph or substring objects."""
+        width = 0
+        index = 0
+        start = self.start_letter
+        end = start + self.letter_count
+        bytes_per_letter = self.bytes_per_letter
+        letters = self.letters
+        while index < len(text):
+            code = ord(text[index])
+            if start <= code < end:
+                width += letters[(code - start) * bytes_per_letter]
+            width += spacing
+            index += 1
+        return width
 
-    def get_text_fb(self, text, spacing=1):
-        """Return a pre-rendered FrameBuffer for the entire string. Cached.
-        Turns N letter blits into 1 string blit — huge perf win for static text."""
-        cache_key = text
-        cached = self._cache.get(cache_key)
-        if cached is not None:
-            return cached
 
-        total_w = self.measure_text(text, spacing)
-        if total_w == 0:
-            result = (FrameBuffer(bytearray(1), 1, self.height, MONO_VLSB), 0, self.height)
-            if len(self._cache) < self._cache_max:
-                self._cache[cache_key] = result
-            return result
+def trim_caches(primary=None, secondary=None, target_bytes=0):
+    """Trim compatible optional font caches; packed fonts simply return 0."""
+    released = 0
+    if primary is not None:
+        trimmer = getattr(primary, "trim_cache", None)
+        if trimmer is not None:
+            released += trimmer(target_bytes)
+    if secondary is not None and secondary is not primary:
+        trimmer = getattr(secondary, "trim_cache", None)
+        if trimmer is not None:
+            released += trimmer(target_bytes)
+    return released
 
-        byte_height = (self.height - 1) // 8 + 1
-        try:
-            buf = bytearray(total_w * byte_height)
-            fb = FrameBuffer(buf, total_w, self.height, MONO_VLSB)
-        except MemoryError:
-            # Emergency: clear cache + GC, then retry once
-            self._cache.clear()
-            gc.collect()
-            try:
-                buf = bytearray(total_w * byte_height)
-                fb = FrameBuffer(buf, total_w, self.height, MONO_VLSB)
-            except MemoryError:
-                # Still OOM — return minimal placeholder, caller won't crash
-                return (FrameBuffer(bytearray(1), 1, self.height, MONO_VLSB), 0, self.height)
 
-        x = 0
-        for letter in text:
-            lfb, w, _ = self.get_letter(letter)
-            fb.blit(lfb, x, 0)
-            x += w + spacing
-
-        result = (fb, total_w, self.height)
-        if len(self._cache) < self._cache_max:
-            self._cache[cache_key] = result
-        return result
+def emergency_reclaim(primary=None, secondary=None):
+    """Release compatible optional caches before the recovery collection."""
+    released = trim_caches(primary, secondary, 0)
+    gc.collect()
+    return released

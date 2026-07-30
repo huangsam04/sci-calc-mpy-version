@@ -5,6 +5,8 @@ import time
 class _FixedSampleWindow:
     """A cyclic timing window whose backing list is allocated at boot only."""
 
+    __slots__ = ("values", "count", "_next")
+
     def __init__(self, limit):
         self.values = [0] * max(1, int(limit))
         self.count = 0
@@ -25,11 +27,17 @@ class _FixedSampleWindow:
 
 
 class PerformanceMetrics:
-    def __init__(self, sample_limit=16, frame_bucket_us=500,
-                 frame_bucket_count=128):
+    __slots__ = (
+        "sample_limit", "_frame_bucket_us", "_frame_histogram",
+        "_frame_sample_count", "_frame_max_us", "_boot_phases",
+        "_boot_last", "_input_started", "_input_to_present_us", "_gc_us")
+
+    def __init__(self, sample_limit=16, frame_bucket_us=1000,
+                 frame_bucket_count=32):
         self.sample_limit = max(1, int(sample_limit))
         self._frame_bucket_us = max(1, int(frame_bucket_us))
-        self._frame_histogram = [0] * max(1, int(frame_bucket_count))
+        frame_bucket_count = max(1, int(frame_bucket_count))
+        self._frame_histogram = bytearray(frame_bucket_count)
         self._frame_sample_count = 0
         self._frame_max_us = 0
         self._boot_phases = []
@@ -52,8 +60,8 @@ class PerformanceMetrics:
 
     def _reset_frames(self):
         # Repeated navigation produces far more frame samples than it is
-        # sensible to retain as Python integers. A fixed histogram preserves
-        # every frame for p95/max while keeping the device heap predictable.
+        # sensible to retain as Python integers. The fixed byte histogram is
+        # exact for bounded acceptance runs and keeps the device heap stable.
         for index in range(len(self._frame_histogram)):
             self._frame_histogram[index] = 0
         self._frame_sample_count = 0
@@ -70,7 +78,12 @@ class PerformanceMetrics:
             # lands there, _frame_summary reports the exact maximum instead
             # of hiding a regression behind an artificially low percentile.
             bucket = len(self._frame_histogram) - 1
-        self._frame_histogram[bucket] += 1
+        bucket_count = self._frame_histogram[bucket]
+        # Long diagnostic sessions may outlive an 8-bit bucket. Saturating is
+        # allocation-free and makes _frame_summary fall back to the exact max,
+        # which is conservative instead of failing in the frame path.
+        if bucket_count < 255:
+            self._frame_histogram[bucket] = bucket_count + 1
 
     def _frame_summary(self):
         count = self._frame_sample_count
@@ -98,12 +111,19 @@ class PerformanceMetrics:
         self._boot_last = self._now_ms() if now is None else now
 
     def mark_boot(self, name, now=None):
+        if self._boot_phases is None:
+            return
         if self._boot_last is None:
             self.start_boot(now)
             return
         current = self._now_ms() if now is None else now
         self._boot_phases.append((name, time.ticks_diff(current, self._boot_last)))
         self._boot_last = current
+
+    def release_boot_samples(self):
+        """Release boot-only tuples before the resident graph is built."""
+        self._boot_phases = None
+        self._boot_last = None
 
     def reset_run(self):
         self._input_started = None
@@ -154,7 +174,9 @@ class PerformanceMetrics:
 
     def snapshot(self):
         return {
-            "boot_phases_ms": list(self._boot_phases),
+            "boot_phases_ms": (
+                [] if self._boot_phases is None
+                else list(self._boot_phases)),
             "input_to_present_us": self._summary(self._input_to_present_us),
             "frame_us": self._frame_summary(),
             "gc_us": self._summary(self._gc_us),

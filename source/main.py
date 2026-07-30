@@ -7,8 +7,8 @@ from machine import Pin, SPI
 
 # --- Minimal imports for splash screen ---
 from display.ssd1322 import Display as SSD1322
-from display.xglcd_font import XglcdFont
-from ui.motion import IDLE_FRAME_MS, IDLE_LOOP_SLEEP_MS, SLEEP_SCAN_MS
+from ui.motion import (
+    IDLE_FRAME_MS, IDLE_LOOP_SLEEP_MS, SLEEP_SCAN_MS, FrameScheduler)
 from version import VERSION
 from performance import metrics
 
@@ -123,54 +123,252 @@ def _refresh_sidebar_if_due(renderer, now, last_refresh):
     return now
 
 
-def _toggle_angle_mode(registry, settings, persistence, renderer):
+def _toggle_angle_mode(registry, settings, persistence, renderer,
+                       plot_screen=None):
     """Update calculation state and its sidebar pixels in one input step."""
     registry.angle_mode = 1 - registry.angle_mode
     settings["angle_mode"] = registry.angle_mode
+    if plot_screen is not None:
+        plot_screen.on_angle_mode_changed()
     renderer.invalidate_sidebar()
     persistence.request_settings(settings)
 
 
+def _blocks_global_shortcuts(screen):
+    """Ask a modal page whether it owns every queued edge this frame."""
+    checker = getattr(screen, "blocks_global_shortcuts", None)
+    if callable(checker):
+        return bool(checker())
+    return bool(checker)
+
+
+def _open_context_letter_panel(screen, event, letter_panel, nav):
+    """Open Letters only from a page's currently visible input context."""
+    if event is None or _blocks_global_shortcuts(screen):
+        return False
+    row, col, shift = event
+    if (row, col) != (3, 5) or not shift:
+        return False
+    target_getter = getattr(screen, "letter_input_target", None)
+    target = target_getter() if callable(target_getter) else None
+    if target is None:
+        return False
+    letter_panel._state[0] = target
+    nav.go_to(letter_panel, event)
+    return True
+
+
+def _global_angle_allowed(event, page_was_modal, page_result):
+    """Leave ANG to ordinary non-modal pages after their own event handler."""
+    return (event is not None and not page_was_modal and page_result is None
+            and event[0] == 4 and event[1] == 4)
+
+
+def _drop_function_loader_module():
+    """Remove the rebuildable plug-in loader from the resident graph."""
+    if not hasattr(gc, "mem_free"):
+        return
+    import sys
+    loader_module = sys.modules.pop("calc.loader", None)
+    sys.modules.pop("approot", None)
+    calc_package = sys.modules.get("calc")
+    if (loader_module is not None and calc_package is not None
+            and getattr(calc_package, "loader", None) is loader_module):
+        delattr(calc_package, "loader")
+
+
+def _release_function_loader():
+    """Drop the rebuildable plug-in loader after its boot-time use."""
+    _drop_function_loader_module()
+    if hasattr(gc, "mem_free"):
+        # These splash-only functions have completed before resident page
+        # imports begin.  Remove their raw code from the constrained device
+        # heap; host tests keep them available for direct verification.
+        module_globals = globals()
+        module_globals.pop("_init_display", None)
+        module_globals.pop("_boot_progress", None)
+        module_globals.pop("_boot_fail", None)
+        module_globals.pop("_release_function_loader", None)
+
+
 def _reload_functions(settings, registry=None):
-    from calc.functions import build_registry, DEFAULT_ENABLED_GROUPS, FUNCTION_GROUPS
-    from calc.loader import load_function_files
+    from calc.functions import (
+        DEFAULT_ENABLED_GROUPS, FUNCTION_GROUPS, build_registry,
+        register_builtins)
+    from calc.limits import MAX_ENABLED_PLUGINS
     enabled = settings.get("enabled_functions", DEFAULT_ENABLED_GROUPS)
-    groups = [g for g in enabled if g in FUNCTION_GROUPS]
-    sd_names = [g[7:] for g in enabled if g.startswith("plugin:")]
+    if not isinstance(enabled, (list, tuple)):
+        raise ValueError("enabled_functions must be a list")
+    groups = []
+    sd_names = []
+    for selected in enabled:
+        if not isinstance(selected, str):
+            raise ValueError("Function selection names must be strings")
+        if selected in FUNCTION_GROUPS:
+            if selected not in groups:
+                groups.append(selected)
+        elif selected.startswith("plugin:"):
+            if selected[7:] not in sd_names:
+                if len(sd_names) >= MAX_ENABLED_PLUGINS:
+                    raise ValueError("Enabled add-on limit reached")
+                sd_names.append(selected[7:])
+    bundled_only = registry is not None
+    for name in sd_names:
+        if name != "basic" and name != "solve" and name != "trig":
+            bundled_only = False
+            break
     if registry is None:
-        staged = build_registry(groups)
+        target = build_registry(groups)
+        angle_mode = 0
+        in_place = False
+        known_files = ()
+    else:
+        # The main loop is synchronous while this cold operation runs.  Keep
+        # the shared registry identity and its already allocated hash table,
+        # but release the rebuildable callback graph before importing the
+        # loader.  Reallocating that table after user state fragmented the heap
+        # was the measured 640-byte maximum-state reload failure.
+        angle_mode = registry.angle_mode
+        known_files = registry.plugin_files
+        registry.clear_for_reload()
+        registry.plugin_errors.clear()
+        gc.collect()
+        target = registry
+        in_place = True
+    target.angle_mode = angle_mode
+    report = None
+    try:
+        if bundled_only:
+            # The canonical add-ons are already compiled and resident.  Do not
+            # import the general SD source loader merely to rebuild them: its
+            # measured 868-byte raw-code allocation failed on the fragmented
+            # heap after supported maximum user state.
+            from calc.bundled_plugins import register_bundled
+            for name in sd_names:
+                if not register_bundled(name, target):
+                    raise ValueError("Bundled add-on is unavailable")
+                target._plugin_exports[name] = {}
+            target.plugin_files = known_files
+            register_builtins(target, groups)
+            return target
+        from calc.loader import load_function_files, list_function_files
         if sd_names:
-            report = load_function_files(staged, sd_names)
-            staged.plugin_errors = report.errors
-            staged.plugin_functions = getattr(report, "functions", {})
-            staged.plugin_dependencies = getattr(report, "dependencies", {})
-        return staged
+            report = load_function_files(
+                target, sd_names, in_place=in_place)
+            target.plugin_errors = report.errors
+            target.plugin_dependencies = report.dependencies
+            target.plugin_files = report.files
+        else:
+            target.plugin_files = list_function_files()
+        if registry is not None and (report is None or not report.errors):
+            # Allocate built-in definition tuples only after the largest
+            # plug-in sources have compiled.  Their callbacks share this same
+            # identity-stable registry, so no second table is required.
+            register_builtins(registry, groups)
+    except MemoryError:
+        if registry is not None:
+            # Leave the calculator with its complete non-optional grammar even
+            # when an unsupported add-on exhausts the cold operation.
+            registry.clear_for_reload()
+            gc.collect()
+            register_builtins(registry, groups)
+            registry.angle_mode = angle_mode
+        raise
 
-    # The existing registry owns the previous plug-in callbacks and their
-    # module namespaces.  Drop those references before compiling replacements;
-    # otherwise both plug-in generations coexist at the allocation peak and a
-    # fragmented ESP32 heap can fail even when total free memory looks ample.
-    angle_mode = registry.angle_mode
-    registry.clear()
-    gc.collect()
+    if registry is None:
+        return target
 
-    # Keep the registry identity stable: calculator and plot screens retain
-    # references to this object and use its revision to invalidate caches.
-    staged = build_registry(groups)
-    registry.replace(staged)
-    registry.angle_mode = angle_mode
-    if sd_names:
-        report = load_function_files(registry, sd_names)
-        registry.plugin_errors = report.errors
-        registry.plugin_functions = getattr(report, "functions", {})
-        registry.plugin_dependencies = getattr(report, "dependencies", {})
+    if report is not None and report.errors:
+        # Do not expose a partially loaded set.  Built-ins are always resident
+        # after an ordinary add-on failure, while the bounded report remains
+        # available to the panel and its pending selection rolls back.
+        errors = report.errors
+        files = report.files
+        registry.clear_for_reload()
+        gc.collect()
+        register_builtins(registry, groups)
+        registry.angle_mode = angle_mode
+        registry.plugin_errors = errors
+        registry.plugin_files = files
+        return None
     return registry
 
 
 def _reload_functions_after_reclaim(nav, active_screen, settings, registry):
-    """Reload plug-ins only after reclaiming the optional plot workspace."""
+    """Reload plug-ins only after one unified optional-memory reclaim."""
+    enabled = settings.get("enabled_functions")
+    bundled_only = (enabled is None or isinstance(enabled, list)
+                    or isinstance(enabled, tuple))
+    if bundled_only and enabled is not None:
+        for selected in enabled:
+            if (not isinstance(selected, str)
+                    or (selected.startswith("plugin:")
+                        and selected != "plugin:basic"
+                        and selected != "plugin:solve"
+                        and selected != "plugin:trig")):
+                bundled_only = False
+                break
+    if bundled_only:
+        return _reload_bundled_functions(settings, registry)
+    return _reload_external_functions_after_reclaim(
+        nav, active_screen, settings, registry)
+
+
+def _reload_bundled_functions(settings, registry):
+    """Rebuild fixed add-ons without source-loader or selection-list churn."""
+    from calc.bundled_plugins import register_bundled
+    from calc.functions import DEFAULT_ENABLED_GROUPS, register_builtins
+
+    enabled = settings.get("enabled_functions", DEFAULT_ENABLED_GROUPS)
+    angle_mode = registry.angle_mode
+    known_files = registry.plugin_files
+    registry.clear_for_reload()
+    registry.plugin_errors.clear()
+    gc.collect()
+    try:
+        if "plugin:basic" in enabled:
+            register_bundled("basic", registry)
+            registry._plugin_exports["basic"] = {}
+        if "plugin:solve" in enabled:
+            register_bundled("solve", registry)
+            registry._plugin_exports["solve"] = {}
+        if "plugin:trig" in enabled:
+            register_bundled("trig", registry)
+            registry._plugin_exports["trig"] = {}
+        register_builtins(registry, enabled)
+        registry.plugin_files = known_files
+        registry.angle_mode = angle_mode
+        return registry
+    except MemoryError:
+        registry.clear_for_reload()
+        gc.collect()
+        register_builtins(registry, enabled)
+        registry.angle_mode = angle_mode
+        raise
+
+
+def _reload_external_functions_after_reclaim(
+        nav, active_screen, settings, registry):
+    """Give source add-ons the full cold-operation recovery envelope."""
     nav.prepare_memory_intensive_operation(active_screen)
-    return _reload_functions(settings, registry)
+    gc.collect()
+    try:
+        return _reload_functions(settings, registry)
+    finally:
+        _drop_function_loader_module()
+        gc.collect()
+
+
+def _scan_function_files_after_reclaim(nav, active_screen):
+    """Refresh the bounded filename catalog without executing add-ons."""
+    nav.prepare_memory_intensive_operation(active_screen)
+    gc.collect()
+    try:
+        from calc.loader import list_function_files
+        return list_function_files()
+    finally:
+        _drop_function_loader_module()
+        gc.collect()
 
 
 def _present_first_ui_frame(nav, root):
@@ -221,12 +419,44 @@ def _draw_crash(display, error):
 
 # ── Screen navigation ───────────────────────────────────────────
 
+# The resident acceptance controller imports these only after acquiring the
+# already-constructed pages through ApplicationBinding.  Values follow that
+# binding's fixed order, excluding its root Main Menu.
+PAGE_SCENARIO_CALCULATOR = 1
+PAGE_SCENARIO_PLOT = 2
+PAGE_SCENARIO_ADDONS = 3
+PAGE_SCENARIO_STOPWATCH = 4
+PAGE_SCENARIO_SETTINGS = 5
+PAGE_SCENARIO_ABOUT = 6
+PAGE_SCENARIO_LETTERS = 7
+PAGE_SCENARIO_FUNCTION_PICKER = 8
+PAGE_SCENARIO_VARIABLE_PANEL = 9
+
+# Keep the screen vocabulary available without adding alternate action values.
+PAGE_SCENARIO_FUNCTION_PANEL = PAGE_SCENARIO_ADDONS
+PAGE_SCENARIO_CATALOG = PAGE_SCENARIO_FUNCTION_PICKER
+PAGE_SCENARIO_VARIABLES = PAGE_SCENARIO_VARIABLE_PANEL
+
+_PAGE_SCENARIO_READY = 0
+_PAGE_SCENARIO_LEASE_OPEN = 1
+_PAGE_SCENARIO_CHILD_ACTIVE = 2
+_PAGE_SCENARIO_LEASE_DONE = 3
+_PAGE_SCENARIO_LEASE_CLOSED = 4
+
+
+if hasattr(gc, "mem_free"):
+    _NavPageScenarioTransaction = None
+else:
+    from nav_scenario import _NavPageScenarioTransaction
+
+
 class Nav:
-    """Immediate navigation across resident pages."""
+    """Resident-page navigation and rebuildable-resource ownership."""
 
     __slots__ = (
         "memory", "renderer", "stack", "_managed", "_input_locked",
-        "_collect_pending", "last_present_us")
+        "_collect_pending", "last_present_us", "_page_scenario_transaction",
+        "_active_screen")
 
     def __init__(self, display, font_small, registry, memory=None):
         from ui.memory import MemoryManager
@@ -240,6 +470,8 @@ class Nav:
         self._input_locked = False
         self._collect_pending = False
         self.last_present_us = 0
+        self._page_scenario_transaction = None
+        self._active_screen = None
 
     def register_screens(self, screens):
         self._managed = tuple(screens)
@@ -250,57 +482,233 @@ class Nav:
 
     def boot(self, screen):
         self.stack[:] = [screen]
-        screen.activate()
+        self._active_screen = None
+        self._activate_screen(screen)
 
-    def go_to(self, screen, trigger_event=None):
+    def _activate_screen(self, screen):
+        screen.activate()
+        self._active_screen = screen
+
+    def _restore_active_screen(self, screen, primary_error=None):
+        """Best-effort rollback with memory-pressure precedence."""
+        # A failed deactivate leaves the old page's prior active marker stale.
+        # Clear it before a best-effort reactivation so the next navigation
+        # retries restoration instead of assuming the page is usable.
+        self._active_screen = None
+        try:
+            self._activate_screen(screen)
+        except MemoryError:
+            # Memory pressure must remain visible.  An already-primary OOM
+            # wins by identity; a rollback OOM upgrades an ordinary failure.
+            if (primary_error is not None
+                    and not isinstance(primary_error, MemoryError)):
+                raise
+            return False
+        except BaseException:
+            return False
+        return True
+
+    def _ensure_current_active(self):
+        current = self.current
+        if self._active_screen is current:
+            return True
+        self._activate_screen(current)
+        return True
+
+    def _release_screen(self, screen):
+        """Release one page's rebuildable state without knowing its internals."""
+        releaser = getattr(screen, "release_memory", None)
+        return bool(releaser()) if releaser is not None else False
+
+    def _release_departing_screen(self, screen):
+        """Free a leaving page and its optional Plot workspace as one action."""
+        released = self._release_screen(screen)
+        if getattr(screen, "requires_plot_workspace", False):
+            released = self.memory.release_plot_workspace() or released
+        return released
+
+    def _release_registered_screens(self, active_screen=None):
+        """Release all inactive resident-page caches through the common seam."""
+        released = False
+        for screen in self._managed:
+            if screen is active_screen:
+                continue
+            released = self._release_screen(screen) or released
+        return released
+
+    def _deactivate_stack(self):
+        """Deactivate the visible navigation path from leaf to root."""
+        for screen in reversed(self.stack):
+            screen.deactivate()
+
+    def _has_prepared_page_scenario(self, screen, transaction):
+        """Check Nav-owned identity before skipping a child activation."""
+        return (isinstance(transaction, _NavPageScenarioTransaction)
+                and transaction is self._page_scenario_transaction
+                and transaction._nav is self
+                and transaction._prepared_screen is screen
+                and transaction._child_lease is not None
+                and transaction._phase == _PAGE_SCENARIO_LEASE_OPEN)
+
+    def _go_to(self, screen, trigger_event=None, prepared_transaction=None):
         if screen is self.current:
+            self._ensure_current_active()
             return
+        if prepared_transaction is not None:
+            if not self._has_prepared_page_scenario(
+                    screen, prepared_transaction):
+                raise RuntimeError("Prepared page scenario lease is not active")
         old = self.current
-        old.deactivate()
+        self._ensure_current_active()
+        self._active_screen = None
+        try:
+            old.deactivate()
+        except BaseException as primary_error:
+            self._restore_active_screen(old, primary_error)
+            raise
+        try:
+            released = self._release_departing_screen(old)
+        except BaseException as primary_error:
+            self._restore_active_screen(old, primary_error)
+            raise
+        if released:
+            self._collect_pending = True
         self.stack.append(screen)
         try:
-            screen.activate()
-        except Exception:
+            if prepared_transaction is None:
+                self._activate_screen(screen)
+            else:
+                if not self._has_prepared_page_scenario(
+                        screen, prepared_transaction):
+                    raise RuntimeError("Prepared page scenario lease is not active")
+                self._active_screen = screen
+        except BaseException as primary_error:
             self.stack.pop()
-            old.activate()
+            self._restore_active_screen(old, primary_error)
+            raise
+
+    def go_to(self, screen, trigger_event=None):
+        self._require_ordinary_navigation()
+        self._go_to(screen, trigger_event)
+
+    def _go_to_prepared(self, screen, transaction, trigger_event=None):
+        """Navigate through the active transaction's exact prepared child."""
+        if (not self._has_prepared_page_scenario(screen, transaction)
+                or len(self.stack) != 1
+                or self.stack[0] is not transaction._root
+                or self.current is not transaction._root):
+            raise RuntimeError("Prepared page scenario lease is not active")
+        self._go_to(
+            screen, trigger_event, prepared_transaction=transaction)
+
+    def _go_back_prepared(self, transaction, trigger_event=None):
+        """Return only through the active transaction's known page path."""
+        if (not isinstance(transaction, _NavPageScenarioTransaction)
+                or transaction is not self._page_scenario_transaction
+                or transaction._nav is not self):
+            raise RuntimeError("Page scenario transaction is not active")
+        if len(self.stack) == 1:
+            if (self.current is not transaction._root
+                    or transaction._phase not in (
+                        _PAGE_SCENARIO_READY,
+                        _PAGE_SCENARIO_LEASE_CLOSED)):
+                raise RuntimeError("Page scenario navigation state is unexpected")
+            self._ensure_current_active()
+            return
+        if (transaction._phase != _PAGE_SCENARIO_LEASE_CLOSED
+                or len(self.stack) != 2
+                or self.stack[0] is not transaction._root
+                or self.current is not transaction._prepared_screen):
+            raise RuntimeError("Page scenario navigation state is unexpected")
+        self._go_back(trigger_event)
+
+    def _require_ordinary_navigation(self):
+        """Keep public navigation from escaping an active page lease."""
+        if self._page_scenario_transaction is not None:
+            raise RuntimeError("Page scenario transaction owns navigation")
+
+    def open_page_scenario_transaction(self, canonical_screens):
+        """Open the controller-only bounded auxiliary-page primitive."""
+        if self._page_scenario_transaction is not None:
+            raise RuntimeError("Page scenario transaction is already active")
+        global _NavPageScenarioTransaction
+        transaction_type = _NavPageScenarioTransaction
+        if transaction_type is None:
+            from nav_scenario import (
+                _NavPageScenarioTransaction as transaction_type)
+            _NavPageScenarioTransaction = transaction_type
+        transaction = transaction_type(self, canonical_screens)
+        self._page_scenario_transaction = transaction
+        return transaction
+
+    def _go_back(self, trigger_event=None):
+        if len(self.stack) <= 1:
+            self._ensure_current_active()
+            return
+        old = self.stack[-1]
+        parent = self.stack[-2]
+        self._ensure_current_active()
+        self._active_screen = None
+        try:
+            old.deactivate()
+        except BaseException as primary_error:
+            self._restore_active_screen(old, primary_error)
+            raise
+        try:
+            released = self._release_departing_screen(old)
+        except BaseException as primary_error:
+            self._restore_active_screen(old, primary_error)
+            raise
+        if released:
+            self._collect_pending = True
+        self.stack.pop()
+        try:
+            self._activate_screen(parent)
+        except BaseException as primary_error:
+            # A retry of the destination may restore the now-current root.
+            # If it cannot, put the departed child back so a later return can
+            # retry from one coherent visible stack.
+            parent_restore_error = None
+            try:
+                parent_restored = self._restore_active_screen(
+                    parent, primary_error)
+            except MemoryError as error:
+                parent_restore_error = error
+                parent_restored = False
+            if parent_restored:
+                raise
+            self.stack.append(old)
+            if parent_restore_error is not None:
+                self._restore_active_screen(old, parent_restore_error)
+                raise parent_restore_error
+            self._restore_active_screen(old, primary_error)
             raise
 
     def go_back(self, trigger_event=None):
-        if len(self.stack) <= 1:
-            return
-        old = self.stack.pop()
-        old.deactivate()
-        released = False
-        if getattr(old, "requires_plot_workspace", False):
-            releaser = getattr(old, "release_memory", None)
-            if releaser is not None:
-                released = bool(releaser())
-            released = self.memory.release_plot_workspace() or released
-        if released:
-            self._collect_pending = True
-        self.current.activate()
+        self._require_ordinary_navigation()
+        self._go_back(trigger_event)
 
     def poll_event(self, keyboard):
+        # The bounded page scenario owns its own execution steps.  Do not
+        # consume queued keypad edges while its lease is open.
+        if self._page_scenario_transaction is not None:
+            return None
         if self._input_locked:
             if keyboard.any_pressed():
                 return None
             self._input_locked = False
         return keyboard.pop_key_event()
 
-    def present_current(self):
-        self.renderer.present(self.current)
+    def present_current(self, now=None):
+        presented = self.renderer.present(self.current)
         self.last_present_us = self.renderer.last_present_us
+        return presented
 
     def settle_current(self):
         return self.current.settle_step() or 0
 
     def prepare_memory_intensive_operation(self, active_screen):
-        for screen in self._managed:
-            if screen is active_screen:
-                continue
-            releaser = getattr(screen, "release_memory", None)
-            if releaser is not None:
-                releaser()
+        self._release_registered_screens(active_screen)
         self.memory.release_plot_workspace()
         self.memory.collect()
         self._collect_pending = False
@@ -313,21 +721,25 @@ class Nav:
         return True
 
     def reset(self, root):
-        for screen in self._managed:
-            releaser = getattr(screen, "release_memory", None)
-            if releaser is not None:
-                releaser()
-        self.stack[:] = [root]
+        # Recovery must quiesce the live navigation path before it invalidates
+        # its derived state.  This fixed sequence leaves no page holding a
+        # stale cache or input focus when root becomes visible again.
+        self._deactivate_stack()
+        self._release_registered_screens()
         self.memory.release_plot_workspace()
-        self.memory.collect()
         self._collect_pending = False
         self.renderer.invalidate()
         self._input_locked = True
-        root.activate()
+        self.memory.collect()
+        self.stack[:] = [root]
+        self._active_screen = None
+        self._activate_screen(root)
 
 
 def main(run_loop=True, runtime_mode="resident", publish_runtime=True):
-    from runtime_handle import RuntimeHandle, set_resident_runtime
+    from runtime_handle import set_resident_runtime, ApplicationBinding
+    if not run_loop:
+        from runtime_materialize import RuntimeHandle
     if publish_runtime:
         set_resident_runtime(None)
 
@@ -342,8 +754,8 @@ def main(run_loop=True, runtime_mode="resident", publish_runtime=True):
 
     # ============================================================
     # Phase 2: Build the resident interface while showing progress.
-    # Each step is wrapped — failure shows error on screen, then
-    # continues with a fallback so the calculator still boots.
+    # Each step is wrapped — ordinary failures can show an error and use a
+    # fallback, while MemoryError always reaches the boot recovery seam.
     # ============================================================
 
     # Keyboard (critical — halt on failure)
@@ -351,28 +763,18 @@ def main(run_loop=True, runtime_mode="resident", publish_runtime=True):
         from input.keyboard import Keyboard, get_key_label
         kb = Keyboard()
         _boot_progress(
-            display, 2, 8, "Loading fonts...", "XglcdFont(/sd/fonts)")
+            display, 2, 8, "Loading interface...", "built-in 8x8 font")
+    except MemoryError:
+        raise
     except Exception as e:
         _boot_fail(display, 2, 8, "Keyboard", e)
         raise  # can't run without keyboard
     metrics.mark_boot("keyboard")
 
-    # Fonts (fallback: built-in 8x8 font via draw_text8x8). Font files are
-    # slot-managed assets and resolve against the application root.
-    try:
-        from approot import app_root
-        font_dir = app_root() + "/fonts"
-    except Exception:
-        font_dir = "/sd/fonts"
-    try:
-        font_main = XglcdFont(font_dir + "/Bally7x9.xglcd", 7, 9)
-    except Exception as e:
-        _boot_fail(display, 3, 8, "Fonts", e)
-        font_main = None
-    try:
-        font_small = XglcdFont(font_dir + "/Neato5x7.xglcd", 5, 7)
-    except Exception:
-        font_small = None
+    # Every page has a fixed 8x8 path.  Keep that path canonical on the
+    # constrained target instead of retaining two packed font payloads.
+    font_main = None
+    font_small = None
     metrics.mark_boot("fonts")
     _boot_progress(
         display, 3, 8, "Loading settings...", "load_settings()")
@@ -383,10 +785,14 @@ def main(run_loop=True, runtime_mode="resident", publish_runtime=True):
         settings = load_settings()
         _boot_progress(
             display, 4, 8, "Loading variables...", "load_vars()")
+    except MemoryError:
+        raise
     except Exception as e:
         _boot_fail(display, 4, 8, "Settings", e)
         settings = {"angle_mode": 0, "enabled_functions": ["basic", "trig", "math", "list"], "diagnostics": False, "brightness": 100, "display_digits": 4}
     display.set_brightness(settings.get("brightness", 100))
+    from utils.storage import DeferredStorage
+    persistence = DeferredStorage()
     metrics.mark_boot("settings")
     # Variables (fallback: empty dict)
     try:
@@ -394,6 +800,8 @@ def main(run_loop=True, runtime_mode="resident", publish_runtime=True):
         vars_dict = load_vars()
         _boot_progress(
             display, 5, 8, "Loading functions...", "_reload_functions()")
+    except MemoryError:
+        raise
     except Exception as e:
         _boot_fail(display, 5, 8, "Vars", e)
         vars_dict = {}
@@ -405,12 +813,21 @@ def main(run_loop=True, runtime_mode="resident", publish_runtime=True):
         registry.angle_mode = settings.get("angle_mode", 0)
         _boot_progress(
             display, 6, 8, "Loading screens...", "import screens.*")
+    except MemoryError:
+        raise
     except Exception as e:
         _boot_fail(display, 6, 8, "Functions", e)
         from calc.functions import build_registry
         registry = build_registry(["basic", "trig", "math", "list"])
         registry.angle_mode = settings.get("angle_mode", 0)
+    # Drop the rebuildable loader and its temporary import graph before the
+    # first resident page module is loaded.  This is a boot-only collection;
+    # input and frame paths remain collection-free.
+    _release_function_loader()
     metrics.mark_boot("functions")
+    if hasattr(metrics, "release_boot_samples"):
+        metrics.release_boot_samples()
+    gc.collect()
 
     from utils.power import AWAKE, WOKE, DisplayPower
 
@@ -419,114 +836,178 @@ def main(run_loop=True, runtime_mode="resident", publish_runtime=True):
     # Screens (import + build — skip broken ones)
     try:
         from screens.main_menu import MainMenu
-        from screens.calculator import CalculatorScreen
+        # About, Calculator, FunctionPanel and Plot need their fixed class
+        # tables before later imports split the remaining runs.  This remains
+        # a synchronous resident-page startup; no import reaches input paths.
         from screens.about import AboutScreen
-        from screens.letter_panel import LetterPanel
-        from screens.function_picker import FunctionPicker
-        from screens.variable_panel import VariablePanel
+        gc.collect()
+        from screens.calculator import CalculatorScreen
+        gc.collect()
         from screens.function_panel import FunctionPanel
+        gc.collect()
         from screens.plot import PlotScreen
+        gc.collect()
+        # LetterPanel must precede FunctionPicker and the remaining class
+        # tables: otherwise no 136-byte run remains for its class table.
+        from screens.letter_panel import LetterPanel
+        gc.collect()
+        from screens.function_picker import FunctionPicker
+        gc.collect()
+        from screens.stopwatch import StopwatchScreen, STOPWATCH_FRAME_MS
+        gc.collect()
         from screens.settings import SettingsScreen
-        from screens.stopwatch import StopwatchScreen
-        _boot_progress(
-            display, 7, 8, "Building interface...", "construct screens")
-    except Exception as e:
-        _boot_fail(display, 7, 8, "Screens", e)
-        # If imports failed, we can't continue — the error screen already showed
-        raise
-    metrics.mark_boot("screen_imports")
-
-    try:
-        from utils.storage import DeferredStorage
-        persistence = DeferredStorage()
+        gc.collect()
+        from screens.variable_panel import VariablePanel
+        gc.collect()
+        # Plot owns the largest remaining child-object construction.  Reserve
+        # it only after every resident module import frame has been reclaimed.
+        plot_screen = PlotScreen(
+            None, None, registry, memory=nav.memory)
+        gc.collect()
+        # Calculator gets coalesced import-frame space while the already
+        # reserved Plot object remains resident.
         calc_screen = CalculatorScreen(
             font_main, font_small, registry, vars_dict,
             display_digits=settings.get("display_digits", 4))
-        # Auxiliary pages use the display's built-in 8x8 font. This avoids SD
-        # glyph reads and cache growth on the latency-sensitive input path.
-        about = AboutScreen(None, VERSION)
+        # Reserve the shared Cursor and both fixed Menu blocks before compact
+        # overlays and root rows split the remaining runs.
+        from ui.cursor import Cursor
+        shared_menu_cursor = Cursor(2, 15, mode=0)
+        from ui.menu import Menu
+        settings_menu = Menu(
+            0, 13, 210, 4, 10, shared_menu_cursor, ())
+        function_panel_menu = Menu(
+            0, 13, 210, 4, 10, shared_menu_cursor, ())
+        # These three compact overlays depend only on Calculator.  Reserve
+        # their fixed state lists before root rows and menu objects fragment
+        # the remaining runs.
         letter_panel = LetterPanel(None, calc_screen.input_box)
         func_picker = FunctionPicker(None, calc_screen)
         var_panel = VariablePanel(None, calc_screen)
-        settings_screen = SettingsScreen(
-            None, display, settings, about,
-            request_save=persistence.request_settings,
-            on_display_digits_change=calc_screen.set_display_digits)
+        main_menu = MainMenu()
+        stopwatch = StopwatchScreen(font_small)
+        gc.collect()
         func_panel = FunctionPanel(
-            None, request_settings=persistence.request_settings,
-            settings=settings,
-            plugin_functions=registry.plugin_functions,
-            plugin_dependencies=registry.plugin_dependencies)
-        func_panel.set_load_errors(registry.plugin_errors)
-        # Build dynamic menus during boot, never on the first input frame.
-        func_picker.activate()
-        func_panel.activate()
-        stopwatch = StopwatchScreen(None)
-        plot_screen = PlotScreen(
-            None, None, registry, memory=nav.memory)
+            persistence.request_settings, settings,
+            registry.plugin_dependencies, registry.plugin_files)
+        settings_screen = SettingsScreen(
+            None, display, settings, None,
+            request_save=persistence.request_settings,
+            on_display_digits_change=calc_screen.set_display_digits,
+            build_rows=False, menu=settings_menu)
+        func_panel._menu = function_panel_menu
+        # Settings rows are still unbuilt, so bind About after all three fixed
+        # Menu/Settings blocks have secured their contiguous heap runs.
+        # Auxiliary pages use the display's built-in 8x8 font to avoid SD
+        # glyph reads and cache growth on the input path.
+        about = AboutScreen(None, VERSION)
+        settings_screen._state[1] = about
+    except MemoryError:
+        # A boot-time page OOM can leave too little contiguous heap for the
+        # recovery UI's framebuffer.  Quiesce the already-initialized panel
+        # before the original exception reaches the boot supervisor.
+        try:
+            display.sleep()
+        except Exception:
+            pass
+        raise
+    except Exception as e:
+        _draw_crash(display, e)
+        raise
+    metrics.mark_boot("screen_imports")
+    # Imports leave reclaimable loader objects interleaved with resident code.
+    # Coalesce them before constructing the remaining screens.
+    gc.collect()
 
-        main_menu = MainMenu(None)
+    # Bind the fixed resident topology before root labels split the remaining
+    # runs into small tuples. Acceptance retains these exact existing pages;
+    # it never constructs a parallel screen graph.
+    resident_screens = (
+        main_menu, calc_screen, plot_screen, func_panel, stopwatch,
+        settings_screen, about, letter_panel, func_picker, var_panel)
+    nav.register_screens(resident_screens)
+    gc.collect()
+    application_binding = ApplicationBinding(
+        resident_screens, registry, settings, persistence, nav=nav)
+    from ui.memory import plot_curve_buffer_size
+    runtime = application_binding if run_loop else RuntimeHandle(
+        nav,
+        main_menu,
+        resident_screens,
+        mode=runtime_mode,
+        version=VERSION,
+        optional_buffer_size=plot_curve_buffer_size(display.height),
+        scenario_adapter=None,
+        application_binding=application_binding,
+    )
+
+    try:
+        # All resident page objects now exist. Keep inactive, rebuildable rows
+        # empty until their page is activated after this construction frame has
+        # returned; only the visible root menu needs labels during boot.
+        func_panel.set_load_errors(registry.plugin_errors)
         main_menu.add_screen("Calculator", calc_screen)
         main_menu.add_screen("Plot", plot_screen)
         main_menu.add_screen("Function Panel", func_panel)
         main_menu.add_screen("Stopwatch", stopwatch)
         main_menu.add_screen("Settings", settings_screen)
-    except Exception as e:
-        _boot_fail(display, 7, 8, "Init", e)
+        gc.collect()
+    except MemoryError:
+        try:
+            display.sleep()
+        except Exception:
+            pass
         raise
-
-    _boot_progress(
-        display, 8, 8, "Starting SCI-CALC...",
-        "_present_first_ui_frame()")
-
+    except Exception as e:
+        _draw_crash(display, e)
+        raise
+    metrics.mark_boot("ui_ready")
     # ============================================================
     # Phase 3: Main loop
     # ============================================================
     from ui.element import (
         SETTLE_COLLECT, SETTLE_MORE, SETTLE_REDRAW, UIElement)
 
-    runtime_targets = (
-        calc_screen, plot_screen, func_panel, stopwatch, settings_screen)
-    nav.register_screens(runtime_targets)
-    from ui.memory import plot_curve_buffer_size
-    runtime = RuntimeHandle(
-        nav,
-        main_menu,
-        runtime_targets,
-        mode=runtime_mode,
-        version=VERSION,
-        optional_buffers=(
-            ("plot_curve", plot_curve_buffer_size(display.height)),
-        ),
-        optional_buffer_target=plot_screen,
-    )
     try:
         _present_first_ui_frame(nav, main_menu)
+    except MemoryError:
+        try:
+            display.sleep()
+        except Exception:
+            pass
+        raise
     except Exception as e:
         _draw_crash(display, e)
         raise
-    metrics.mark_boot("ui_ready")
     if not run_loop:
         if publish_runtime:
             set_resident_runtime(runtime)
         return runtime
     _frame = 0
-    _last_render = time.ticks_ms()
-    _last_input = _last_render
-    _last_sidebar_refresh = _last_render
+    _loop_started = time.ticks_ms()
+    scheduler = FrameScheduler(
+        _loop_started, background_idle_ms=BACKGROUND_IDLE_MS,
+        sidebar_refresh_ms=SIDEBAR_REFRESH_MS)
+    # The first visible frame uses Sidebar's fixed placeholder.  Let the
+    # first quiet loop acquire ADC data instead of adding hardware allocation
+    # and latency to boot or to an input-driven present.
+    scheduler.force_sidebar_poll(_loop_started)
     diagnostics = bool(settings.get("diagnostics", False))
     _diag_last = time.ticks_ms()
     _diag_render_us = 0
     _diag_present_us = 0
     _diag_frames = 0
-    _dirty = False
     _function_reload_pending = False
+    _function_scan_pending = False
+    _input_visual_changed = False
     power = DisplayPower(
         display, int(settings.get("sleep_timeout_s", 180)) * 1000)
 
     def _handle_event(event):
-        nonlocal _function_reload_pending, _last_sidebar_refresh
+        nonlocal _function_reload_pending, _function_scan_pending
+        nonlocal _input_visual_changed
         cur = nav.current
+        page_was_modal = _blocks_global_shortcuts(cur)
         if event is not None:
             if diagnostics:
                 metrics.record_input()
@@ -536,20 +1017,8 @@ def main(run_loop=True, runtime_mode="resident", publish_runtime=True):
                       + " shift=" + str(int(event[2]))
                       + " key=" + get_key_label(
                           event[0], event[1], event[2]))
-            erow, ecol, eshift = event
-            if ((erow, ecol) == (3, 5) and eshift
-                    and (cur is calc_screen or cur is plot_screen)):
-                input_box = (calc_screen.input_box
-                             if cur is calc_screen
-                             else plot_screen.input_box)
-                if input_box is not None:
-                    letter_panel.input_box = input_box
-                    nav.go_to(letter_panel, event)
-                    return True
-            if (erow, ecol) == (4, 4):
-                _toggle_angle_mode(
-                    registry, settings, persistence, nav.renderer)
-                _last_sidebar_refresh = time.ticks_ms()
+            if _open_context_letter_panel(cur, event, letter_panel, nav):
+                _input_visual_changed = True
                 return True
         elif not _page_update_requested(kb, None):
             return False
@@ -559,14 +1028,36 @@ def main(run_loop=True, runtime_mode="resident", publish_runtime=True):
             print("ACTION page=" + cur.__class__.__name__
                   + " result=" + str(result))
 
+        if _global_angle_allowed(event, page_was_modal, result):
+            _toggle_angle_mode(
+                registry, settings, persistence, nav.renderer, plot_screen)
+            _input_visual_changed = True
+            return True
+
         if result == "BACK":
             nav.go_back(event)
         elif result == "FUNC_PANEL_DONE":
+            _function_scan_pending = False
+            func_panel.set_plugin_scan_active(False)
             nav.go_back(event)
             _function_reload_pending = True
+        elif result == "FUNC_PANEL_RESCAN":
+            # Actual bounded directory enumeration begins only in quiet work.
+            # Source executes once, later, if the selection is committed.
+            _function_scan_pending = True
+            # A repeated request is real input work (and must reset quiet
+            # grace), but once the fixed "Scanning..." footer is already
+            # visible it changes no pixels.  Do not turn it into a phantom
+            # input frame merely because the semantic request is non-null.
+            if func_panel.set_plugin_scan_active(True):
+                _input_visual_changed = True
+            return _input_visual_changed
         elif result in (
                 "FUNC_PICKER_DONE", "LETTER_DONE", "VAR_PANEL_DONE",
                 "FUNC_PANEL_CANCEL"):
+            if result == "FUNC_PANEL_CANCEL":
+                _function_scan_pending = False
+                func_panel.set_plugin_scan_active(False)
             nav.go_back(event)
         elif result == "FUNC_PICKER":
             nav.go_to(func_picker, event)
@@ -574,10 +1065,13 @@ def main(run_loop=True, runtime_mode="resident", publish_runtime=True):
             nav.go_to(var_panel, event)
         elif isinstance(result, UIElement) and result is not cur:
             nav.go_to(result, event)
-        return event is not None or result is not None
+        changed = result is not None
+        if changed:
+            _input_visual_changed = True
+        return changed
 
     if publish_runtime:
-        set_resident_runtime(runtime)
+        __import__("runtime_handle")._resident_runtime = runtime
     while True:
         try:
             kb.scan()
@@ -586,54 +1080,70 @@ def main(run_loop=True, runtime_mode="resident", publish_runtime=True):
             if power_state != AWAKE:
                 kb.discard_pending_events()
                 if power_state == WOKE:
-                    _dirty = True
-                    _last_render = time.ticks_add(now, -500)
+                    scheduler.force_render(now)
                     nav.renderer.invalidate_sidebar()
-                    _last_sidebar_refresh = now
                 # Matrix keys cannot wake ESP32 deep sleep reliably, so keep a
                 # low-cost scan loop while the OLED controller is asleep.
                 time.sleep_ms(SLEEP_SCAN_MS)
                 continue
 
             _frame += 1
+            _input_visual_changed = False
             batch_count = _drain_input_batch(nav, kb, _handle_event)
             hold_changed = False
+            hold_active = False
             if batch_count == 0:
-                hold_changed = _handle_event(None)
-            input_changed = bool(batch_count or hold_changed)
+                hold_active = _page_update_requested(kb, None)
+                if hold_active:
+                    hold_changed = _handle_event(None)
+            # Physical holds reset the quiet grace even when they reach a
+            # boundary and produce no pixels.  That prevents a release from
+            # immediately starting SD/GC work after a long ignored hold.
+            input_activity = bool(batch_count or hold_active)
+            input_changed = _input_visual_changed
             now = time.ticks_ms()
+            if input_activity:
+                scheduler.note_input(now)
             if input_changed:
-                _last_input = now
-                _dirty = True
+                scheduler.request_render()
 
             cur = nav.current
-            sidebar_refresh = _refresh_sidebar_if_due(
-                nav.renderer, now, _last_sidebar_refresh)
-            if sidebar_refresh != _last_sidebar_refresh:
-                _last_sidebar_refresh = sidebar_refresh
-                _dirty = True
-            needs_render = _needs_render(
-                now, _last_render, _dirty,
-                (cur is stopwatch and stopwatch._running),
-                input_changed)
+            quiet = (batch_count == 0
+                     and not hold_changed
+                     and not kb.has_pending_events()
+                     and not kb.any_pressed())
+            if (scheduler.sidebar_poll_due(now, quiet)
+                    and nav.renderer.poll_sidebar()):
+                scheduler.request_render()
+            stopwatch_running = cur is stopwatch and stopwatch._clock[1]
+            continuous = stopwatch_running
+            continuous_frame_ms = (
+                STOPWATCH_FRAME_MS if stopwatch_running else 0)
+            needs_render = scheduler.should_present(
+                now, continuous, input_changed, continuous_frame_ms)
 
             if needs_render:
-                _last_render = now
                 render_started = time.ticks_us()
-                nav.present_current()
-                _diag_present_us += nav.last_present_us
-                render_elapsed = time.ticks_diff(time.ticks_us(), render_started)
-                _diag_render_us += render_elapsed
-                if diagnostics:
-                    metrics.record_frame(render_elapsed)
-                _diag_frames += 1
-                _dirty = False
-                # Capture edges that occurred during the OLED transfer before
-                # any GC, SD write or lazy rebuild is allowed to start.
-                kb.scan()
-                now = time.ticks_ms()
+                if nav.present_current(now):
+                    scheduler.mark_presented(now)
+                    _diag_present_us += nav.last_present_us
+                    render_elapsed = time.ticks_diff(
+                        time.ticks_us(), render_started)
+                    _diag_render_us += render_elapsed
+                    if diagnostics:
+                        metrics.record_frame(render_elapsed)
+                    _diag_frames += 1
+                    # Capture edges that occurred during the OLED transfer
+                    # before any GC, SD write or lazy rebuild may start.
+                    kb.scan()
+                    now = time.ticks_ms()
+                else:
+                    # A page can explicitly report no pixel damage.  That is
+                    # not a physical frame and must not skew render metrics.
+                    scheduler.clear_render_request()
 
-            if diagnostics and time.ticks_diff(now, _diag_last) >= 5000:
+            if (diagnostics and quiet
+                    and time.ticks_diff(now, _diag_last) >= 5000):
                 heap_free = gc.mem_free() if hasattr(gc, "mem_free") else -1
                 divisor = max(1, _diag_frames)
                 print("PERF frames=" + str(_diag_frames)
@@ -648,10 +1158,6 @@ def main(run_loop=True, runtime_mode="resident", publish_runtime=True):
             if calc_screen.context.dirty and calc_screen.context.consume_dirty():
                 persistence.request_vars(calc_screen.vars)
 
-            quiet = (batch_count == 0
-                     and not hold_changed
-                     and not kb.has_pending_events()
-                     and not kb.any_pressed())
             settle_flags = nav.settle_current() if quiet else 0
             if settle_flags & SETTLE_COLLECT:
                 gc_started = time.ticks_us()
@@ -660,65 +1166,87 @@ def main(run_loop=True, runtime_mode="resident", publish_runtime=True):
                     metrics.record_gc(
                         time.ticks_diff(time.ticks_us(), gc_started))
             if settle_flags & SETTLE_REDRAW:
-                _dirty = True
+                scheduler.request_render()
 
             # Potentially blocking work gets a grace period after input.
             if (quiet
                     and not (settle_flags & SETTLE_MORE)
-                    and time.ticks_diff(now, _last_input)
-                        >= BACKGROUND_IDLE_MS):
+                    and scheduler.background_due(now)):
                 if _function_reload_pending:
-                    _reload_functions_after_reclaim(
+                    # Consume the request before beginning the allocation-heavy
+                    # transaction.  A MemoryError must not retry the same SD
+                    # reload every quiet interval after the root recovery.
+                    _function_reload_pending = False
+                    reloaded = _reload_functions_after_reclaim(
                         nav, nav.current, settings, registry)
+                    if reloaded is None:
+                        func_panel.rollback_plugin_reload()
+                    else:
+                        func_panel.confirm_plugin_reload()
                     func_panel.set_plugin_catalog(
-                        registry.plugin_functions,
                         registry.plugin_dependencies)
                     func_panel.set_load_errors(registry.plugin_errors)
-                    _function_reload_pending = False
-                    _dirty = True
+                    scheduler.request_render()
+                elif _function_scan_pending:
+                    _function_scan_pending = False
+                    files = _scan_function_files_after_reclaim(
+                        nav, func_panel)
+                    func_panel.adopt_plugin_files(files)
+                    func_panel.set_plugin_scan_active(False)
+                    scheduler.request_render()
                 elif nav.collect_pending():
                     pass
-                elif (_frame % 256 == 0
-                      and (not hasattr(gc, "mem_free")
-                           or gc.mem_free() < 12 * 1024)):
-                    gc_started = time.ticks_us()
-                    gc.collect()
-                    if diagnostics:
-                        metrics.record_gc(
-                            time.ticks_diff(time.ticks_us(), gc_started))
+                elif _frame % 256 == 0:
+                    heap_reporter = getattr(gc, "mem_free", None)
+                    heap_free = (
+                        heap_reporter() if heap_reporter is not None else -1)
+                    if (heap_reporter is None
+                            or heap_free < 12 * 1024):
+                        gc_started = time.ticks_us()
+                        gc.collect()
+                        if diagnostics:
+                            metrics.record_gc(
+                                time.ticks_diff(
+                                    time.ticks_us(), gc_started))
                 else:
                     persisted = persistence.flush(now)
+                    if persisted is not None:
+                        consume_visual = getattr(
+                            nav.current, "consume_persist_visual_change", None)
+                        if consume_visual is not None and consume_visual():
+                            scheduler.request_render()
                     if persisted is not None and not persisted[1]:
                         calc_screen.set_storage_error("Not saved - check SD")
-                        _dirty = True
+                        scheduler.request_render()
 
             time.sleep_ms(IDLE_LOOP_SLEEP_MS)
 
-        except MemoryError as e:
+        except MemoryError:
             # Memory pressure returns to a usable root and forgets snapshots.
+            _function_reload_pending = False
+            _function_scan_pending = False
+            func_panel.set_plugin_scan_active(False)
+            func_panel.rollback_plugin_reload()
             if diagnostics:
-                print("MEMORY_RECOVER " + str(e))
+                # Never stringify an exception while the heap is exhausted.
+                print("MEMORY_RECOVER")
             try:
                 power.reset(time.ticks_ms())
             except Exception:
                 pass
+            gc.collect()
             nav.reset(main_menu)
-            _last_render = 0
-            _last_input = time.ticks_ms()
-            _dirty = True
+            scheduler.reset(time.ticks_ms(), force_render=True)
 
         except Exception as e:
-            # Crash landing: draw error screen, wait for key, then recover
+            # Crash landing: reclaim optional rasters before allocating even
+            # the small diagnostic screen, then wait for acknowledgement.
             try:
                 power.reset(time.ticks_ms())
             except Exception:
                 pass
-            _draw_crash(display, e)
-
-            for f in (font_main, font_small):
-                if f:
-                    f._cache.clear()
             gc.collect()
+            _draw_crash(display, e)
 
             time.sleep_ms(300)
             while True:
@@ -735,9 +1263,7 @@ def main(run_loop=True, runtime_mode="resident", publish_runtime=True):
                 time.sleep_ms(20)
 
             nav.reset(main_menu)
-            _last_render = 0
-            _last_input = time.ticks_ms()
-            _dirty = True
+            scheduler.reset(time.ticks_ms(), force_render=True)
 
 
 if __name__ == "__main__":

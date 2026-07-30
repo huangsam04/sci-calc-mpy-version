@@ -184,7 +184,8 @@ function Build-MpyAssets {
         $MpyRelative = [System.IO.Path]::ChangeExtension($Relative, ".mpy").Replace("\", "/")
         $Output = Join-Path $MpyBuild $MpyRelative.Replace("/", "\")
         New-Item -ItemType Directory -Force -Path (Split-Path -Parent $Output) | Out-Null
-        & $MpyCross -march=xtensawin -o $Output $_.FullName
+        & $MpyCross -march=xtensawin -X no-source-lines -s $Relative `
+            -o $Output $_.FullName
         if ($LASTEXITCODE -ne 0) {
             throw "mpy-cross failed: $Relative"
         }

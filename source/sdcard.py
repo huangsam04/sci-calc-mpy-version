@@ -150,11 +150,13 @@ class SDCard:
     def write(self, token, buf):
         self.cs(0)
         try:
-            self.spi.read(1, token)
+            tokenbuf = self.tokenbuf
+            self.spi.readinto(tokenbuf, token)
             self.spi.write(buf)
             self.spi.write(b"\xff")
             self.spi.write(b"\xff")
-            if self.spi.read(1, 0xFF)[0] & 0x1F != 0x05:
+            self.spi.readinto(tokenbuf, 0xFF)
+            if tokenbuf[0] & 0x1F != 0x05:
                 raise OSError("SD write rejected")
             self._wait_not_busy()
         finally:
@@ -164,7 +166,7 @@ class SDCard:
     def write_token(self, token):
         self.cs(0)
         try:
-            self.spi.read(1, token)
+            self.spi.readinto(self.tokenbuf, token)
             self.spi.write(b"\xff")
             self._wait_not_busy()
         finally:
@@ -173,7 +175,11 @@ class SDCard:
 
     def _wait_not_busy(self):
         deadline = time.ticks_add(time.ticks_ms(), _WRITE_TIMEOUT_MS)
-        while self.spi.read(1, 0xFF)[0] == 0:
+        tokenbuf = self.tokenbuf
+        while True:
+            self.spi.readinto(tokenbuf, 0xFF)
+            if tokenbuf[0] != 0:
+                return
             if time.ticks_diff(time.ticks_ms(), deadline) >= 0:
                 raise OSError("SD write busy timeout")
             time.sleep_ms(1)

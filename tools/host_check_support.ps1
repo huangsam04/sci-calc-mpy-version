@@ -51,7 +51,9 @@ function Invoke-DeviceToolCompilation {
             $ExitCode = $AdapterResult[0]
         }
         else {
-            & $MpyCross -march=xtensawin -o $Output $Tool.FullName
+            $EmbeddedSource = "tools/" + $Tool.Name
+            & $MpyCross -march=xtensawin -X no-source-lines `
+                -s $EmbeddedSource -o $Output $Tool.FullName
             $ExitCode = $LASTEXITCODE
         }
         if ($ExitCode -ne 0) {

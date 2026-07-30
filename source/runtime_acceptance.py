@@ -3,19 +3,19 @@
 import gc
 import time
 
-from runtime_handle import (
-    RuntimeHandle,
-    get_resident_runtime,
-    set_resident_runtime,
-)
+from runtime_handle import set_resident_runtime
+from runtime_materialize import RuntimeHandle, get_resident_runtime
 from ui.element import SETTLE_COLLECT, SETTLE_MORE, SETTLE_REDRAW
 
 
 VISIT_TARGET = 1
 RUN_ACTION = 2
+RUN_BOUNDED = 3
 MAX_SETTLE_STEPS = 256
+MAX_BOUNDED_STEPS = 512
+MAX_BOUNDED_NO_PROGRESS_STEPS = 8
 MAX_BLOCKING_STEP_US = 32_000
-MIN_HEAP_FREE_BYTES = 8 * 1024
+MIN_HEAP_FREE_BYTES = 12 * 1024
 MAX_HEAP_DRIFT_BYTES = 512
 
 RUN_START = 1
@@ -30,6 +30,13 @@ PHASE_SETTLE = 3
 PHASE_BACK = 4
 PHASE_COLLECT = 5
 
+# A bounded session returns these scalar values from
+# step(round_index, capability_index).
+# STEP_WAIT is permitted only for a small fixed number of consecutive calls.
+STEP_MORE = 1
+STEP_DONE = 2
+STEP_WAIT = 3
+
 FAIL_MEMORY = 1
 FAIL_ERROR = 2
 FAIL_BLOCKING = 4
@@ -38,6 +45,10 @@ FAIL_DRIFT = 16
 FAIL_BUFFERS = 32
 FAIL_INCOMPLETE = 64
 FAIL_ROOT = 128
+
+ERROR_NONE = 0
+ERROR_MEMORY = 1
+ERROR_EXCEPTION = 2
 
 _PHASE_FAILED = -1
 
@@ -48,11 +59,14 @@ class RuntimeAcceptanceReport:
     __slots__ = (
         "scenario_name", "mode", "rounds_expected", "rounds_completed",
         "scenarios_completed", "runtime_steps", "memory_errors", "errors",
+        "bounded_close_attempts", "bounded_session_restored",
         "heap_before", "heap_after", "heap_min", "heap_delta",
         "blocking_max_us", "buffers_before", "buffers_after",
         "buffer_peak_bytes", "buffer_change_count", "failure_mask",
         "accepted", "round_index", "step_name", "phase", "step_us",
-        "step_heap_free", "step_buffers", "_visit_buffer_snapshot")
+        "step_heap_free", "step_buffers", "_primary_error",
+        "_secondary_error", "primary_error_code", "secondary_error_code",
+        "_error_handoff_ready", "_visit_buffer_snapshot")
 
     def __init__(self, scenario_name, mode, rounds):
         self.scenario_name = scenario_name
@@ -63,6 +77,8 @@ class RuntimeAcceptanceReport:
         self.runtime_steps = 0
         self.memory_errors = 0
         self.errors = 0
+        self.bounded_close_attempts = 0
+        self.bounded_session_restored = False
         self.heap_before = -1
         self.heap_after = -1
         self.heap_min = -1
@@ -80,7 +96,26 @@ class RuntimeAcceptanceReport:
         self.step_us = 0
         self.step_heap_free = -1
         self.step_buffers = ()
+        self._primary_error = None
+        self._secondary_error = None
+        self.primary_error_code = ERROR_NONE
+        self.secondary_error_code = ERROR_NONE
+        self._error_handoff_ready = False
         self._visit_buffer_snapshot = ()
+
+    @property
+    def primary_error(self):
+        """Transfer a resident/release OOM once without retaining its frames."""
+        error = self._primary_error
+        if self._error_handoff_ready and self.mode != "in_memory":
+            self._primary_error = None
+            self._secondary_error = None
+        return error
+
+    @property
+    def secondary_error(self):
+        """Compatibility view; resident/release retain only its scalar code."""
+        return self._secondary_error
 
 
 def _heap_free():
@@ -123,17 +158,28 @@ def _minimum(current, candidate):
     return min(current, candidate)
 
 
-def _notify(observer, event, report):
-    if observer is None:
-        return
-    try:
-        observer(event, report)
-    except MemoryError:
+def _record_failure(report, event):
+    if event == RUN_MEMORY_ERROR:
         report.memory_errors += 1
         report.failure_mask |= FAIL_MEMORY
-    except Exception:
+    else:
         report.errors += 1
         report.failure_mask |= FAIL_ERROR
+
+
+def _notify(observer, event, report):
+    if observer is None:
+        return 0
+    try:
+        observer(event, report)
+    except MemoryError as error:
+        _remember_primary_error(report, error)
+        _record_failure(report, RUN_MEMORY_ERROR)
+        return RUN_MEMORY_ERROR
+    except Exception:
+        _record_failure(report, RUN_ERROR)
+        return RUN_ERROR
+    return 0
 
 
 def _buffer_bytes(snapshot):
@@ -203,18 +249,18 @@ def _finish_runtime_step(
     sample_event = _sample_buffers(runtime, report, optional_target)
     if event == RUN_STEP and sample_event:
         event = sample_event
-    _notify(observer, event, report)
+    observer_event = _notify(observer, event, report)
+    if observer_event == RUN_MEMORY_ERROR:
+        return RUN_MEMORY_ERROR
+    if event != RUN_STEP:
+        return event
+    return observer_event
 
 
 def _finish_failed_phase(
         runtime, report, observer, phase, started, event,
         optional_target=None):
-    if event == RUN_MEMORY_ERROR:
-        report.memory_errors += 1
-        report.failure_mask |= FAIL_MEMORY
-    else:
-        report.errors += 1
-        report.failure_mask |= FAIL_ERROR
+    _record_failure(report, event)
     _finish_runtime_step(
         runtime, report, observer, phase, started, event,
         optional_target=optional_target)
@@ -298,6 +344,61 @@ def _visit_target(runtime, target, report, observer):
     return True
 
 
+def _error_code(error):
+    if isinstance(error, MemoryError):
+        return ERROR_MEMORY
+    return ERROR_EXCEPTION
+
+
+def _detach_memory_error_frames(error):
+    """Keep OOM identity for the device handoff without retaining call frames."""
+    try:
+        error.__traceback__ = None
+    except (AttributeError, TypeError):
+        pass
+    try:
+        error.__context__ = None
+    except (AttributeError, TypeError):
+        pass
+    try:
+        error.__cause__ = None
+    except (AttributeError, TypeError):
+        pass
+
+
+def _store_primary_error(report, error, code):
+    report.primary_error_code = code
+    if report.mode == "in_memory":
+        report._primary_error = error
+    elif code == ERROR_MEMORY:
+        _detach_memory_error_frames(error)
+        report._primary_error = error
+    else:
+        report._primary_error = None
+
+
+def _remember_primary_error(report, error):
+    code = _error_code(error)
+    current = report.primary_error_code
+    if code == ERROR_MEMORY:
+        if current != ERROR_MEMORY:
+            _store_primary_error(report, error, code)
+    elif current == ERROR_NONE:
+        _store_primary_error(report, error, code)
+
+
+
+def _bounded_session(steps):
+    """Load the transaction runner only for an all-bounded scenario."""
+    bounded_count = 0
+    for step in steps:
+        if step[1] == RUN_BOUNDED:
+            bounded_count += 1
+    if not bounded_count:
+        return None
+    from runtime_acceptance_bounded import validate_bounded_session
+    return validate_bounded_session(steps)
+
 def run(runtime, scenario, observer=None):
     """Execute every fixed scenario step in every requested round."""
     scenario_name, requested_rounds, steps = scenario
@@ -316,49 +417,69 @@ def run(runtime, scenario, observer=None):
     report.step_buffers = report.buffers_before
     _notify(observer, RUN_START, report)
 
-    for round_index in range(rounds if runnable else 0):
-        report.round_index = round_index
-        for step_name, kind, payload in steps:
-            report.step_name = step_name
-            started = None
-            completed = True
-            try:
-                if kind == VISIT_TARGET:
-                    completed = _visit_target(
-                        runtime, runtime.targets[payload], report, observer)
-                elif kind == RUN_ACTION:
-                    started = time.ticks_us()
-                    payload(runtime, round_index)
+    bounded = _bounded_session(steps)
+    skip_post_bounded_reset = False
+    if bounded is not None:
+        session, capabilities = bounded
+        report.step_name = capabilities[0]
+        if runnable and rounds:
+            from runtime_acceptance_bounded import run_bounded_session
+            bounded_completed = run_bounded_session(
+                    runtime, report, observer, steps, session, capabilities,
+                    rounds)
+            if not bounded_completed and report.bounded_session_restored:
+                _safe_reset_root(runtime, report, True)
+            # Only an attempted but unrecovered transaction owns state that
+            # makes a root reset unsafe.  A zero-round/initial-reset failure
+            # never opened a bounded session and keeps the normal final reset.
+            skip_post_bounded_reset = (
+                report.bounded_close_attempts > 0
+                and not report.bounded_session_restored)
+    else:
+        for round_index in range(rounds if runnable else 0):
+            report.round_index = round_index
+            for step_name, kind, payload in steps:
+                report.step_name = step_name
+                started = None
+                completed = True
+                try:
+                    if kind == VISIT_TARGET:
+                        completed = _visit_target(
+                            runtime, runtime.targets[payload], report, observer)
+                    elif kind == RUN_ACTION:
+                        started = time.ticks_us()
+                        payload(runtime, round_index)
+                        _finish_runtime_step(
+                            runtime, report, observer, PHASE_ACTION, started)
+                    else:
+                        raise ValueError("Unknown runtime scenario step")
+                except MemoryError:
+                    if started is None:
+                        started = time.ticks_us()
+                    report.memory_errors += 1
+                    report.failure_mask |= FAIL_MEMORY
                     _finish_runtime_step(
-                        runtime, report, observer, PHASE_ACTION, started)
-                else:
-                    raise ValueError("Unknown runtime scenario step")
-            except MemoryError:
-                if started is None:
-                    started = time.ticks_us()
-                report.memory_errors += 1
-                report.failure_mask |= FAIL_MEMORY
-                _finish_runtime_step(
-                    runtime, report, observer, PHASE_ACTION, started,
-                    RUN_MEMORY_ERROR)
-                _safe_reset_root(runtime, report, True)
-            except Exception:
-                if started is None:
-                    started = time.ticks_us()
-                report.errors += 1
-                report.failure_mask |= FAIL_ERROR
-                _finish_runtime_step(
-                    runtime, report, observer, PHASE_ACTION, started,
-                    RUN_ERROR)
-                _safe_reset_root(runtime, report, True)
-            else:
-                if completed:
-                    report.scenarios_completed += 1
-                else:
+                        runtime, report, observer, PHASE_ACTION, started,
+                        RUN_MEMORY_ERROR)
                     _safe_reset_root(runtime, report, True)
-        report.rounds_completed += 1
+                except Exception:
+                    if started is None:
+                        started = time.ticks_us()
+                    report.errors += 1
+                    report.failure_mask |= FAIL_ERROR
+                    _finish_runtime_step(
+                        runtime, report, observer, PHASE_ACTION, started,
+                        RUN_ERROR)
+                    _safe_reset_root(runtime, report, True)
+                else:
+                    if completed:
+                        report.scenarios_completed += 1
+                    else:
+                        _safe_reset_root(runtime, report, True)
+            report.rounds_completed += 1
 
-    _safe_reset_root(runtime, report, False)
+    if not skip_post_bounded_reset:
+        _safe_reset_root(runtime, report, False)
     _safe_collect(report)
     report.heap_after = _heap_free()
     report.heap_min = _minimum(report.heap_min, report.heap_after)
@@ -378,5 +499,6 @@ def run(runtime, scenario, observer=None):
         report.failure_mask |= FAIL_INCOMPLETE
     report.accepted = report.failure_mask == 0
     _notify(observer, RUN_END, report)
+    report._error_handoff_ready = True
     report.accepted = report.failure_mask == 0
     return report

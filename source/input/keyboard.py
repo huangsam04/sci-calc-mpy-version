@@ -6,8 +6,8 @@ Column pins (OUTPUT): 13, 12, 14, 27, 26, 25
 import time
 from machine import Pin
 
-ROW_PINS = [33, 32, 35, 34, 39]
-COL_PINS = [13, 12, 14, 27, 26, 25]
+ROW_PINS = (33, 32, 35, 34, 39)
+COL_PINS = (13, 12, 14, 27, 26, 25)
 ROWS = 5
 COLS = 6
 
@@ -170,28 +170,28 @@ class Keyboard:
 
 # --- Key label lookup (matches original calcLayout) ---
 
-_CALC_MAP = {
-    (0,0): "ESC",  (0,1): "/",   (0,2): "*",   (0,3): "-",   (0,4): "sin",  (0,5): "sec",
-    (1,0): "7",    (1,1): "8",   (1,2): "9",   (1,3): "+",   (1,4): "cos",  (1,5): "csc",
-    (2,0): "4",    (2,1): "5",   (2,2): "6",   (2,3): "^",   (2,4): "tan",  (2,5): "cot",
-    (3,0): "1",    (3,1): "2",   (3,2): "3",   (3,3): "ENT", (3,4): "exp",  (3,5): "rpn",
-    (4,0): "shift",(4,1): "0",   (4,2): ".",   (4,3): "DEL", (4,4): "ang",  (4,5): "tab",
-}
+_CALC_MAP = (
+    "ESC", "/", "*", "-", "sin", "sec",
+    "7", "8", "9", "+", "cos", "csc",
+    "4", "5", "6", "^", "tan", "cot",
+    "1", "2", "3", "ENT", "exp", "rpn",
+    "shift", "0", ".", "DEL", "ang", "tab",
+)
 
-_CALC_SHIFT_MAP = {
-    (0,0): "ESC",  (0,1): "(",   (0,2): ")",   (0,3): "-",   (0,4): "asin", (0,5): "sec",
-    (1,0): "7",    (1,1): "up",  (1,2): "9",   (1,3): "+",   (1,4): "acos", (1,5): "csc",
-    (2,0): "left", (2,1): "5",   (2,2): "right",(2,3): "sqrt",(2,4): "atan",(2,5): "cot",
-    (3,0): "1",    (3,1): "down",(3,2): "3",   (3,3): "ENT", (3,4): "ln",   (3,5): "rpn",
-    (4,0): "shift",(4,1): "0",   (4,2): ",",   (4,3): "DEL", (4,4): "ang",  (4,5): "stab",
-}
+_CALC_SHIFT_MAP = (
+    "ESC", "(", ")", "-", "asin", "sec",
+    "7", "up", "9", "+", "acos", "csc",
+    "left", "5", "right", "sqrt", "atan", "cot",
+    "1", "down", "3", "ENT", "ln", "rpn",
+    "shift", "0", ",", "DEL", "ang", "stab",
+)
 
 
 def get_key_label(row, col, shift_held=False):
     """Map a physical key position to its label string.
     Matches the original calcLayout Macropad behavior."""
-    if shift_held and (row, col) in _CALC_SHIFT_MAP:
-        label = _CALC_SHIFT_MAP[(row, col)]
-        if label is not None:
-            return label
-    return _CALC_MAP.get((row, col), "")
+    if (not isinstance(row, int) or not isinstance(col, int)
+            or row < 0 or row >= ROWS or col < 0 or col >= COLS):
+        return ""
+    index = row * COLS + col
+    return _CALC_SHIFT_MAP[index] if shift_held else _CALC_MAP[index]

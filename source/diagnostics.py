@@ -41,7 +41,7 @@ class DiagnosticSession:
         self.context = EvalContext({}, self.registry)
         self.keyboard = _Keyboard()
 
-        self.menu = MainMenu(None)
+        self.menu = MainMenu()
         for name in ("Calculator", "Plot", "Function Panel", "Stopwatch", "About"):
             self.menu.add_screen(name, _Target(name))
         self.menu.activate()
@@ -63,7 +63,10 @@ class DiagnosticSession:
             result = None
             if self.current is self.menu:
                 result = self.menu.update(self.keyboard, event)
-                if result is not None:
+                # MainMenu returns action tokens such as "REDRAW" for
+                # cursor movement.  Only its registered diagnostic targets
+                # represent a navigation destination.
+                if isinstance(result, _Target):
                     self.current = result
             elif label == "ESC":
                 self.current = self.menu
@@ -89,10 +92,13 @@ class DiagnosticSession:
             return self.last_result
 
         if action == "PANEL":
-            panel = FunctionPanel(None)
+            from calc.loader import list_function_files
+            panel = FunctionPanel(
+                None, load_settings(), self.registry.plugin_dependencies,
+                list_function_files())
             panel.activate()
             self.panel_items = list(panel._items)
-            self.panel_labels = [item[0] for item in panel.menu.items]
+            self.panel_labels = [item[0] for item in panel.menu._state[5]]
             for index, item in enumerate(panel._items):
                 label = self.panel_labels[index]
                 self.emit("TRACE cmd=PANEL index=" + str(index)
@@ -127,7 +133,7 @@ DIAGNOSTIC_ACTION = 1
 
 def _verify_session(session):
     failures = 0
-    labels = [label for label, _ in session.menu.menu.items]
+    labels = [label for label, _ in session.menu.menu._state[5]]
     if not any("Calculator" in label for label in labels):
         failures += 1
         session.emit("CHECK FAIL main menu labels")

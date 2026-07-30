@@ -24,6 +24,8 @@ def test_deploy_uses_mpy_only_after_an_on_device_abi_probe():
     assert "$UseMpy" in script
     assert "[bool](Test-MpyCompatibility)" in script
     assert "-march=xtensawin" in script
+    assert "-X no-source-lines" in script
+    assert "-s $Relative" in script
 
 
 def test_deploy_verifies_hashes_for_every_runtime_asset_and_compact_fonts():

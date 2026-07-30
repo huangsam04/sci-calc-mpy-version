@@ -11,6 +11,10 @@ BAT_PIN = 36
 class Sidebar:
     """Draw fixed status chrome and own its slowly-changing battery state."""
 
+    __slots__ = (
+        "font", "registry", "_adc", "_bat_voltage", "_bat_next_read",
+        "_last_angle")
+
     def __init__(self, font=None, registry=None):
         self.font = font
         self.registry = registry
@@ -35,6 +39,10 @@ class Sidebar:
             self._bat_voltage[1] = 46
             self._bat_voltage[2] = 48 + tenths % 10
             self._bat_voltage[3] = 86
+        except MemoryError:
+            # The runtime recovery seam, not a cosmetic battery fallback,
+            # owns heap exhaustion from lazy hardware initialization.
+            raise
         except Exception:
             self._bat_voltage[0] = 63
             self._bat_voltage[1] = 46
@@ -58,8 +66,9 @@ class Sidebar:
     def draw(self, display, refresh=True):
         """Erase and redraw every pixel outside the page content area."""
         changed = self.refresh_needed() if refresh else False
-        angle = (b"DEG" if self.registry is not None
-                 and self.registry.angle_mode else b"RAD")
+        angle_on = bool(self.registry is not None
+                        and self.registry.angle_mode)
+        angle = b"DEG" if angle_on else b"RAD"
         display.fill_rectangle(CONTENT_W, 0,
                                display.width - CONTENT_W, display.height, 0)
 
@@ -78,4 +87,8 @@ class Sidebar:
                                  str(self._bat_voltage, "ascii"), gs=15)
             display.draw_text8x8(
                 SIDEBAR_X + 2, 30, str(angle, "ascii"), gs=12)
+        # Input-driven redraws deliberately reuse the cached battery sample.
+        # Treat their angle pixels as observed so the next quiet poll does not
+        # schedule a phantom sidebar frame for the same already-drawn change.
+        self._last_angle = angle_on
         return changed

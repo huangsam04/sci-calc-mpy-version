@@ -1,6 +1,7 @@
 import os
 from pathlib import Path
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -10,6 +11,7 @@ import pytest
 
 PROJECT = Path(__file__).parents[1]
 PYTEST_TEMP_ROOT = PROJECT / ".pytest_tmp"
+PYTEST_SESSION_ROOT = PYTEST_TEMP_ROOT / "sessions"
 TEMP_PROBE = PROJECT / "tests" / "_support" / "pytest_temp_probe.py"
 CHECK_SCRIPT = PROJECT / "check.ps1"
 CHECK_SUPPORT = PROJECT / "tools" / "host_check_support.ps1"
@@ -46,7 +48,7 @@ def _reported_session_temp(result):
 
 
 def _assert_project_temp_was_cleaned(session_temp):
-    assert session_temp.parent == PYTEST_TEMP_ROOT.resolve()
+    assert session_temp.parent == PYTEST_SESSION_ROOT.resolve()
     assert re.fullmatch(r"[0-9a-f]{32}", session_temp.name)
     assert not session_temp.exists()
 
@@ -76,10 +78,12 @@ def test_direct_pytest_rejects_a_caller_supplied_basetemp_without_deleting_it(
     environment["PYTHONDONTWRITEBYTECODE"] = "1"
     environment.pop("PYTEST_ADDOPTS", None)
     command = [sys.executable, "-m", "pytest", "-s", str(TEMP_PROBE)]
+    supplied_option = supplied.as_posix()
     if source == "environment":
-        environment["PYTEST_ADDOPTS"] = "--basetemp=" + str(supplied)
+        environment["PYTEST_ADDOPTS"] = (
+            "--basetemp=" + shlex.quote(supplied_option))
     else:
-        command.append("--basetemp=" + str(supplied))
+        command.append("--basetemp=" + supplied_option)
 
     result = subprocess.run(
         command,
@@ -135,10 +139,15 @@ def test_host_check_isolates_and_restores_ambient_pytest_addopts():
 
 def test_host_check_mpy_compiles_every_device_tool():
     script = CHECK_SCRIPT.read_text(encoding="utf-8")
+    support = CHECK_SUPPORT.read_text(encoding="utf-8")
 
     assert "Invoke-DeviceToolCompilation" in script
     assert 'Join-Path $ProjectRoot "tools"' in script
     assert 'Join-Path $BuildRoot "device-tools"' in script
+    assert "-X no-source-lines" in script
+    assert "-X no-source-lines" in support
+    assert "-s $Relative" in script
+    assert '-s $EmbeddedSource' in support
 
 
 @pytest.mark.parametrize(

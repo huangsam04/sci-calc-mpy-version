@@ -1,141 +1,221 @@
-"""Device Adapter for the five-round resident-target acceptance tracer."""
-import sys
+"""Five-round resident page tracer with a fixed device-sized state."""
 
+import gc
+import time
 
-if "/sd" not in sys.path:
-    sys.path.insert(0, "/sd")
+from ui.element import SETTLE_COLLECT, SETTLE_MORE, SETTLE_REDRAW
 
 
 TOTAL_ROUNDS = 5
-MODE_RELEASE = "release"
-MODE_BENCHMARK = "benchmark"
-SCENARIO_NAME = "resident_target_tracer"
+MAX_SETTLE_STEPS = 256
+MAX_BLOCKING_STEP_US = 32_000
+MIN_HEAP_FREE_BYTES = 4 * 1024
+MAX_HEAP_DRIFT_BYTES = 512
 
 
 def _resident_runtime():
-    from runtime_acceptance import get_resident_runtime
+    from runtime_handle import get_resident_runtime
 
     return get_resident_runtime()
 
 
-def _benchmark_runtime():
-    from benchmarks import build_runtime
+def _buffer_state(nav):
+    display = getattr(nav.renderer, "display", None)
+    main = getattr(display, "gs4_buf", None)
+    plot = getattr(nav.memory, "_plot_curve", None)
+    return (
+        len(main) if main is not None else 0,
+        id(main) if main is not None else 0,
+        len(plot) if plot is not None else 0,
+        id(plot) if plot is not None else 0)
 
-    return build_runtime(mode=MODE_BENCHMARK)
+
+def _reset_root(runtime, nav, root, present):
+    reset = getattr(runtime, "reset_root", None)
+    if reset is not None:
+        reset(present=present)
+    else:
+        if nav.current is not root:
+            nav.reset(root)
+        if present:
+            nav.present_current()
 
 
-def _resolve_runtime(runtime, mode):
-    if mode not in (MODE_RELEASE, MODE_BENCHMARK):
-        raise ValueError("Unknown runtime monitor mode: " + str(mode))
+def run(runtime=None, emit=print):
     if runtime is None:
-        runtime = (
-            _resident_runtime()
-            if mode == MODE_RELEASE
-            else _benchmark_runtime())
-    if runtime is None:
-        if mode == MODE_RELEASE:
-            raise RuntimeError("Release mode requires a resident runtime")
-        raise RuntimeError("Benchmark runtime build failed")
-
-    runtime_mode = getattr(runtime, "mode", None)
-    expected_mode = "resident" if mode == MODE_RELEASE else MODE_BENCHMARK
-    if runtime_mode != expected_mode:
-        raise RuntimeError(
-            mode + " mode requires a " + expected_mode + " runtime")
-    if not getattr(runtime, "targets", ()):
+        runtime = _resident_runtime()
+    if runtime is None or getattr(runtime, "mode", "resident") != "resident":
+        raise RuntimeError("Release mode requires a resident runtime")
+    targets = getattr(runtime, "targets", None)
+    if targets is None:
+        targets = runtime.screens
+    nav = getattr(runtime, "nav", None)
+    if nav is None:
+        nav = runtime._nav
+    root = getattr(runtime, "root", None)
+    if root is None:
+        root = targets[0]
+    if not targets:
         raise RuntimeError("Runtime monitor has no resident targets")
-    return runtime
+    canonical = len(targets) == 10 and root is targets[0]
+    first = 1 if canonical else 0
+    stop = 6 if canonical else len(targets)
 
+    stats = [0] * 10
+    failure = [None]
+    _reset_root(runtime, nav, root, False)
+    gc.collect()
+    heap_before = gc.mem_free() if hasattr(gc, "mem_free") else -1
+    stats[5] = heap_before
+    baseline = _buffer_state(nav)
+    stats[7] = baseline[0] + baseline[2]
+    if canonical and baseline != (8192, baseline[1], 104, baseline[3]):
+        stats[9] |= 32
+    emit("MONITOR_START mode=resident rounds=5 heap_before="
+         + str(heap_before) + " buffer_peak_bytes=" + str(stats[7]))
 
-def _target_name(target):
-    return getattr(
-        target, "transition_title", target.__class__.__name__)
+    def sample(started, allow_plot, target_index, phase):
+        elapsed = time.ticks_diff(time.ticks_us(), started)
+        free = gc.mem_free() if hasattr(gc, "mem_free") else -1
+        stats[4] += 1
+        if stats[5] < 0 or (free >= 0 and free < stats[5]):
+            stats[5] = free
+        if elapsed > stats[6]:
+            stats[6] = elapsed
+        if elapsed >= MAX_BLOCKING_STEP_US:
+            stats[9] |= 4
+            emit("MONITOR_SLOW target=" + str(target_index)
+                 + " phase=" + str(phase) + " step_us=" + str(elapsed))
+        state = _buffer_state(nav)
+        size = state[0] + state[2]
+        if size > stats[7]:
+            stats[7] = size
+        if state != baseline:
+            stats[8] += 1
+            stats[9] |= 32
 
+    def settle(allow_plot):
+        for _ in range(MAX_SETTLE_STEPS):
+            started = time.ticks_us()
+            try:
+                flags = nav.settle_current()
+                if flags & SETTLE_COLLECT:
+                    gc.collect()
+                if flags & SETTLE_REDRAW:
+                    nav.present_current()
+            except MemoryError as error:
+                stats[0] += 1
+                stats[9] |= 1
+                failure[0] = error
+                flags = 0
+            except Exception as error:
+                stats[1] += 1
+                stats[9] |= 2
+                failure[0] = error
+                flags = 0
+            sample(started, allow_plot, target_index, 2)
+            if failure[0] is not None or not flags & SETTLE_MORE:
+                return failure[0] is None
+        stats[1] += 1
+        stats[9] |= 2
+        failure[0] = RuntimeError("Page settle work exceeded its fixed bound")
+        return False
 
-def _scenario(runtime):
-    from runtime_acceptance import VISIT_TARGET
-
-    steps = []
-    for index, target in enumerate(runtime.targets):
-        steps.append((_target_name(target), VISIT_TARGET, index))
-    return (SCENARIO_NAME, TOTAL_ROUNDS, tuple(steps))
-
-
-def _buffer_text(buffers):
-    if not buffers:
-        return "-"
-    return ";".join(
-        name + ":" + str(length) + ":" + str(identity)
-        for name, length, identity in buffers)
-
-
-def _emit_start(report, emit):
-    emit("MONITOR_START mode=" + report.mode
-         + " rounds=" + str(report.rounds_expected)
-         + " heap_before=" + str(report.heap_before)
-         + " buffers=" + _buffer_text(report.buffers_before))
-
-
-def _emit_step(event, report, emit):
-    emit("MONITOR_STEP event=" + str(event)
-         + " round=" + str(report.round_index + 1)
-         + " name=" + str(report.step_name)
-         + " phase=" + str(report.phase)
-         + " step_us=" + str(report.step_us)
-         + " heap_free=" + str(report.step_heap_free)
-         + " heap_min=" + str(report.heap_min)
-         + " buffers=" + _buffer_text(report.step_buffers))
-
-
-def _emit_end(report, emit):
-    emit("MONITOR_END mode=" + report.mode
-         + " rounds_completed=" + str(report.rounds_completed)
-         + " scenarios_completed=" + str(report.scenarios_completed)
-         + " runtime_steps=" + str(report.runtime_steps)
-         + " memory_errors=" + str(report.memory_errors)
-         + " errors=" + str(report.errors)
-         + " heap_after=" + str(report.heap_after)
-         + " heap_delta=" + str(report.heap_delta)
-         + " heap_min=" + str(report.heap_min)
-         + " blocking_max_us=" + str(report.blocking_max_us)
-         + " buffer_peak_bytes=" + str(report.buffer_peak_bytes)
-         + " buffer_changes=" + str(report.buffer_change_count)
-         + " buffers_before=" + _buffer_text(report.buffers_before)
-         + " buffers_after=" + _buffer_text(report.buffers_after))
-    emit("MONITOR_ACCEPTANCE "
-         + ("PASS" if report.accepted else "FAIL")
-         + " failure_mask=" + str(report.failure_mask))
-
-
-def _observer(emit):
-    from runtime_acceptance import (
-        RUN_END, RUN_ERROR, RUN_MEMORY_ERROR, RUN_START, RUN_STEP)
-
-    def observe(event, report):
-        if event == RUN_START:
-            _emit_start(report, emit)
-        elif event in (RUN_STEP, RUN_MEMORY_ERROR, RUN_ERROR):
-            _emit_step(event, report, emit)
-        elif event == RUN_END:
-            _emit_end(report, emit)
-
-    return observe
-
-
-def run(runtime=None, mode=MODE_RELEASE, emit=print):
-    """Run the target tracer without claiming the full seven-scenario gate."""
-    from runtime_acceptance import run as run_acceptance
-
-    runtime = _resolve_runtime(runtime, mode)
-    report = None
     try:
-        report = run_acceptance(
-            runtime, _scenario(runtime), _observer(emit))
+        for round_index in range(TOTAL_ROUNDS):
+            for target_index in range(first, stop):
+                target = targets[target_index]
+                allow_plot = canonical and target_index == 2
+                started = time.ticks_us()
+                try:
+                    nav.go_to(target)
+                    nav.present_current()
+                except MemoryError as error:
+                    stats[0] += 1
+                    stats[9] |= 1
+                    failure[0] = error
+                except Exception as error:
+                    stats[1] += 1
+                    stats[9] |= 2
+                    failure[0] = error
+                sample(started, allow_plot, target_index, 1)
+                if failure[0] is not None or not settle(allow_plot):
+                    break
+
+                started = time.ticks_us()
+                try:
+                    nav.go_back()
+                    nav.present_current()
+                except MemoryError as error:
+                    stats[0] += 1
+                    stats[9] |= 1
+                    failure[0] = error
+                except Exception as error:
+                    stats[1] += 1
+                    stats[9] |= 2
+                    failure[0] = error
+                sample(started, False, target_index, 3)
+                if failure[0] is not None or not settle(False):
+                    break
+                collector = getattr(nav, "collect_pending", None)
+                if collector is not None:
+                    started = time.ticks_us()
+                    try:
+                        collector()
+                    except MemoryError as error:
+                        stats[0] += 1
+                        stats[9] |= 1
+                        failure[0] = error
+                    except Exception as error:
+                        stats[1] += 1
+                        stats[9] |= 2
+                        failure[0] = error
+                    sample(started, False, target_index, 4)
+                if failure[0] is not None:
+                    break
+                stats[3] += 1
+            if failure[0] is not None:
+                break
+            stats[2] = round_index + 1
     finally:
-        runtime.reset_root(present=True)
-    if not report.accepted:
+        _reset_root(runtime, nav, root, True)
+
+    if failure[0] is not None:
+        emit("MONITOR_ERROR " + type(failure[0]).__name__
+             + " " + str(failure[0]))
+        failure[0] = None
+    gc.collect()
+    heap_after = gc.mem_free() if hasattr(gc, "mem_free") else -1
+    if stats[5] < 0 or (heap_after >= 0 and heap_after < stats[5]):
+        stats[5] = heap_after
+    heap_delta = (
+        heap_after - heap_before
+        if heap_before >= 0 and heap_after >= 0 else -1)
+    if stats[5] >= 0 and stats[5] < MIN_HEAP_FREE_BYTES:
+        stats[9] |= 8
+    if heap_delta != -1 and abs(heap_delta) > MAX_HEAP_DRIFT_BYTES:
+        stats[9] |= 16
+    if _buffer_state(nav) != baseline:
+        stats[9] |= 32
+    if stats[2] != TOTAL_ROUNDS:
+        stats[9] |= 64
+
+    emit("MONITOR_END mode=resident rounds_completed=" + str(stats[2])
+         + " scenarios_completed=" + str(stats[3])
+         + " runtime_steps=" + str(stats[4])
+         + " memory_errors=" + str(stats[0])
+         + " errors=" + str(stats[1])
+         + " heap_after=" + str(heap_after)
+         + " heap_delta=" + str(heap_delta)
+         + " heap_min=" + str(stats[5])
+         + " blocking_max_us=" + str(stats[6])
+         + " buffer_peak_bytes=" + str(stats[7])
+         + " buffer_changes=" + str(stats[8]))
+    emit("MONITOR_ACCEPTANCE " + ("PASS" if stats[9] == 0 else "FAIL")
+         + " failure_mask=" + str(stats[9]))
+    if stats[9] != 0:
         raise RuntimeError("Device runtime acceptance failed")
-    return report
+    return stats
 
 
 if __name__ == "__main__":

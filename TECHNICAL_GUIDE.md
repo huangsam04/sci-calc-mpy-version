@@ -13,12 +13,13 @@ SD 卡。应用使用 MicroPython；内部 Flash 只放可恢复的启动链，�
 ```text
 内部 Flash                                      SD 卡 /sd
 -----------                                      ---------
-boot.py       挂载 SD                            launch.py -> main
-sdcard.py     SPI block-device 驱动               main.py 或 main.mpy
-main.py       内部启动器 / 恢复分支               anim/ calc/ display/ input/ screens/ ui/ utils/
-recovery.py   SD 应用损坏时的最小界面             functions/*.py（动态插件源码）
-display/      恢复界面所需驱动                    fonts/*.xglcd（构建期紧凑字体）
-                                                     settings.json / vars.json（可变状态）
+boot.py       挂载 SD                            settings.json / vars.json（可变状态）
+sdcard.py     SPI block-device 驱动               .slots/A 或 B/
+main.py       槽选择与恢复入口                      release.manifest / .sci-calc-owner
+bootenv.py / bootsel.py / bootlog.py               launch.py -> main.py 或 main.mpy
+bootsupervisor.py                                  calc/ display/ input/ screens/ ui/ utils/
+recovery.py / display/                           functions/*.py / fonts/*.xglcd
+                                                .staging/（未激活候选）
 ```
 
 源码目录的职责如下：
@@ -28,13 +29,13 @@ display/      恢复界面所需驱动                    fonts/*.xglcd（构建
 | `source/main.py` | 应用构造、事件循环、导航状态机、崩溃恢复。 |
 | `source/calc/` | 高精度十进制数、函数注册表、依赖感知插件加载、Pratt 表达式解析与求值。 |
 | `source/screens/` | 各业务页面的状态、绘制和按键处理。 |
-| `source/ui/`、`source/anim/` | 通用控件、帧合成、页面/控件动画和状态栏。 |
+| `source/ui/` | 通用控件、固定行损伤、帧调度和状态栏；当前未启用动效。 |
 | `source/display/` | SSD1322 帧缓冲/SPI 驱动、单色调色板、X-GLCD 字体读取。 |
 | `source/input/keyboard.py` | 键盘矩阵扫描、去抖、边沿事件与长按。 |
 | `source/utils/` | 崩溃可恢复 JSON 存储和 OLED 空闲休眠。 |
-| `source/boot.py`、`internal_main.py`、`recovery.py`、`sdcard.py` | 内部 Flash 启动和 SD 失败恢复。 |
+| `source/boot.py`、`internal_main.py`、`bootenv.py`、`bootsel.py`、`bootlog.py`、`bootsupervisor.py`、`recovery.py`、`sdcard.py` | 内部 Flash 的挂载、A/B 选择、启动日志和失败恢复。 |
 | `source/diagnostics.py`、`benchmarks.py`、`performance.py` | 串口自检、可重复的导航基准和有界统计。 |
-| `tools/`、`deploy.ps1`、`check.ps1` | 主机端字体构建、ABI 验证、部署与持续检查。 |
+| `tools/`、`check.ps1` | 主机端字体构建、发布清单、A/B 部署、设备验收与持续检查。 |
 
 `__init__.py` 仅标记包，不承载业务逻辑。`source/fonts/*.c` 是 96 个 ASCII 字形的源数据，
 `image*.png` 是静态图片；它们不包含运行期控制流程。
@@ -57,8 +58,8 @@ SPI host 的 `machine.SDCard(slot=2)`。
 
 ### 2.2 MicroPython 启动与恢复
 
-MicroPython 的启动顺序是 `_boot.py -> /boot.py -> /main.py`。内部 `boot.py` 仅负责建立
-SD 文件系统并把 `/sd` 放到 `sys.path`，失败时把原因输出到串口，随后仍让内部启动器继续。
+MicroPython 的启动顺序是 `_boot.py -> /boot.py -> /main.py`。内部 `boot.py` 只建立 SD 文件系统，
+不会把 `/sd` 放到全局 `sys.path`；这样根目录中的旧应用文件不能遮蔽受信任的内部启动模块。
 
 ```text
 on boot.py:
@@ -66,26 +67,31 @@ on boot.py:
         spi2 = SPI(2, pins=18/23/19, 10 MHz)
         card = SDCard(spi2, CS=4)
         mount(card, "/sd")
-        prepend_once(sys.path, "/sd")
     except error:
         print("SD mount failed", error)
 
 on internal /main.py:
     try:
-        path = "/sd/launch.py" if it exists else "/sd/main.py"  # 兼容旧版
-        execfile(path)                                            # 不重复 import main
+        sys.path = ["/lib", "/"]
+        selector = read_redundant_selector_records()
+        choose unconsumed trial, otherwise confirmed A/B slot
+        write boot evidence; consume a one-shot trial before execution
+        require selected slot release.manifest
+        sys.path = [selected_slot, ".frozen", "/lib"]
+        purge cached application modules
+        release boot supervisor modules; gc.collect()
+        execfile(selected_slot + "/launch.py")
     except app_error:
-        print("SCI-CALC recovery", app_error)
-        remove_all(sys.path, "/sd")                              # 损坏模块不再遮蔽内部模块
-        prepend_once(sys.path, "/")
-        unload("recovery", "display", "display.ssd1322", "display.mono_palette")
-        print_exception(app_error)
+        sys.path = ["/lib", "/"]
+        purge cached slot modules; gc.collect()
         show_recovery(app_error)
 ```
 
 恢复界面只初始化 OLED 所需的 SPI、CS、DC、RST，显示“CHECK SD CARD”、截断至 28 字符的
 错误信息和“Fix card, then RESET”。这样即使 SD 上的主应用、字体或 Python 模块损坏，设备
-仍有可见的故障出口。
+在堆足够时仍有可见的故障出口。若页面启动已经耗尽到无法再申请恢复界面的 8192 B framebuffer，
+`main` 会先发送 OLED 硬件休眠命令再原样上抛 `MemoryError`；此时串口错误是权威出口，避免启动画面
+长时间停留造成烧屏风险。
 
 `launch.py` 的职责只有 `import main; main.main()`，所以部署 `.mpy` 时解释器会优先加载
 `main.mpy`，回退部署时加载 `main.py`。
@@ -104,8 +110,7 @@ main():
     kb = required_import(Keyboard)                    # 失败：显示错误后终止，应用不可操作
     mark("keyboard")
 
-    font_main  = try_load("/sd/fonts/Bally7x9.xglcd") # 失败：使用内置 8x8 字体
-    font_small = try_load("/sd/fonts/Neato5x7.xglcd") # 失败：允许为 None
+    font_main = None; font_small = None             # 常驻路径固定使用内置 8x8 字体
     mark("fonts")
 
     settings = try_load_settings_or_defaults()
@@ -122,7 +127,8 @@ main():
     import all screens
     construct DeferredStorage, pages, overlays, main menu
     mark("screen_imports")
-    boot_progress(8/8); sleep(40 ms)
+    bind resident runtime; mark("ui_ready")
+    submit first main-menu frame
     enter_main_loop(...)
 ```
 
@@ -176,160 +182,92 @@ Shift+`^` 为 `sqrt`，Shift+`RPN` 为 `rpn`，Shift+`Tab` 为 `stab`。页面�
 
 ## 4. UI 生命周期、导航和帧调度
 
-### 4.1 UIElement 与动画所有权
+### 4.1 UIElement、FrameScheduler 与当前吸附式反馈
 
-所有页面/控件继承 `UIElement`，约定 `activate()`、`deactivate()`、`draw(display)`、
-`update(keyboard, event)` 和 `animation_children()`。基类不做业务工作，只定义生命周期边界。
+所有页面/控件继承 `UIElement`，约定 `activate()`、`deactivate()`、`draw(display)` 和
+`update(keyboard, event)`。`FrameScheduler` 记录输入、普通脏帧、秒表连续帧、侧栏轮询和安静
+工作期限；普通脏帧间隔为 66 ms，循环固定休眠 4 ms。
 
-动画引擎用 `(id(target), attribute)` 为键保存 `Animation`，同一属性新动画覆盖旧动画；所有进度
-以 1024 为满量程的整数定点数计算，只保留实际使用的 quadratic ease-out，不再逐帧创建浮点数、
-查字符串策略表或携带未使用的 easing 字段。结束时精确吸附到终值；需要连续可见反馈的短距离
-运动可要求每帧至少推进一个整数像素。离开页面时，`cancel_animations(root)` 深度遍历
-`animation_children()`，只取消该页面拥有的动画，避免错误清除其他页面动画。
+当前 `Menu` 没有运动槽，`_update_cursor_target()` 会把光标立即吸附到新行；源码中没有
+`MotionMenu` 或 quadratic ease-out 推进函数。`Nav` 也没有 `_fade_*` 状态或动画堆门禁。
+COM5 已通过 resident startup 和五阶段统一验收，但冷启动干净堆样本只有 10,752–11,200 B，
+未达到 12 KiB 动效硬门槛，因此两项计划动效已经删除而不是带风险启用。
+按键和逐帧路径不调用 `gc.collect()` 或 `gc.mem_free()`。
 
-```text
-animate_all():
-    for each live animation:
-        if before delay: keep it
-        else:
-            progress = clamp((now - start) * 1024 // duration, 0..1024)
-            eased = 1024 - (1024 - progress)^2 // 1024
-            target.attr = start + (end - start) * eased // 1024
-            if progress == 1024: set exact end; remove it
+### 4.2 `Nav` 栈、同步页面切换与输入恢复
 
-cancel_animations(root):
-    owned_ids = DFS(root + animation_children)
-    remove animations and temporary targets whose target id is in owned_ids
-```
+`Nav` 维护唯一页面栈和已注册页面的可重建资源生命周期。普通 `go_to()` / `go_back()` 同步完成
+旧页停用、释放、新页激活，再由下一次 `Renderer.present()` 提交目标页；当前没有 SSD1322
+master-current 淡出/淡入或暗点提交逻辑。亮度命令只由 Settings 和休眠/唤醒路径使用。
 
-共享时序：页面转场 190 ms，面板滑入 130 ms，菜单光标 100 ms，文本光标 70 ms；活跃帧目标
-16 ms、空闲帧目标 66 ms，活动/空闲循环睡眠分别为 1/10 ms。
+崩溃恢复中的 `reset(root)` 会释放可重建资源、清空导航栈到根页并锁住输入，直到所有物理按键
+释放。页面激活或回滚发生 `MemoryError` 时保留原异常优先级，不用视觉效果延迟恢复。
 
-### 4.2 `Nav` 栈和输入锁
+### 4.3 Renderer、DamageMap 与单 framebuffer
 
-`Nav` 维护页面栈，并把页面状态生命周期委托给 `PageResidency` 的 `leave/prepare/settle` 三个
-接口。离页时旧像素继续留在 OLED 显示 RAM，只捕获一条有界逻辑状态，派生缓存和 Plot
-workspace 随即释放；JSON 编码与写盘都推迟到无动画的安静循环。目标页只激活默认空布局，
-真实状态和重缓存必须等转场结束后恢复。
-
-```text
-Nav.poll_event(keyboard):
-    if transition is running: return None          # 不弹出队列头
-    if input_locked:
-        if any key remains physically pressed: return None
-        input_locked = false
-    if target page is restoring:
-        return pop queued ESC if present            # 其他边沿保持原顺序
-    return pop queue head
-
-Nav.draw_transition(now):
-    if no transition: return false
-    progress = clamp((now - started) * 1024 // 190 ms, 0..1024)
-    if reveal strip is available:
-        renderer.present_transition(integer_ease_out(progress), forward)
-    else:
-        fade OLED current; present default target only at the dark midpoint
-    if progress == 1024: transition = None         # 当前仍是目标页的默认空布局
-    remember SPI present elapsed time
-    return true
-```
-
-转场完成后的安静循环调用 `settle_current()`，每次最多执行一项 SWAP 写入、读取或页面重建；
-返回的位标志决定是否重绘和是否还有后续工作。转场期间矩阵扫描照常进行，方向键边沿留在有界
-队列中并在目标页可编辑后按顺序回放；触发键只禁止“仍按住”的无边沿轮询，不会锁死其他按键。
-页面恢复时 `ESC` 可从队列中优先取出以立即中止。`reset(root)` 用于崩溃恢复：清空
-所有动画和转场，将栈替换为根页并锁住输入，避免保留损坏页面状态。
-
-### 4.3 Renderer、状态栏和低内存页面揭示
-
-`Renderer` 不再为页面保存两张 6.7 KiB GS4 图层。旧页已经存在于 SSD1322 自带显示 RAM；
-新页默认布局只需画入应用原有的 8 KiB 主帧缓冲。转场额外内存是4个控制器列 x 2字节/列 x
-64行，即固定512字节条带，常规分配保留4 KiB活动安全线。旧页确实释放了大块内存时，可在不
-执行 GC 的前提下按2 KiB恢复线尝试取得条带；按键路径绝不为了动画同步 GC。若当下仍无法分配，
-导航立即使用 SSD1322 master-current 淡出/淡入，中点电流为零时才提交默认目标页，因此不存在
-可见硬切。动画完成并显示稳定页后才释放字体缓存、GC、渐进恢复页面；后续空闲资源阶段可再 GC
-一次并预留条带，使不同页面最终回到同一固定缓冲集合。
+`Display` 只定义一个 256 x 64 x 4-bit 的 8192 B framebuffer；页面不拥有条带、页面副本或
+像素合成缓冲。`Renderer` 内部复用容量为 2 的 `DamageMap`，并按当前页面身份缓存
+class-level 绘制 hook，避免秒表和菜单热路径反复创建 bound method。
 
 ```text
 Renderer.present(screen):
-    display.clear_buffers(black)
-    screen.draw(display)                         # 仅画内容区
-    outgoing_screen = screen
-    sidebar.draw(display)                        # 固定字节直接绘制 BAT/电压/DEG|RAD
-    timed display.present()
-
-Renderer.capture_transition(outgoing, incoming):
-    ensure 512-byte transition strip
-    keep outgoing pixels untouched in SSD1322 RAM
-    render allocation-bounded incoming default layout into the framebuffer
-
-Renderer.present_transition(progress, forward):
-    newly_revealed = eased controller columns - already_revealed
-    Viper copy only those packed GS4 rows into the 512-byte strip
-    display.present_region(direction, strip)      # OLED 其余 RAM 保持旧页
+    damage.clear()
+    screen.collect_present_damage(display.height, damage)
+    if no damage: return false
+    if full or sidebar dirty:
+        clear content/full buffer; screen.draw(display); display.present()
+    else:
+        screen.draw_present_rows(display)
+        display.present_rows(damage.ranges)
+    mark screen presented; return true
 ```
 
-SSD1322 一个控制器列包含 4 个 GS4 像素。Viper 按连续字节复制新增区域，`present_region()` 只为
-该窗口设置列/行地址并发送数据；整段 190 ms 动画合计约写一屏内容，而不是每帧写一屏。侧栏不在
-揭示窗口内，仍每 500 ms 读取一次 ADC 并显示电压与注册表的 `RAD`/`DEG`。侧栏电压使用一个
-可复用的4字节缓冲和整数十分位换算，所有标签从 XGLCD 源字节直接绘制，不创建字形或整串
-FrameBuffer。
+`DamageMap.add()` 原地合并相交行带；超过两个独立行带时提升为全帧，不扩容。SSD1322 在启动时
+预建有限的菜单跨度视图，供吸附式高亮只重画旧/新受影响行；当前 4 行菜单从清空 9568 像素、
+重画 4 个标签，降到清空 4992 像素、重画 2 个标签。这是行损伤优化，不是滑动动画。
+`Display.present_rows()` 对其他不认识的合法行区仍直接退化为全帧传输，避免逐帧切片分配。
+
+侧栏每 5 s 才在安静调度槽检查刷新；输入导致 DEG/RAD 改变时只标记侧栏脏并复用缓存电池样本，
+ADC 读取不进入输入帧。电压文本和固定标签使用预分配字节缓冲或紧凑字体直绘。
 
 ### 4.4 主循环、渲染门控和崩溃恢复
 
-主循环是唯一调用 `pop_key_event()` 的位置。这确保页面不会争抢输入，并允许在一个循环内先
-处理导航再决定是否显示，让输入帧成为第一张转场帧。
+主循环通过 `_drain_input_batch()` 每轮最多处理 5 个已捕获边沿，并且只有 `Nav.poll_event()`
+调用 `pop_key_event()`。先处理输入，再执行页面安静期 `settle_step()`，最后由 `FrameScheduler` 决定是否存在
+真实像素提交；无损伤返回不会计作帧。
 
 ```text
 forever:
     try:
         kb.scan()
         now = ticks_ms()
+        update OLED sleep state; sleeping path scans every 25 ms
+        drain up to 5 edges through _handle_event()
+        if no edge, process one supported held-key update
+        scheduler.note_input(now) for any physical activity
+        scheduler.request_render() only for visible state changes
 
-        state = display_power.update(now, kb.any_pressed())
-        if state != AWAKE:
-            kb.discard_pending_events()
-            if state == WOKE: force next render
-            sleep(25 ms); continue
+        quiet = no input/hold/pending/pressed key
+        if sidebar deadline and quiet: poll cached chrome
+        choose 50 ms stopwatch or 66 ms ordinary deadline
+        if scheduler.should_present(...):
+            if nav.present_current(now): mark physical present
+            else: clear phantom render request
+            kb.scan() immediately after OLED transfer
 
-        event = nav.poll_event(kb)
-        every 100 loops, only with no animation/event/pressed key:
-            collect GC (and measure it when diagnostics enabled)
-        animate_all(); cleanup_finished_temporary_targets()
-
-        if event:
-            optionally print INPUT trace
-            handle global shortcuts before page:
-                Shift+RPN on calculator/plot -> letter panel
-                ANG -> toggle registry.angle_mode, queue settings write
-        if not transitioning and (event or DEL/ESC physically held):
-            result = current_page.update(kb, event)
-
-        route result:
-            BACK -> nav.go_back()
-            page object -> nav.go_to(page object)
-            FUNC_PICKER/LETTER/VAR done -> nav.go_back()
-            FUNC_PANEL_DONE -> reload registry in place, show errors or go back
-            FUNC_PANEL_CANCEL -> go back
-
-        active = transition or any_animation
-        render if input changed, or active/dirty/stopwatch requires deadline,
-                  or 500 ms keepalive elapsed
-        if render: draw transition OR canonical current page, clear dirty
-
-        if EvalContext became dirty: snapshot and queue vars write
-        if idle (no animation/input/result): flush at most one deferred write
-        sleep(1 ms if active else 10 ms)
-    except error:
-        wake/reset power state; draw minimal crash page; print exception
-        clear font caches; GC
-        wait any key, then wait all keys released
-        nav.reset(main_menu)
+        settle_current() only while quiet
+        after 750 ms quiet: perform one reload/scan/reclaim/deferred write step
+        every 256 frames in that quiet seam: sample heap and optionally collect
+        sleep(4 ms)
+    except MemoryError:
+        cancel pending plug-in work; release rebuildable resources; reset root
+    except ordinary error:
+        reset OLED power state; show crash page
+        wait acknowledgement and complete release; reset root
 ```
 
-`_needs_render()` 绕过空闲帧限速以立即显示输入结果；活跃状态依 16 ms 目标更新，静止页依
-66 ms 限制，但无变化时至少每 500 ms 保活。诊断模式每 5 秒输出平均渲染/传输耗时、GC 前后
-空闲堆和活动动画数。
+输入造成的可见变化绕过普通 66 ms 限速。侧栏轮询、GC、插件执行和持久化都要求安静期；
+有输入、按键仍按住或页面仍需稳定时不会进入这些分支。诊断模式每 5 秒输出平均渲染/传输耗时和空闲堆。
 
 ## 5. 持久化、空闲休眠和运行期服务
 
@@ -363,13 +301,8 @@ on any failure:
 内存缓存，写失败也不会丢失当前用户状态。
 
 `DeferredStorage` 让按键逻辑不做 SD I/O，也不再在请求时深复制整棵 JSON 数据；它只保留最新
-对象引用并合并同类请求，编码和写入都发生在无动画的空闲阶段。失败时保留请求，约2秒后重试，
+对象引用并合并同类请求，编码和写入都发生在无输入的空闲阶段。失败时保留请求，约2秒后重试，
 并调用回调更新 UI 的“Not saved - check SD”。
-
-`SessionSwap` 在 `/sd/.sci-calc/swap` 为每页保存独立、整体最大4 KiB的会话记录；固定 ASCII
-头包含魔数、版本、UTF-8长度和校验值，后接原始 JSON 载荷，避免外层二次转义和内存复制，并
-通过 `.tmp/.bak` 原子替换。启动时删除旧会话；文件缺失、损坏或
-SD不可用时，`PageResidency` 只作废当前页记录、显示错误并保留长期 settings/variables。
 
 ### 5.2 OLED 休眠
 
@@ -502,8 +435,8 @@ evaluate(node, context):
 
 ### 6.3 SD 插件隔离、热重载和附带插件
 
-插件为 `/sd/functions/*.py` 中不以 `_` 开头的文件，每个必须定义 `register(registry)`。可选的
-`DEPENDENCIES = ("other", ...)`（兼容旧名 `REQUIRES`）声明其他 Add-in；可选 `EXPORTS` 字典
+插件为活动槽 `functions/*.py` 中不以 `_` 开头的文件，每个必须定义 `register(registry)`。可选的
+`DEPENDENCIES = ("other", ...)` 声明其他 Add-in；可选 `EXPORTS` 字典
 显式提供可复用的函数或常量。加载器先在全新的 staging registry 中 `exec(compile(source))`，
 仅在 `register` 成功且没有名称冲突时合并到 live registry。单个插件的语法、执行、依赖或注册
 错误会记录到 `LoadReport.errors` 和串口，不能破坏其他插件。
@@ -523,8 +456,7 @@ load_function_files(live, enabled_names):
 ```
 
 Add-in 可在注册期使用 `registry.plugin(name)`，在回调运行期使用 `context.plugin(name)`；注册期
-只注入已声明并成功装载的 `EXPORTS`，Add-in 应在两个阶段都遵循其显式依赖。`describe_function_files()`
-也在隔离 registry 中运行插件，以生成面板摘要；`describe_plugin_dependencies()` 单独读取依赖元数据。
+只注入已声明并成功装载的 `EXPORTS`，Add-in 应在两个阶段都遵循其显式依赖。函数面板直接复用启动时已构建的函数和依赖快照，不再为历史调用方重新执行 Add-in。
 `_reload_functions(settings, existing_registry)` 从保存的内置组和 `plugin:` 名称建立 staged registry；
 若传入旧 registry 则原地 `replace`，保持所有页面指针有效并保留原角度模式。
 
@@ -541,7 +473,7 @@ Add-in 可在注册期使用 `registry.plugin(name)`，在回调运行期使用 
 ### 7.1 通用控件和错误弹窗
 
 `Menu` 保存项目、选择下标和视图偏移；上下键移动并保持选择行可见，`ENT` 返回 `ENTER`，
-`ESC` 返回 `BACK`。光标独立动画到目标行，标签在加入菜单时只截断一次。`InputBox` 保存文本、
+`ESC` 返回 `BACK`。光标直接吸附到目标行，标签在加入菜单时只截断一次。`InputBox` 保存文本、
 插入点和可配置行数的视图；它按比例字体的实际像素宽度切分文本，并用同一测量结果定位光标。
 紧凑覆盖层保留单行、42 字符默认值；计算器传入最多双行和 96 字符上限，短公式仍只占一行。`DEL` 删除插入点之前字符，
 按住超过 750 ms 后每 100 ms 重复；函数键自动插入如 `sin(`，快捷键则交还页面。
@@ -598,7 +530,7 @@ Calculator.update:
 重载 registry。加载失败插件会自动聚焦，用户可关闭它。
 
 `Shift+ENT` 是唯一主动重扫路径：重新执行隔离摘要、保持可用的原选择并夹住光标。这样运行中
-更换 SD 内容可见，同时不会将任意插件代码带回普通页面转场关键路径。
+更换活动槽内容可见，同时不会将任意插件代码带回普通页面切换关键路径。
 
 函数选择器在激活时对 live registry 名称排序，使用四行两列（每页八项）。上下移动一项，
 物理 4/6 在列间跳四项，`ENT` 插入选择：prefix/list 插入 `name(`，其他插入符号或名称；`ESC`
@@ -615,7 +547,7 @@ Calculator.update:
 
 Plot 页持有独立输入框、x 范围 `[-10,10]`、y 范围、仅包含 `x` 的临时变量字典和临时
 `EvalContext`，因此绘图不写入计算器变量。查看模式下：8/2 按 0.5/2 缩放 y，Shift+8/2 缩放 x，
-物理 4/6 向左/右平移当前 x 范围 25%，ENT 打开编辑，RPN 预填 `x`。编辑框从顶部 14 px 滑入；
+物理 4/6 向左/右平移当前 x 范围 25%，ENT 打开编辑，RPN 预填 `x`。编辑框固定显示在顶部 14 px；
 ENT 提交，ESC 恢复编辑前表达式，Shift+Tab 重置 x 范围。
 
 编译缓存最多四项 LRU，键为表达式，注册表 `revision` 变化则清空，因此启用/禁用函数后不会
@@ -682,9 +614,10 @@ set_brightness(percent):
 椭圆采用两个区域的增量算法，填充多边形按扫描线累积每行 x 范围。它们是通用驱动能力；当前
 主要 UI 使用 FrameBuffer 的线、矩形和字体 blit。
 
-`sleep()`/`wake()` 仅发送 `AE`/`AF`。`write_cmd()` 对 0、1、2 参数复用固定 bytearray，避免
-全帧动画前后创建小对象。`MonoPalette` 用两个像素编码背景/前景灰度，供 `FrameBuffer.blit`
-把单色字形和曲线映射到 GS4。
+`sleep()`/`wake()` 仅发送 `AE`/`AF`。`write_cmd()` 对 0、1、2 参数复用固定 bytearray；
+`set_transition_current()` 也走同一 1 字节参数缓冲，可接受 0..15 而不修改用户亮度设置。
+`present_rows()` 复用启动时预建的热区视图。`MonoPalette` 用两个像素编码背景/前景灰度，供
+`FrameBuffer.blit` 把单色字形和曲线映射到 GS4。
 
 ### 8.2 紧凑字体
 
@@ -699,7 +632,8 @@ set_brightness(percent):
 不依赖 UTF-8 注释。字形和整串文本共用上限 256 的缓存；字符串常走一次预渲染/一次 blit，实时
 秒表/输入用 `raw=True` 逐字绘制，避免让缓存被不断变化字符串占满。分配失败时清缓存、GC、重试，
 仍失败则返回 0 宽占位，不让 UI 崩溃。固定页壳、菜单、底栏与状态侧栏绕过该缓存，直接从紧凑
-字体字节写入主帧缓冲，保证低内存恢复阶段不发生临时字形分配。
+字体字节写入主帧缓冲。当前受限设备的正式启动不会构造 `XglcdFont`，所有常驻页面接收 `None`
+字体并走内置 8x8 路径；字体解析器和资产只保留为兼容能力，不占 resident graph。
 
 ### 8.3 SDCard block-device
 
@@ -739,9 +673,9 @@ writeblocks(n):
 函数面板 ID 不重复、内置/插件标签不含歧义，打印 `SELFTEST PASS/FAIL failures=n`。
 
 ```powershell
-..\.venv\python.exe -m mpremote connect COM5 exec `
-  "import sys; sys.path.insert(0,'/sd'); import diagnostics; diagnostics.run()"
-..\.venv\python.exe -m mpremote connect COM5 reset
+..\.venv\python.exe -m mpremote connect PORTNAME exec `
+  "import diagnostics; diagnostics.run()"
+..\.venv\python.exe -m mpremote connect PORTNAME reset
 ```
 
 `mpremote exec` 会进入 raw REPL 并中断正常应用，故 `reset` 是命令的一部分。将 settings 的
@@ -750,10 +684,10 @@ writeblocks(n):
 ### 9.2 性能基准与统计
 
 `benchmarks.run()` 在没有既有 runtime 时以与 `main` 一致的构造顺序创建独立 UI，但不进入无限
-键盘循环。它先对每个目标页往返预热，随后 GC、记录堆、循环选择页面 `go_to/go_back`，驱动转场
-至结束，最后再次 GC 并打印启动阶段、导航首帧、帧、GC 与堆变化。该流程不会写用户设置/变量。
+键盘循环。它先对每个目标页往返预热，随后 GC、记录堆、循环选择页面 `go_to/go_back`，完成同步
+切换与呈现，最后再次 GC 并打印启动阶段、导航首帧、帧、GC 与堆变化。该流程不会写用户设置/变量。
 
-`PerformanceMetrics` 的输入到呈现和 GC 样本最多保留 128 个；帧样本不同，使用 128 个 0.5 ms
+`PerformanceMetrics` 的输入到呈现和 GC 样本各使用 16 个固定循环槽；帧样本不同，使用 128 个 0.5 ms
 桶覆盖到 63.5 ms，所有帧都被计数。超慢帧进最后桶；若 p95 落在该桶则报告精确最大值，避免
 把量化统计低报为更快。
 
@@ -772,163 +706,109 @@ frame_p95():
 
 ### 9.3 部署
 
-`deploy.ps1 -Port COM5 [-Reset]` 使用工作区 `.venv\python.exe` 的 `mpremote`，每个远程命令最多
-重试三次。它先上传内部启动/恢复资产，重置以释放旧程序占用的 SPI2，等待 `/sd` 可列出。
+正式入口是：
 
-```text
-deploy(port):
-    build compact fonts
-    upload internal boot, sdcard, internal main, recovery, minimal display
-    reset and wait for SD mount
-    use_mpy = compiler exists AND emits mpy v6.3 AND device imports native ABI probe
-    if use_mpy: compile eligible source files with -march=xtensawin
-    create SD package directories
-    upload launch.py
-    upload core as .mpy when accepted, otherwise .py
-    always upload functions/*.py as source for runtime plugin loading
-    upload compact fonts; remove obsolete device font C files
-    preserve existing /sd/settings.json and /sd/vars.json; initialize only if absent
-    when .mpy: import main once to prove app import
-    compare SHA-256 of every newly uploaded runtime asset, host vs device
-    reset only when -Reset was supplied
+```powershell
+..\.venv\python.exe .\tools\release_deploy.py --port PORTNAME --mode mpy
 ```
 
-ABI 探针是带 `@micropython.viper` 的 `_identity(41)+1 == 42` 小模块。它能排除“mpy-cross 版本看似
-正确但设备 ABI/原生 emitter 不兼容”的风险；探针失败不会中断部署，而是安全回退 `.py`。可变用户
-状态被保留也不重复校验，因为它们可能在设备上已改变。
+它先在主机生成 source/MPY 两份确定性发布计划，选择指定模式，并在任何设备接触前校验清单、
+字体输出、编译产物、路径边界和每项 SHA-256。设备首次采用时安装固定 bootstrap；后续发布则核对
+bootstrap 身份，然后使用非活动槽进行一次 A/B 事务。
+
+```text
+release_deploy(port, mode):
+    prepare and validate immutable release plan
+    adopt or verify internal bootstrap; reset and close transport
+    resume any bounded cleanup from an interrupted prior release
+    stage every managed asset under /sd/.staging
+    verify file hashes and manifest; atomically rename to inactive A/B slot
+    arm one-shot trial selector; reset
+    verify boot log selected the exact release and run resident smoke probe
+    confirm trial, retire prior slot, then erase only manifest-owned retired files
+    seed /sd/settings.json and /sd/vars.json only when absent
+```
+
+MPY 模式固定使用仓库 `v1.29.0-preview` 的 `mpy-cross -march=xtensawin -X no-source-lines`；设备端
+resident smoke 同时验证 Viper ABI、release/manifest 身份和启动记录。任一步失败都不会确认候选槽，
+并会尽力复位、关闭连接；可变用户状态不属于不可变槽，也不会被后续发布覆盖。
 
 `check.ps1` 强制使用仓库 MicroPython `v1.29.0-preview` 的 `mpy-cross`，依序生成字体、运行 pytest、
 CPython `compileall`、对所有源码使用 `-march=xtensawin` 编译 `.mpy`。它在兼容性或语法错误时立刻
 失败。
 
-## 10. 已合并的性能调优记录（2026-07-23）
+## 10. 当前内存与动效结论
 
-本节取代原性能调优文档，保留其背景、测量定义、结论、数据、复现方法和后续边界。
+### 10.1 保留的内存与逻辑优化
 
-### 10.1 背景、测量边界和初始定位
+当前实现只保留真机测量能证明收益的改动：
 
-问题表现为从主菜单进入子页时，左右滑动开始前有明显停顿和掉帧。审查范围是 `v1.1.3...HEAD`
-中的字体加载、部署格式、页面转场、函数面板、绘图缓存、延迟持久化及实机基准。
+1. 显示始终只有一个 8192 B GS4 framebuffer；Plot 复用一个 104 B 工作区，并在启动期预建
+   `_CurveJob`，绘图切片不再反复申请临时工作对象。
+2. 页面资源通过各自 `release_memory()` 和 `Nav` 的统一释放入口回收；FunctionPicker 的名称表
+   预留一次并原位重建，异常关闭场景事务后仍保留 list backing，避免下一次激活重新申请大块。
+3. 函数重载复用 live registry，固定 bundled 插件不再导入通用源码 loader；loader 临时模块在
+   冷操作后移除，插件清理使用 `popitem()`，不创建键列表副本。
+4. `MemoryManager` 不再维护通用资源字典；菜单仍只损伤旧、新高亮行。没有增加像素缓冲、通用
+   动画层、`LazyScreen`、SWAP 或第二 framebuffer。
 
-“导航首帧”定义为合成测试从 `Nav.go_to()` 调用到第一次 `Nav.draw_transition()` 完成呈现的耗时。
-它包括目标页激活和转场层捕获，不包括解释器上电、物理键盘扫描和主循环分派，所以它是固件内部
-导航路径指标，不能称作完整硬件冷启动时间。
+多次 COM5 冷启动在导入设备探针前测得 10,752–11,200 B 干净空闲堆。这个数值足以稳定运行
+下述有界用户状态，但低于 12,288 B 动效门槛。无动效模式的稳态门槛保持 4096 B；它只在同时
+覆盖最大历史、变量、圈数、固定插件、错误恢复、绘图与页面往返的应用矩阵中判定，不能由空启动
+样本替代。最终 `check.ps1` 为 `1159 passed`，CPython compileall 和 MicroPython 1.29 全源
+mpy-cross 均通过。
 
-初始 COM5 合成测量：
+### 10.2 COM5 最终统一验收
 
-| 指标 | 初始结果 | 定位结论 |
-| --- | ---: | --- |
-| 导航首帧 p95 | 498.059 ms | 主要卡顿发生在开始滑动前的同步工作。 |
-| 转场帧 p95 | 21.788 ms | 连续帧合成本身不是首要瓶颈。 |
-| FunctionPanel 捕获 | 494.061 ms | 进入面板时重新扫描并执行插件预览代码占主导。 |
-
-解决后，插件文件列表和描述移到启动期构造。预加载后 FunctionPanel 捕获约 100.554 ms；最终热态
-逐页测量中它为 84.332 ms，其他页面约 13.942 至 31.213 ms。
-
-### 10.2 实现决策
-
-1. `Renderer.present()` 记住 OLED RAM 当前对应的页面。导航时旧页留在面板，新页画到已有主缓冲；
-   不再分配 outgoing/incoming 双层，也不在每个动画帧重绘页面。
-2. 512 字节条带由 `xtensawin` Viper 从主缓冲复制新增列，再用 SSD1322 地址窗口增量写入。整段动画
-   合计约一屏 SPI 数据；常规4 KiB门禁失败时不在按键路径 GC，可按已释放页面的2 KiB恢复线尝试，
-   否则立即降级为安全淡入淡出，并在动画后的空闲阶段回收和重建可选条带。
-3. FunctionPanel 在构造期加载插件目录/描述，`Shift+ENT` 才显式重扫。这保留运行中换卡的能力，
-   同时不让任意插件源码回到普通转场路径。
-4. 字体从设备运行期解析 C 源改为构建期 `.xglcd`；部署以 ABI probe 决定 `.mpy` 或 `.py`，每个
-   上传资产都验证 SHA-256。
-5. Plot 以四项 LRU 复用已编译表达式，并以注册表 revision 失效；平移缩放不重复编译。
-6. `DeferredStorage` 将 JSON 写出按键关键路径，仍保留 `.tmp -> primary`、`.bak` 和损坏主文件
-   的恢复规则。
-7. 动画统一为1024满量程的整数 quadratic ease-out；转场期间输入边沿不被消费，`ESC` 可在恢复
-   阶段优先退出。侧栏用固定字节缓冲直接绘制，移除低堆时最后一个136字节字形分配点。
-
-审查还发现两项必须收口的问题：启动期插件缓存会过期，故添加显式重扫；原始 128 条帧样本会在
-50 次导航中淘汰早期慢帧，故改为固定内存直方图并完整计入所有帧。
-
-### 10.3 最终 COM5 验证
-
-2026-07-23，在已部署 COM5 上对最终 512 字节条带版本做 200 次页面往返，并另做每页 10 次
-往返的细分监控：
-
-| 指标 | 结果 |
-| --- | ---: |
-| 聚合导航首帧 p95 / 最大值 | 275.849 ms / 275.849 ms |
-| 聚合帧 p95 / 最大值（含直切） | 148.466 ms / 148.466 ms |
-| 动画帧平均 / 最大值 | 5.8 ms / 12.304 ms |
-| 直切帧平均 / 最大值 | 78.750–123.640 ms / 166.024 ms |
-| GC p95 / 最大值 | 22.913 ms / 22.913 ms |
-| 200 次往返 GC 后可用堆变化 | -256 字节 |
-| 细分监控最低空闲堆 / 内存错误 | 4,640 字节 / 0 |
-| 部署运行时资产 SHA-256 | 57 / 57 一致 |
-| 运行时诊断 | `SELFTEST PASS failures=0` |
-
-上表是引入页面级 SWAP 前的2026-07-23实机基线；其中148.466 ms来自当时 FunctionPanel 等
-内存密集页面的直切，不代表当前实现。当前版本已用默认页揭示和低内存淡入淡出替代所有正常
-导航直切，部署后应重新运行逐页监控更新本表。此前动画路径最慢帧仍低于16.7 ms，设备接受
-ABI探针并能导入 `main.mpy`；基准与诊断后执行过设备复位，恢复正常应用。
-
-当前 `device_runtime_monitor.py` 默认在所有目标页间分配10次完整往返，并持续驱动
-`settle_current()`，因此会覆盖 SWAP 编码/读写、FunctionPanel 逐行恢复、Plot 分片计算和曲线渐显。
-脚本只在首帧最大值不超过32 ms、所有动画帧不超过16 ms、每次转场至少12帧、直接切换和
-动画期间 SWAP 事务均为零、固定缓冲集合不变、GC 后堆漂移不超过512 B且无 `MemoryError` 时
-输出 `MONITOR_ACCEPTANCE PASS`；任一条件失败都会抛出异常，不能把旧基线当作当前版本通过证据。
-
-2026-07-24 的最终等几何页面空壳版本在 COM5 上完成10次混合往返。空壳保留真实页面的标题、
-边框、分隔线、坐标轴和固定控件位置，只将状态数据留空；主页预览与真实页标题区域逐字节比较
-差异为0。空闲资源恢复和固定侧栏分配修复后的设备结果如下：
-
-| 指标 | 结果 |
-| --- | ---: |
-| 输入到首个动画帧最大值 | 19.955 ms |
-| 动画帧最大值 | 12.990 ms |
-| 每次转场最少可见位置 | 13 |
-| 直接切换 / 内存错误 | 0 / 0 |
-| 动画期间 SWAP/SD 事务 | 0 |
-| GC 后可用堆变化 | -112 字节 |
-| 监控期间最低空闲堆 | 640 字节（Functions） |
-| 固定缓冲集合 | `transition_strip`，前后一致 |
-| 部署运行时资产 SHA-256 | 59 / 59 一致 |
-| 主机与 MicroPython 兼容检查 | 235 tests passed |
-
-同一部署上的真实交互验收回放了转场期间连续压入的3个导航边沿，结果为3/3且顺序不变；菜单和
-输入完整绘制的最大耗时分别为18.113 ms和17.716 ms。另运行 `benchmarks.run(cycles=10)` 后，
-GC 最大26.500 ms，最终堆变化-32字节；其801.056 ms帧桶包含动画后的 SWAP/页面重建，不是动画帧，
-动画预算以严格监控的12.990 ms为准。
-
-复现命令：
+正式发布 `ea9a9910e61290dc2cefaeb32e3443346f072c9bf2e8dddeec900a023b5c9bbf` 已确认，manifest
+SHA-256 为 `2890e021b36ae96d49c4a2665978d500d3ae24d2d3f9cf2bdd62f7ee8185b9bc`。统一入口为：
 
 ```powershell
-.\check.ps1
-.\deploy.ps1 -Port COM5 -Reset
-..\.venv\python.exe -m mpremote connect COM5 exec `
-  "import sys; sys.path.insert(0,'/sd'); import benchmarks; benchmarks.run(cycles=200)"
-..\.venv\python.exe -m mpremote connect COM5 run tools\device_runtime_monitor.py
-..\.venv\python.exe -m mpremote connect COM5 exec `
-  "import sys; sys.path.insert(0,'/sd'); import diagnostics; diagnostics.run()"
-..\.venv\python.exe -m mpremote connect COM5 reset
+.\tools\run_device_acceptance.ps1 -Port PORTNAME
 ```
 
-### 10.4 仍然成立的性能边界
+COM5 的一次完整五阶段结果如下；每阶段复位后均发送 SSD1322 硬件休眠命令。
 
-- 页面揭示帧已进入 16.7 ms 预算；后续优化应看逐页 animated/direct 拆分，不能用包含直切页的
-  聚合最高桶判断动画速度。
-- FunctionPanel 热态捕获仍高于其他页，因为它绘制多行较长的插件标签；插件源码执行已移出普通
-  导航路径。
-- 该基准是只读合成导航。真实物理按键端到端时延还包含扫描和主循环，应以串口诊断或额外仪表
-  单独测量。
+| 检查 | 真机结果 |
+| --- | --- |
+| 启动与固定缓冲 | resident ready；framebuffer 8192 B；Plot 工作区 104 B；Viper ABI 通过 |
+| 最大用户状态五轮 | 历史 20 条/768 字符、变量 16、圈数 20、插件 3；`MemoryError=0`、错误 0；稳态最低 6416 B，观测瞬态最低 592 B，漂移 -32 B |
+| runtime 五轮 | 25 个场景、125 steps；最大 30.116 ms；最低 4752 B；漂移 -288 B；buffer 峰值 8296 B 且身份不变 |
+| OLED 唤醒时捕获边沿到可见提交 | 五轮最大 18.699 ms；堆 5776 B → 5776 B；`MemoryError=0`、错误 0 |
+| 秒表逐帧分配 | 16/16 帧已提交；每帧堆增量 0；总增量 0 |
+
+运行结束必须出现
+`ACCEPTANCE_COMPLETE PORTNAME stages=5 animation=removed_heap_below_12k`。交互数字从已捕获边沿
+开始，包含页面更新和 OLED 提交；矩阵扫描与去抖仍由固定 8 ms 合同单独约束，不能把该数字描述为
+物理按键闭合到像素的完整端到端时延。
+
+### 10.3 分裂堆下的设备探针
+
+最终统一验收曾在导入交互探针时复现 1057 B 连续分配失败：导入前 `gc.mem_free()` 为 11,072 B，
+说明问题是分裂堆中的最大连续块，不是总空闲量或 SD 包体大小。交互探针保持同一 `run()` 入口和
+五轮覆盖，只把每轮操作从单体函数拆成固定 helper，并在计时前唤醒 OLED、退出时立即休眠；最终
+编译文件大小为 3483 B，但不再要求同一个 1057 B 代码块。原冷启动复现命令在修改前 3 次中失败
+1 次，最终版本连续 5 次 `MemoryError=0`，随后完整五阶段验收通过。这项修改只提高验收探针在
+分裂堆上的可加载性和测量真实性，不计作生产应用的空闲堆收益。
+
+### 10.4 动效门禁
+
+菜单 ease-out 和页面硬件亮度淡出/淡入均未保留。12 KiB 门槛没有降低，源码中没有动画状态、
+新增像素缓冲或逐帧 GC。当前发布没有待用户处理的权限门禁；若以后重新考虑动效，必须先在最大
+受支持用户状态和连续五轮操作下把最低空闲堆提高到至少 12 KiB，再重新运行同一统一验收。
 
 ## 11. 验证范围与维护准则
 
 测试按行为域覆盖：启动共享 SPI2、SD 读写拒绝/超时、存储备份与失败重试、键盘边沿和长按、
-计算优先级/赋值/插件、页面导航/动画/侧栏、绘图缓存与渐近线、函数面板预加载和重扫、亮度、
+计算优先级/赋值/插件、页面导航/行损伤/侧栏、绘图缓存与渐近线、函数面板预加载和重扫、亮度、
 字体资产、部署 ABI/SHA-256、诊断和性能直方图。`pytest.ini` 将 `source` 加入导入路径。
 
 修改时应保持以下不变量：
 
 1. 主循环是唯一事件消费者；页面返回结果而不是自行操纵 `Nav`。
-2. 转场期间不得消费普通输入边沿；触发键长按不得重复导航，恢复阶段 `ESC` 必须能优先退出。
-   转场结束帧必须是目标页 canonical 默认空布局，实时数据只能在其后的安静循环中渐进加入。
-3. 插件必须隔离加载，函数重载必须原地替换 live registry；插件执行不可落入普通转场路径。
+2. `Nav.poll_event()` 是唯一边沿出口；同步页面切换完成后才处理下一事件。触发键长按不得重复导航，
+   崩溃重置后必须等所有物理键释放再解锁输入。
+3. 插件必须隔离加载，函数重载必须原地替换 live registry；插件执行不可落入普通页面切换路径。
 4. 写设置/变量必须使用原子提交和空闲期 `DeferredStorage`；失败不得清空内存状态。
 5. OLED 与 SD 使用同一 SPI2 但不同 CS；部署前复位释放旧 SPI 状态。
 6. 性能数据必须区分内部合成导航与真实端到端输入，不得将导航首帧冒充为冷启动。

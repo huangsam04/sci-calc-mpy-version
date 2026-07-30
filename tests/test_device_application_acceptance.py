@@ -3,8 +3,6 @@ from pathlib import Path
 
 import pytest
 
-from runtime_handle import RuntimeHandle
-
 
 TOOLS = Path(__file__).parents[1] / "tools"
 sys.path.insert(0, str(TOOLS))
@@ -12,141 +10,109 @@ sys.path.insert(0, str(TOOLS))
 import device_application_acceptance
 
 
-class _Nav:
-    def __init__(self, root):
-        self.current = object()
-        self.root = root
-        self.present_count = 0
-        self.reset_count = 0
-        self.renderer = type("Renderer", (), {"display": None})()
-        self.memory = type("Memory", (), {"_buffers": {}})()
-
-    def reset(self, root):
-        self.current = root
-        self.reset_count += 1
-
-    def present_current(self):
-        self.present_count += 1
-
-
-def _runtime(adapter):
-    root = object()
-    nav = _Nav(root)
-    return RuntimeHandle(
-        nav,
-        root,
-        (),
-        mode="resident",
-        scenario_adapter=adapter,
-    )
-
-
-def test_device_matrix_without_controller_is_unavailable_and_restores_runtime():
-    original_adapter = object()
-    runtime = _runtime(original_adapter)
-    lines = []
-
-    with pytest.raises(RuntimeError, match="controller"):
-        device_application_acceptance.run(
-            runtime=runtime,
-            controller=None,
-            emit=lines.append,
-        )
-
-    assert lines == [
-        "APPLICATION_MATRIX_LIMITS single_run_action=True "
-        "transient_peak_visible=False resident_controller_required=True",
-        "APPLICATION_MATRIX_UNAVAILABLE reason=resident_controller_required",
-        "APPLICATION_MATRIX_RESULT FAIL",
-    ]
-    assert runtime.scenario_adapter is original_adapter
-    assert runtime.nav.current is runtime.root
-    assert runtime.nav.reset_count == 1
-    assert runtime.nav.present_count == 1
-
-
-class _CompleteController:
+class _Display:
     def __init__(self):
-        self.calls = 0
+        self.gs4_buf = bytearray(8192)
+        self.sleep_count = 0
 
-    def supports(self, capability):
-        return True
-
-    def snapshot(self, capability):
-        self.calls += 1
-        return None
-
-    def perform(self, runtime, capability, round_index):
-        self.calls += 1
-        return 1
-
-    def restore(self, capability, snapshot):
-        self.calls += 1
-        return True
+    def sleep(self):
+        self.sleep_count += 1
 
 
-def test_device_matrix_rejects_complete_controller_until_steps_are_bounded():
-    original_adapter = object()
-    runtime = _runtime(original_adapter)
-    controller = _CompleteController()
+class _Memory:
+    def __init__(self):
+        self._plot_curve = bytearray(104)
+
+    def get_plot_workspace(self):
+        return self._plot_curve
+
+
+class _Binding:
+    def __init__(self):
+        self.display = _Display()
+        nav = type("Nav", (), {})()
+        nav.renderer = type("Renderer", (), {"display": self.display})()
+        nav.memory = _Memory()
+        self._binding_state = (
+            tuple(object() for _ in range(10)),
+            object(), {}, object(), nav,
+        )
+
+
+@pytest.fixture
+def device_heap(monkeypatch):
+    monkeypatch.setattr(
+        device_application_acceptance.gc, "mem_free", lambda: 20000,
+        raising=False)
+
+
+def test_device_application_acceptance_runs_exactly_five_resident_rounds(
+        monkeypatch, device_heap):
+    binding = _Binding()
+    rounds = []
     lines = []
 
-    with pytest.raises(RuntimeError, match="bounded runner steps"):
-        device_application_acceptance.run(
-            runtime=runtime,
-            controller=controller,
-            emit=lines.append,
-        )
+    def exercise(state):
+        assert state is binding._binding_state
+        rounds.append(len(rounds) + 1)
+        return 18000
 
-    assert lines == [
-        "APPLICATION_MATRIX_LIMITS single_run_action=True "
-        "transient_peak_visible=False resident_controller_required=True",
-        "APPLICATION_MATRIX_UNAVAILABLE "
-        "reason=bounded_multi_step_controller_required",
-        "APPLICATION_MATRIX_RESULT FAIL",
-    ]
-    assert controller.calls == 0
-    assert runtime.scenario_adapter is original_adapter
-    assert runtime.nav.current is runtime.root
-    assert runtime.nav.reset_count == 1
-    assert runtime.nav.present_count == 1
+    monkeypatch.setattr(
+        device_application_acceptance, "_exercise_round", exercise)
+
+    report = device_application_acceptance.run(binding, emit=lines.append)
+
+    assert rounds == [1, 2, 3, 4, 5]
+    assert report == (20000, 0, 0, 0)
+    assert lines[-1] == "APPLICATION_RESULT PASS memory_errors=0 errors=0"
+    assert "framebuffer_bytes=8192" in lines[-2]
+    assert binding.display.sleep_count == 2
 
 
-@pytest.mark.parametrize(
-    "runtime",
-    (
-        type("ResidentImpostor", (), {"mode": "resident"})(),
-        RuntimeHandle(_Nav(object()), object(), (), mode="benchmark"),
-    ),
-)
-def test_device_matrix_accepts_only_a_resident_runtime_handle(runtime):
+def test_device_application_acceptance_enforces_operation_reserve(
+        monkeypatch, device_heap):
+    binding = _Binding()
+    lines = []
+    monkeypatch.setattr(
+        device_application_acceptance, "_exercise_round", lambda _state: 3500)
+    monkeypatch.setattr(
+        device_application_acceptance, "_sample", lambda: 3500)
+
+    with pytest.raises(RuntimeError, match="operation reserve"):
+        device_application_acceptance.run(binding, emit=lines.append)
+
+    assert lines[-1] == "APPLICATION_RESULT FAIL memory_errors=0 errors=1"
+    assert binding.display.sleep_count == 2
+
+
+def test_device_application_acceptance_preserves_memory_error_and_sleeps_oled(
+        monkeypatch, device_heap):
+    binding = _Binding()
+    failure = MemoryError("measured")
     lines = []
 
-    with pytest.raises(RuntimeError, match="resident RuntimeHandle"):
-        device_application_acceptance.run(
-            runtime=runtime,
-            controller=_CompleteController(),
-            emit=lines.append,
-        )
+    def fail(_state):
+        raise failure
 
-    assert lines == []
+    monkeypatch.setattr(
+        device_application_acceptance, "_exercise_round", fail)
+
+    with pytest.raises(MemoryError) as caught:
+        device_application_acceptance.run(binding, emit=lines.append)
+
+    assert caught.value is failure
+    assert lines[-1] == "APPLICATION_RESULT FAIL memory_errors=1 errors=0"
+    assert binding.display.sleep_count == 2
 
 
-def test_device_matrix_resets_root_when_initial_output_fails():
-    original_adapter = object()
-    runtime = _runtime(original_adapter)
+def test_device_application_entry_has_no_legacy_matrix_import_graph():
+    source = (TOOLS / "device_application_acceptance.py").read_text(
+        encoding="utf-8")
 
-    def fail_emit(_line):
-        raise RuntimeError("injected emit failure")
-
-    with pytest.raises(RuntimeError, match="injected emit failure"):
-        device_application_acceptance.run(
-            runtime=runtime,
-            controller=_CompleteController(),
-            emit=fail_emit,
-        )
-
-    assert runtime.scenario_adapter is original_adapter
-    assert runtime.nav.current is runtime.root
-    assert runtime.nav.reset_count == 1
-    assert runtime.nav.present_count == 1
+    assert "runtime_materialize" not in source
+    assert "runtime_scenarios" not in source
+    assert "runtime_acceptance" not in source
+    assert "runtime_application_controller" not in source
+    assert "controller=" not in source
+    assert "history.clear()" not in source
+    assert "laps.clear()" not in source

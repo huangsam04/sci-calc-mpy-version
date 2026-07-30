@@ -9,93 +9,60 @@ from version import VERSION
 TOOLS = pathlib.Path(__file__).parents[1] / "tools"
 
 
-class RuntimeHandleStub:
-    mode = "resident"
-    version = VERSION
-
-    def __init__(self, buffers=(("main", 8192, 12345),), at_root=True,
-                 root_visible=True, version=VERSION):
-        self._buffers = buffers
-        self._at_root = at_root
-        self._root_visible = root_visible
-        self.version = version
-
-    def at_root(self):
-        return self._at_root
-
-    def root_visible(self):
-        return self._root_visible
-
-    def buffer_snapshot(self):
-        return self._buffers
+class BindingStub:
+    def __init__(self, buffer_size=8192, at_root=True, root_visible=True,
+                 workspace_size=104):
+        root = object()
+        screens = (root,) + tuple(object() for _ in range(9))
+        display = type("Display", (), {"gs4_buf": bytearray(buffer_size)})()
+        renderer = type("Renderer", (), {})()
+        renderer.display = display
+        renderer._visible_screen = root if root_visible else object()
+        nav = type("Nav", (), {})()
+        nav.current = root if at_root else object()
+        nav.renderer = renderer
+        nav.memory = type(
+            "Memory", (), {
+                "_plot_curve": bytearray(workspace_size)
+                if workspace_size else None})()
+        self._binding_state = (screens, object(), {}, object(), nav)
 
 
 def test_boot_probe_reports_version_root_and_buffer_contract():
     module = runpy.run_path(str(TOOLS / "device_boot_probe.py"))
     lines = []
 
-    report = module["run"](RuntimeHandleStub(), emit=lines.append)
+    assert module["run"](BindingStub(), emit=lines.append) is None
 
-    assert report == {
-        "version": VERSION,
-        "runtime_ready": True,
-        "root_visible": True,
-        "buffers": (("main", 8192, 12345),),
-        "build_mode": "source",
-        "viper_ok": True,
-    }
-    assert lines == [
+    assert lines[:3] == [
         "BOOT_VERSION " + VERSION,
         "BOOT_RUNTIME_READY True",
         "BOOT_ROOT_VISIBLE True",
-        "BOOT_BUFFERS main:8192:12345",
-        "BOOT_MODE source",
-        "BOOT_ABI_VIPER ok",
     ]
+    assert lines[3].startswith("BOOT_BUFFERS main:8192:")
+    assert lines[4].startswith("BOOT_WORKSPACE plot:104:")
+    assert lines[5:] == ["BOOT_MODE source", "BOOT_ABI_VIPER ok"]
 
 
-def test_boot_probe_imports_the_lightweight_runtime_handle_only():
+def test_boot_probe_reads_the_published_binding_without_materializing_runtime():
     source = (TOOLS / "device_boot_probe.py").read_text(encoding="utf-8")
 
     assert "from runtime_handle import get_resident_runtime" in source
-    assert "from runtime_acceptance import" not in source
+    assert "runtime_materialize" not in source
+    assert "runtime_acceptance" not in source
+    assert "report =" not in source
 
 
 @pytest.mark.parametrize(
-    "buffers",
-    (
-        (),
-        (("main", 4096, 12345),),
-        (("other", 8192, 12345),),
-        (("main", 8192, 0),),
-        (("main", 8192, "not-an-identity"),),
-        (("main", 8192, 12345), ("main", 8192, 12345)),
-        (("main", 8192, 12345), ("plot_curve", 1404, 67890)),
-    ),
+    ("buffer_size", "workspace_size"),
+    ((4096, 104), (8192, 103)),
 )
-def test_boot_probe_rejects_an_invalid_root_framebuffer_contract(buffers):
+def test_boot_probe_rejects_an_invalid_framebuffer_contract(
+        buffer_size, workspace_size):
     module = runpy.run_path(str(TOOLS / "device_boot_probe.py"))
-    lines = []
 
     with pytest.raises(RuntimeError, match="framebuffer contract"):
-        module["run"](RuntimeHandleStub(buffers=buffers), emit=lines.append)
-
-    assert lines == []
-
-
-@pytest.mark.parametrize("runtime_version", (None, "", "0.0.0-stale"))
-def test_boot_probe_rejects_a_missing_or_mismatched_runtime_version(
-        runtime_version):
-    module = runpy.run_path(str(TOOLS / "device_boot_probe.py"))
-    lines = []
-
-    with pytest.raises(RuntimeError, match="device version"):
-        module["run"](
-            RuntimeHandleStub(version=runtime_version),
-            emit=lines.append,
-        )
-
-    assert lines == []
+        module["run"](BindingStub(buffer_size, workspace_size=workspace_size))
 
 
 @pytest.mark.parametrize(
@@ -105,15 +72,14 @@ def test_boot_probe_rejects_a_missing_or_mismatched_runtime_version(
 def test_boot_probe_rejects_a_runtime_without_a_visible_root(
         at_root, root_visible):
     module = runpy.run_path(str(TOOLS / "device_boot_probe.py"))
-    lines = []
 
     with pytest.raises(RuntimeError, match="root UI"):
         module["run"](
-            RuntimeHandleStub(
-                at_root=at_root,
-                root_visible=root_visible,
-            ),
-            emit=lines.append,
-        )
+            BindingStub(at_root=at_root, root_visible=root_visible))
 
-    assert lines == []
+
+def test_boot_probe_rejects_a_nonbinding_runtime():
+    module = runpy.run_path(str(TOOLS / "device_boot_probe.py"))
+
+    with pytest.raises(RuntimeError, match="resident runtime"):
+        module["run"](object())

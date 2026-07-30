@@ -6,12 +6,18 @@ from main import Nav, _drain_input_batch, _present_first_ui_frame
 
 class RendererStub:
     def __init__(self, display, sidebar, memory=None):
+        self.display = display
         self.presented = []
         self.last_present_us = 7
         self.invalidated = False
+        self.commit = True
+        self.error = None
 
     def present(self, screen):
+        if self.error is not None:
+            raise self.error
         self.presented.append(screen)
+        return self.commit
 
     def invalidate(self):
         self.invalidated = True
@@ -59,10 +65,55 @@ class KeyboardStub:
         return self.pressed
 
 
-def _nav(monkeypatch, memory=None):
+class BrightnessDisplay:
+    def __init__(self, brightness=80):
+        self.brightness = brightness
+        self.currents = []
+        self.restored = []
+
+    def set_transition_current(self, level):
+        self.currents.append(level)
+
+    def set_brightness(self, percent):
+        self.brightness = percent
+        self.restored.append(percent)
+
+
+class LifecycleMemory:
+    def __init__(self, events):
+        self.events = events
+
+    def release_plot_workspace(self):
+        self.events.append("workspace")
+        return True
+
+    def collect(self):
+        self.events.append("collect")
+
+
+class LifecycleScreen:
+    def __init__(self, name, events, nav_getter):
+        self.name = name
+        self.events = events
+        self.nav_getter = nav_getter
+
+    def activate(self):
+        self.events.append(
+            self.name + ".activate:locked="
+            + str(self.nav_getter()._input_locked))
+
+    def deactivate(self):
+        self.events.append(self.name + ".deactivate")
+
+    def release_memory(self):
+        self.events.append(self.name + ".release_memory")
+        return True
+
+
+def _nav(monkeypatch, memory=None, display=None):
     monkeypatch.setattr(ui.renderer, "Renderer", RendererStub)
     monkeypatch.setattr(ui.sidebar, "Sidebar", lambda font, registry: object())
-    return Nav(None, None, object(), memory=memory)
+    return Nav(display, None, object(), memory=memory)
 
 
 def test_navigation_exposes_followup_input_immediately_without_page_motion(
@@ -79,6 +130,25 @@ def test_navigation_exposes_followup_input_immediately_without_page_motion(
     assert nav.poll_event(keyboard) == (3, 0, False)
     assert nav.poll_event(keyboard) == (3, 1, False)
     assert not hasattr(nav, "is_transitioning")
+
+
+def test_navigation_commits_target_without_hardware_brightness_fade(
+        monkeypatch):
+    display = BrightnessDisplay(brightness=80)
+    nav = _nav(monkeypatch, display=display)
+    root = ScreenStub()
+    child = ScreenStub()
+    nav.boot(root)
+
+    nav.go_to(child)
+
+    assert display.currents == []
+    assert display.restored == []
+    assert nav.renderer.presented == []
+    assert not hasattr(nav, "motion_active")
+    assert not hasattr(nav, "advance_motion")
+    assert nav.present_current() is True
+    assert nav.renderer.presented == [child]
 
 
 def test_input_batch_dispatches_five_edges_before_render_boundary(monkeypatch):
@@ -111,6 +181,21 @@ def test_plot_exit_releases_workspace_and_defers_collection(monkeypatch):
     assert memory.collections == 1
 
 
+def test_navigation_releases_rebuildable_state_on_every_ordinary_leave(
+        monkeypatch):
+    nav = _nav(monkeypatch)
+    root = ScreenStub()
+    child = ScreenStub()
+    nav.boot(root)
+
+    nav.go_to(child)
+    nav.go_back()
+
+    assert root.calls == [
+        "activate", "deactivate", "release_memory", "activate"]
+    assert child.calls == ["activate", "deactivate", "release_memory"]
+
+
 def test_memory_reset_releases_managed_caches_and_locks_input(monkeypatch):
     memory = MemoryStub()
     nav = _nav(monkeypatch, memory)
@@ -132,6 +217,52 @@ def test_memory_reset_releases_managed_caches_and_locks_input(monkeypatch):
     assert nav.poll_event(keyboard) == (3, 0, False)
 
 
+def test_reset_deactivates_the_stack_then_releases_every_registered_page(
+        monkeypatch):
+    events = []
+    memory = LifecycleMemory(events)
+    nav = _nav(monkeypatch, memory)
+    get_nav = lambda: nav
+    root = LifecycleScreen("root", events, get_nav)
+    settings = LifecycleScreen("settings", events, get_nav)
+    about = LifecycleScreen("about", events, get_nav)
+    dormant = LifecycleScreen("dormant", events, get_nav)
+    nav.register_screens((root, settings, about, dormant))
+    nav.stack[:] = [root, settings, about]
+
+    nav.reset(root)
+
+    assert events == [
+        "about.deactivate",
+        "settings.deactivate",
+        "root.deactivate",
+        "root.release_memory",
+        "settings.release_memory",
+        "about.release_memory",
+        "dormant.release_memory",
+        "workspace",
+        "collect",
+        "root.activate:locked=True",
+    ]
+    assert nav.stack == [root]
+
+
+def test_memory_intensive_operation_keeps_the_active_page_but_releases_others(
+        monkeypatch):
+    memory = MemoryStub()
+    nav = _nav(monkeypatch, memory)
+    active = ScreenStub(releases=True)
+    inactive = ScreenStub(releases=True)
+    nav.register_screens((active, inactive))
+
+    nav.prepare_memory_intensive_operation(active)
+
+    assert active.calls == []
+    assert inactive.calls == ["release_memory"]
+    assert memory.plot_releases == 1
+    assert memory.collections == 1
+
+
 def test_first_ui_frame_replaces_boot_progress_before_return(monkeypatch):
     nav = _nav(monkeypatch)
     root = ScreenStub()
@@ -140,3 +271,13 @@ def test_first_ui_frame_replaces_boot_progress_before_return(monkeypatch):
 
     assert root.calls == ["activate"]
     assert nav.renderer.presented == [root]
+
+
+def test_navigation_reports_whether_renderer_committed_pixels(monkeypatch):
+    nav = _nav(monkeypatch)
+    root = ScreenStub()
+    nav.boot(root)
+
+    assert nav.present_current() is True
+    nav.renderer.commit = False
+    assert nav.present_current() is False

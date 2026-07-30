@@ -22,9 +22,15 @@ _MPY_CROSS = (
 
 def _mpy_cross_compiler(executable):
     def compile_module(source_path, output_path):
+        source_path = Path(source_path)
+        try:
+            source_name = source_path.relative_to(
+                PROJECT_ROOT / "source").as_posix()
+        except ValueError:
+            source_name = source_path.name
         result = subprocess.run(
-            (str(executable), "-march=xtensawin",
-             "-o", str(output_path), str(source_path)),
+            (str(executable), "-march=xtensawin", "-X", "no-source-lines",
+             "-s", source_name, "-o", str(output_path), str(source_path)),
             capture_output=True)
         if result.returncode != 0:
             raise RuntimeError(
@@ -38,27 +44,59 @@ def run(port, mode, compiler, device_factory, project_root=PROJECT_ROOT,
         emit=print):
     plans = release_build.prepare_release_plans(project_root, compiler)
     plan = plans.source if mode == "source" else plans.mpy
-    emit("RELEASE_PLAN " + plan.release_id)
-    emit("RELEASE_MANIFEST_SHA256 " + plan.manifest_sha256)
+    admission = release_adoption.prepare_adoption(
+        plan, baseline_hashes=baseline_hashes)
+    # RELEASE_ADMISSION_* lines are host-side admission evidence computed
+    # before any device contact. Observed device evidence is emitted only
+    # afterwards, as RELEASE_ADOPTION_RECEIPT and RELEASE_APPLIED; the two
+    # namespaces are deliberately distinct and must stay that way.
+    emit("RELEASE_ADMISSION_PLAN " + plan.release_id)
+    emit("RELEASE_ADMISSION_MANIFEST_SHA256 " + plan.manifest_sha256)
+    emit("RELEASE_ADMISSION_BOOTSTRAP_SHA256 " + admission.bootstrap_sha256)
+    emit("RELEASE_ADMISSION_BASELINE_SHA256 " + admission.baseline_sha256)
 
-    phase = "adoption"
+    recovery_contact_allowed = False
     try:
         device = device_factory()
-        device.connect()
+        # A factory failure has not yielded a transport that this deployment
+        # may recover. In particular, do not turn a failed construction into
+        # an unsolicited second attempt to contact the device.
+        recovery_contact_allowed = True
+        connected = False
+        primary_error = None
         try:
-            changed = release_adoption.adopt_device(
-                device, plan, baseline_hashes=baseline_hashes)
-            emit("RELEASE_ADOPTION "
-                 + ("applied" if changed else "already-current"))
+            device.connect()
+            connected = True
+            receipt = release_adoption.adopt_prepared_device(
+                device, admission)
+            emit("RELEASE_ADOPTION_RECEIPT " + receipt.bootstrap_sha256
+                 + " " + receipt.baseline_sha256
+                 + (" applied" if receipt.changed else " already-current"))
+        except BaseException as error:
+            primary_error = error
+            raise
         finally:
+            cleanup_error = None
             try:
-                device.reset()
-            except Exception:
-                pass
-            time.sleep(boot_wait_s)
-            device.close()
+                if connected:
+                    try:
+                        device.reset()
+                    except BaseException as error:
+                        cleanup_error = error
+                    try:
+                        time.sleep(boot_wait_s)
+                    except BaseException as error:
+                        if cleanup_error is None:
+                            cleanup_error = error
+            finally:
+                try:
+                    device.close()
+                except BaseException as error:
+                    if cleanup_error is None:
+                        cleanup_error = error
+            if primary_error is None and cleanup_error is not None:
+                raise cleanup_error
 
-        phase = "release"
         if adapter_factory is None:
             adapter = release_device_mpremote.MpremoteReleaseAdapter(
                 device_factory)
@@ -68,15 +106,20 @@ def run(port, mode, compiler, device_factory, project_root=PROJECT_ROOT,
         emit("RELEASE_APPLIED " + release_id)
         return release_id
     except BaseException:
-        try:
-            recovery_device = device_factory()
-            recovery_device.connect()
+        # The recovery reset must never be the first device contact: a
+        # host-side failure, including device construction, leaves the
+        # hardware untouched. Recovery itself is best effort and must not
+        # hide the error that triggered it.
+        if recovery_contact_allowed:
             try:
-                recovery_device.reset()
-            finally:
-                recovery_device.close()
-        except Exception:
-            pass
+                recovery_device = device_factory()
+                try:
+                    recovery_device.connect()
+                    recovery_device.reset()
+                finally:
+                    recovery_device.close()
+            except BaseException:
+                pass
         raise
 
 

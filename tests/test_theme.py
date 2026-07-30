@@ -1,4 +1,5 @@
-from ui.theme import draw_footer, draw_footer_fast
+from ui.theme import (
+    draw_footer, draw_footer_cached, draw_footer_fast, draw_header_fast)
 
 
 class DisplaySpy:
@@ -46,5 +47,22 @@ def test_generic_footer_uses_allocation_free_direct_text():
     assert display.direct == [
         (3, 56, "x:-10~10 y:-5~5", font, 9),
         (160, 56, "8/2 zoom", font, 15),
+    ]
+    assert display.text == []
+
+
+def test_cached_footer_and_header_use_their_callers_prebuilt_bytes():
+    display = DisplaySpy()
+    font = object()
+
+    draw_header_fast(display, "Title", b"Title", font)
+    draw_footer_cached(
+        display, "cached hint", b"cached hint", font,
+        "cached right", b"cached right", 145)
+
+    assert display.direct == [
+        (3, 1, b"Title", font, 15),
+        (3, 56, b"cached hint", font, 9),
+        (145, 56, b"cached right", font, 15),
     ]
     assert display.text == []

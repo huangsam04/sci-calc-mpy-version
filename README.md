@@ -8,28 +8,33 @@ SCI-CALC 的 MicroPython 固件，目标硬件为 ESP32-WROOM-32E、SSD1322 256�
 
 ## 目录与启动方式
 
-设备采用“内部启动器 + SD 应用”布局：
+设备采用“内部启动监督器 + SD A/B 应用槽”布局：
 
 ```text
 内部 Flash
 ├── boot.py             # 挂载 SD，随后立即退出
 ├── sdcard.py           # 官方 Python SPI SD 驱动
-├── main.py             # execfile('/sd/launch.py')，兼容旧版 main.py
+├── main.py             # 读取选择记录并启动活动槽
+├── bootenv.py / bootsel.py / bootlog.py / bootsupervisor.py
 ├── recovery.py         # SD/应用损坏时的恢复界面
 └── display/            # 恢复界面所需的最小显示驱动
 
 SD 卡 /sd
-├── launch.py           # 源码启动包装器，导入 main.mpy 或 main.py
-├── main.mpy            # 经 ABI 探针验证后的核心应用
 ├── settings.json
 ├── vars.json
-├── anim/ calc/ display/ input/ screens/ ui/ utils/
-├── fonts/*.xglcd       # 主机从 X-GLCD C 源生成的紧凑字形资产
-└── functions/          # 可开关的 Python 插件
+├── .slots/A/ 或 B/
+│   ├── release.manifest / .sci-calc-owner
+│   ├── launch.py / main.mpy
+│   ├── calc/ display/ input/ screens/ ui/ utils/
+│   ├── fonts/*.xglcd   # 随发布保留；当前常驻 UI 使用内置 8x8 字体
+│   └── functions/      # 可开关的发布内插件
+└── .staging/           # 发布中使用，成功后原子改名为候选槽
 ```
 
 MicroPython 按 `_boot.py → /boot.py → /main.py` 启动。无 SD 卡、挂载失败或
-`/sd/launch.py` 无法执行时，内部恢复界面会显示错误；串口同时保留完整错误信息。
+选择记录没有可启动槽、活动槽清单缺失或槽内 `launch.py` 执行失败时，内部恢复界面会显示错误；
+串口同时保留完整错误信息。启动监督器只把选中的槽根目录放在应用 `sys.path` 首位，启动后释放
+自身模块，避免与常驻页面争用堆。
 
 ## 刷入解释器
 
@@ -41,29 +46,24 @@ MicroPython 按 `_boot.py → /boot.py → /main.py` 启动。无 SD 卡、挂�
 ..\.venv\python.exe -m mpremote devs
 ```
 
-## 一键部署应用
+## 正式部署应用
 
 在 `mp_version` 目录执行：
 
 ```powershell
-.\deploy.ps1 -Port COM4 -Reset
+..\.venv\python.exe .\tools\release_deploy.py --port PORTNAME --mode mpy
 ```
 
-脚本会：
+该入口会：
 
-1. 安装内部启动和恢复文件；
-2. 执行一次必要的硬复位，释放旧应用占用的 SPI 状态；
-3. 等待新 `/boot.py` 挂载 SD 卡并创建目录；
-4. 生成紧凑 `.xglcd` 字体资产；
-5. 上传并导入带 `xtensawin` 原生代码的临时 `.mpy` 探针；只有设备接受该探针时才上传核心 `.mpy`，否则安全回退为 `.py`；
-6. 上传完整应用到 `/sd`，其中 `functions/*.py` 保持源码以支持动态插件加载；
-7. 逐个比较所有内部和 SD 运行资产（包括字体）的主机/设备 SHA-256；
-8. 仅在传入 `-Reset` 时执行部署完成后的再次复位。
+1. 生成字体和确定性的 source/MPY 发布清单，并在接触设备前验证全部摘要；
+2. 首次采用时安装固定的内部启动、选择、日志与恢复模块；后续发布先核对这组锚点；
+3. 将完整候选版本写入非活动 A/B 槽，逐项核对 SHA-256 后才设置一次性试启动；
+4. 复位并验证实际启动的 release/manifest 身份，成功后确认候选槽并清理已退役槽；
+5. 始终把 `functions/*.py` 保持为源码，并仅在 `/sd/settings.json`、`/sd/vars.json` 不存在时写入种子。
 
-脚本可重复执行。中途硬复位用于切换启动器，不能省略；它可避免旧固件的 SPI
-对象导致 `ESP_ERR_INVALID_STATE`。部署不会自动擦除 SD 上不属于当前源码的文件；
-`settings.json` 和 `vars.json` 仅在设备上不存在时初始化，首次写入也会参与 SHA-256
-校验；重复部署会保留已有的用户设置与变量，因此不会覆盖或重新校验这两份可变状态。
+当前设备只发布 `mpy`。发布入口可在中断后重入，不会把不完整候选设为活动槽，也不会覆盖用户
+设置、变量或未被清单拥有的 SD 内容。
 
 SD 卡和 OLED 共用 GPIO18/23 上的 SPI2，通过 CS4/CS5 分隔事务。内部
 `sdcard.py` 使用官方 Python block-device 驱动；不要替换成独占 SPI host 的
@@ -165,8 +165,7 @@ max(3, 5, 4)          -> 5
 
 ## 插件接口
 
-插件位于 `/sd/functions/*.py`，实现 `register(registry)`。旧版 `flist()` 六元组
-接口已移除。
+插件位于活动槽的 `functions/*.py`，实现 `register(registry)`。
 
 ```python
 WELCOME = "Statistics loaded"
@@ -201,7 +200,7 @@ def register(registry):
 
 ### Add-in 依赖与导出
 
-Add-in 可在模块顶层声明 `DEPENDENCIES`（旧名 `REQUIRES` 也兼容）。装载器会递归、按顺序
+Add-in 可在模块顶层声明 `DEPENDENCIES`。装载器会递归、按顺序
 先装载依赖；缺失、循环或依赖失败会让依赖方保持未注册。依赖不必预先在设置中勾选，装载器
 会自动补齐，函数面板随后将其勾选并显示 `Auto on: 名称`。
 
@@ -235,7 +234,7 @@ def register(registry):
 
 设置文件使用 `plugin:文件名` 标识插件，例如 `plugin:solve`，因此 `basic.py` 与
 内置 `basic` 函数组不会发生名称冲突。插件默认关闭，可在函数面板中启用。
-如在设备运行时替换了 SD 卡中的插件，在函数面板按 `Sh+ENT` 可显式重新扫描；普通进入
+如在开发调试时替换了活动槽中的插件，在函数面板按 `Sh+ENT` 可显式重新扫描；普通进入
 面板不会执行插件源码，以免影响页面转场响应。
 
 ### 自带函数组
@@ -253,7 +252,7 @@ def register(registry):
 
 ### 随附 Add-on
 
-函数面板中以 `Add-on:` 开头的项目来自 `/sd/functions`，默认关闭，可按 `ENT` 启用：
+函数面板中以 `Add-on:` 开头的项目来自活动槽的 `functions` 目录，默认关闭，可按 `ENT` 启用：
 
 - `Add-on: basic`（`basic.py`）：增加左结合的 `%` 取模运算符，例如 `17%5 -> 2`；
   对零取模会显示错误。
@@ -279,13 +278,15 @@ compile_expression
   -> FunctionRegistry callback
 ```
 
-页面转场由主循环以最高约 60 FPS 驱动，不再阻塞键盘扫描。`Renderer` 把旧页留在
-SSD1322 自带显示 RAM，把新页画进现有主帧缓冲，每帧只上传刚揭示的 4 个控制器列以内；
-固定条带仅 512 字节，常规保留线为 4 KiB，状态栏不参与页面揭示。转场和控件运动统一使用
-整数定点 quadratic ease-out，结束时主帧缓冲仍是目标页的默认空布局；随后才从 SWAP 渐进恢复
-实时内容。静止页面只在输入、状态栏更新或保活周期时刷新；普通页面上限约 15 FPS。转场期间
-键盘仍持续扫描，但 `Nav` 不消费方向键队列；转场结束后会按原顺序回放连续点按。只有发起转场
-的物理键长按被阻止重复触发，`ESC` 在页面恢复期间仍可越过队列立即返回。
+显示路径只定义 SSD1322 的一个 8192 B GS4 framebuffer。`FrameScheduler` 统一安排输入帧、
+秒表帧和安静期工作；`DamageMap` 复用两个固定行区间，`Renderer` 只重画并上传明确受损的完整行，
+未知区间安全退化为一次全帧提交，不创建逐帧 `memoryview` 或像素缓冲。按键和逐帧路径不调用
+`gc.collect()` 或 `gc.mem_free()`。
+
+当前代码没有 `MotionMenu`，普通 `Menu` 会把高亮直接吸附到目标行；`Nav` 也没有 SSD1322
+master-current 页面淡变状态。COM5 已稳定启动 resident runtime，但多次冷启动后的干净堆样本为
+10,752–11,200 B，仍低于启用动效所需的 12 KiB。因此两项动效均已删除；普通界面继续使用吸附式
+菜单和同步页面切换，不增加像素缓冲，也不恢复惰性页面、SWAP 或双 framebuffer。
 
 设置与变量采用 `文件.tmp → 文件` 提交，并保留上一份 `.bak`。主文件损坏时优先
 读取备份；按键处理只更新内存并把写入排入空闲主循环，写入失败不会清除当前内存状态，
@@ -315,9 +316,9 @@ UI 会显示保存失败并每两秒重试。
 输出机器可读的 `TRACE` 和最终 `SELFTEST PASS/FAIL`：
 
 ```powershell
-..\.venv\python.exe -m mpremote connect COM5 exec `
-  "import sys; sys.path.insert(0,'/sd'); import diagnostics; diagnostics.run()"
-..\.venv\python.exe -m mpremote connect COM5 reset
+..\.venv\python.exe -m mpremote connect PORTNAME exec `
+  "import diagnostics; diagnostics.run()"
+..\.venv\python.exe -m mpremote connect PORTNAME reset
 ```
 
 自定义命令支持 `STATUS`、`PANEL`、`KEY 行 列 Shift`、`BACK` 和 `EVAL 表达式`。
@@ -337,30 +338,40 @@ UI 会显示保存失败并每两秒重试。
 [技术说明](TECHNICAL_GUIDE.md)。
 
 ```powershell
-..\.venv\python.exe -m mpremote connect COM5 exec `
-  "import sys; sys.path.insert(0,'/sd'); import benchmarks; benchmarks.run(cycles=50)"
-..\.venv\python.exe -m mpremote connect COM5 reset
+..\.venv\python.exe -m mpremote connect PORTNAME exec `
+  "import benchmarks; benchmarks.run(cycles=5)"
+..\.venv\python.exe -m mpremote connect PORTNAME reset
 ```
 
-2026-07-24 在 COM5 上完成严格的 10 次混合页面往返：0 次 `MemoryError`、0 次直接切换、
-0 次动画期间 SD/SWAP 事务；输入到首个动画帧最大 19.955 ms，动画帧最大 12.990 ms，
-每次转场至少 13 帧，最终 GC 后堆漂移 -112 字节，前后固定缓冲集合均为
-`transition_strip`。Functions 的最低空闲堆为 640 字节仍完整恢复。低内存按键路径不会同步
-GC，而是立即使用 OLED 电流淡出/淡入；页面稳定后的空闲阶段才回收临时对象并重新预留条带。
-主机与 MicroPython 兼容检查为 235 tests passed，部署校验 59/59 个运行资产。
+当前主机基线为 `1159 passed`，并通过 CPython 语法检查和 MicroPython 1.29
+`mpy-cross -march=xtensawin` 全源编译。最终五轮主机驻留导航为 0 次 `MemoryError`、8192 B
+framebuffer 峰值、16,000 us 最大阻塞步和 5,625 B 稳态 traced peak；这些数据用于比较逻辑
+工作量，不替代真机堆或 SPI 时延。
 
-页面快照位于 `/sd/.sci-calc/swap`，仅在本次开机有效。记录按页面独立校验；无卡或单页记录
-损坏时，动画仍会完成，随后提示 SWAP 错误并只重置当前页面。
+真机验收只使用现有统一入口：
+
+```powershell
+.\tools\run_device_acceptance.ps1 -Port PORTNAME
+```
+
+该脚本是唯一正式验收入口，依次执行 resident 启动缓冲探针、最大用户状态应用矩阵、五轮运行时
+目标导航、五轮捕获边沿到屏幕提交的交互探针，以及 16 帧秒表局部刷新分配探针；每阶段后都复位
+设备并让 OLED 休眠。COM5 的最终五阶段调用报告：单一 framebuffer 为 8192 B、固定 Plot 工作区
+为 104 B；20 条历史（共 768 字符）、16 个变量、20 个秒表圈和 3 个插件连续五轮无错误，稳态
+最低空闲堆 6416 B、观测到的瞬态最低值 592 B；125 个 runtime step 最大 30.116 ms、最低空闲堆
+4752 B；OLED 唤醒时捕获边沿到可见提交最大 18.699 ms、堆漂移 0；16 个秒表帧的堆增量全部为 0。
 
 ## 实机回归清单
 
-1. 有卡、无卡、损坏 `/sd/main.py` 各启动一次，确认恢复界面和串口错误。
+1. 有卡、无卡、损坏活动槽 `main.mpy` 各启动一次，确认恢复界面和串口错误。
 2. 计算、赋值、重启，确认变量持久化；开关插件后再次进入函数选择器。
 3. 快速输入、长按 DEL/ESC、Shift+RPN、Shift+Tab，确认没有重复事件。
-4. 运行 `tools/device_runtime_monitor.py` 完成10次页面往返；必须看到
-   `MONITOR_ACCEPTANCE PASS`，且包含 Plot、FunctionPanel、SWAP 恢复与曲线渐显。
+4. 运行 `tools/run_device_acceptance.ps1` 完成统一验收；必须看到
+   `ACCEPTANCE_COMPLETE PORTNAME stages=5 animation=removed_heap_below_12k`。
 5. 运行秒表 30 分钟，并检查绘图、缩放、求解和错误弹窗。
 
-诊断模式每五秒输出平均渲染耗时、present 耗时、空闲堆和活动动画数量。执行
-严格监控要求首个动画帧不超过32 ms、动画帧不超过16 ms、每次转场至少12个可见位置、
-动画期间零 SWAP 事务、无直接切换，且最终 `gc.collect()` 后堆漂移不超过512 B。
+诊断模式每五秒输出平均渲染耗时、present 耗时和空闲堆。统一验收目标仍是输入到可见像素小于
+20 ms、单个 step 不超过 32 ms、framebuffer 始终只有一个 8192 B 对象、逐帧堆增量为 0、五轮内
+无 `MemoryError` 且堆不持续下降。无动效运行按最大受支持用户状态验证，稳态门槛为 4 KiB；12 KiB
+仍是启用动效的独立硬门槛，未达到时必须删除动效。交互探针测量的是已捕获边沿到页面更新及提交，
+并报告扫描/去抖合同值；它不能单独证明物理按键扫描到像素的完整端到端时延。

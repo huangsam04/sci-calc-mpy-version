@@ -11,6 +11,7 @@ from runtime_acceptance import (
     get_resident_runtime,
     set_resident_runtime,
 )
+from runtime_handle import ApplicationBinding
 
 
 class FakeNav:
@@ -39,6 +40,23 @@ class FakeNav:
         return 0
 
 
+def test_navigation_scenario_selects_only_the_five_canonical_pages():
+    root = object()
+    pages = tuple(type(
+        "Page" + str(index), (), {"transition_title": "page" + str(index)})()
+                  for index in range(1, 10))
+    screens = (root,) + pages
+    binding = ApplicationBinding(
+        screens, object(), object(), object())
+    runtime = RuntimeHandle(
+        FakeNav(root), root, screens, mode="resident",
+        application_binding=binding)
+
+    scenario = benchmarks.navigation_scenario(runtime, 1)
+
+    assert tuple(step[2] for step in scenario[2]) == (1, 2, 3, 4, 5)
+
+
 def test_performance_metrics_reports_phase_latency_frame_and_gc_summaries():
     metrics = PerformanceMetrics(sample_limit=8)
     metrics.start_boot(100)
@@ -61,7 +79,42 @@ def test_performance_metrics_reports_phase_latency_frame_and_gc_summaries():
 
 
 def test_default_diagnostic_window_fits_the_device_memory_budget():
-    assert PerformanceMetrics().sample_limit == 16
+    metrics = PerformanceMetrics()
+
+    assert metrics.sample_limit == 16
+    assert metrics._frame_bucket_us == 1_000
+    assert isinstance(metrics._frame_histogram, bytearray)
+    assert len(metrics._frame_histogram) == 32
+    assert (len(metrics._frame_histogram) * metrics._frame_bucket_us
+            >= 25_000)
+
+
+def test_boot_phase_storage_can_be_released_before_resident_construction():
+    metrics = PerformanceMetrics()
+    metrics.start_boot(100)
+    metrics.mark_boot("display", 120)
+
+    metrics.release_boot_samples()
+    metrics.mark_boot("ignored", 140)
+
+    assert metrics._boot_phases is None
+    assert metrics.snapshot()["boot_phases_ms"] == []
+
+    metrics.start_boot(200)
+    metrics.mark_boot("ready", 230)
+    assert metrics.snapshot()["boot_phases_ms"] == [("ready", 30)]
+
+
+def test_frame_histogram_reuses_compact_storage_across_long_runs():
+    metrics = PerformanceMetrics()
+    histogram = metrics._frame_histogram
+
+    for _ in range(300):
+        metrics.record_frame(12_000)
+    metrics.reset_run()
+
+    assert metrics._frame_histogram is histogram
+    assert len(histogram) == 32
 
 
 def test_performance_metrics_records_data_without_owning_runtime_identity():
