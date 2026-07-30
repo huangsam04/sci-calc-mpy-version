@@ -535,10 +535,24 @@ class CalculatorScreen:
             display, footer[0], footer[1], self.input_box.font,
             footer[2], footer[3], footer[4])
 
+    def _draw_footer_right(self, display):
+        self._ensure_footer_cache()
+        footer = self._state[2][1]
+        display.fill_rectangle(130, 54, 80, 10, 0)
+        display.draw_hline(130, 54, 80, 8)
+        if not footer[2]:
+            return
+        font = self.input_box.font
+        direct = get_direct_text_draw(display) if font else None
+        if direct is not None and footer[3]:
+            direct(display, footer[4], 56, footer[3], font, gs=15)
+        else:
+            draw_text(display, footer[4], 56, footer[2], font, 15, raw=True)
+
     def draw_present_rows(self, display):
         """Redraw only the rows declared by ``collect_present_damage``."""
         self._draw_editor(display)
-        self._draw_footer(display)
+        self._draw_footer_right(display)
 
     def draw(self, display):
         if self.mode == 2:

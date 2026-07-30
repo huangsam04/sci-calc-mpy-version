@@ -345,7 +345,15 @@ def test_compiled_stage_removes_its_artifact_before_running(tmp_path):
         if "exec" in command and "_sci_accept_stage.run()" in command[-1]
     ]
     assert len(executions) == 5
-    for code in executions:
+    for index, code in enumerate(executions):
+        assert "sys.path.append('/sd')" in code
+        assert code.index(
+            "os.remove('/sd/_sci_accept_stage.mpy')") < code.index(
+                "_sci_accept_stage.run()")
+        if index in (0, 3):
+            assert "import calc.plugin_fixture" not in code
+            assert "screens.about_scenario" not in code
+            continue
         assert "slot=sys.path[1]" in code
         assert "calc_path=calc.__path__" in code
         assert "screens_path=screens.__path__" in code
@@ -353,15 +361,12 @@ def test_compiled_stage_removes_its_artifact_before_running(tmp_path):
         assert "calc.__path__=slot+'/calc'" in code
         assert "screens.__path__=slot+'/screens'" in code
         assert "functions.__path__=slot+'/functions'" in code
-        assert "sys.path.append('/sd')" in code
         assert "import calc.plugin_fixture,calc.scenario_variables" in code
         assert "import screens.about_scenario" in code
         assert "calc.__path__=calc_path" in code
         assert "screens.__path__=screens_path" in code
         assert "functions.__path__=functions_path" in code
         assert code.index("calc.__path__=calc_path") < code.index(
-            "_sci_accept_stage.run()")
-        assert code.index("os.remove('/sd/_sci_accept_stage.mpy')") < code.index(
             "_sci_accept_stage.run()")
 
 

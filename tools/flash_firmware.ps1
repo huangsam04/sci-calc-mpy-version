@@ -2,7 +2,7 @@
 param(
     [Parameter(Mandatory = $true)]
     [string]$Port,
-    [ValidateSet("base", "frozen")]
+    [ValidateSet("frozen")]
     [string]$Profile = "frozen",
     [ValidateSet(460800, 921600)]
     [int]$Baud = 921600,

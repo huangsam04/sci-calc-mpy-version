@@ -99,7 +99,7 @@ def test_firmware_builder_only_builds_and_checks_the_factory_application():
 def test_firmware_flasher_writes_only_the_factory_application_partition():
     source = (ROOT / "tools" / "flash_firmware.ps1").read_text()
     assert '[string]$Port' in source
-    assert 'ValidateSet("base", "frozen")' in source
+    assert 'ValidateSet("frozen")' in source
     assert "micropython.bin" in source
     assert '"0x10000"' in source
     assert "write_flash" in source

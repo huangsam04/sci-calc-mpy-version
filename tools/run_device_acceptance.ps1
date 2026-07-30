@@ -17,7 +17,7 @@ $WorkRoot = Join-Path $ProjectRoot ".work"
 $MpyCross = Join-Path `
     $WorkspaceRoot "micropython\mpy-cross\build\mpy-cross.exe"
 $RemoteArtifact = "/sd/_sci_accept_stage.mpy"
-$RunArtifact = (
+$ScenarioRunArtifact = (
     "import gc,os,sys;gc.collect();" +
     "import calc,screens,functions;slot=sys.path[1];" +
     "assert slot.startswith('/sd/.slots/');" +
@@ -37,6 +37,13 @@ $RunArtifact = (
     "calc.__path__=calc_path;" +
     "screens.__path__=screens_path;" +
     "functions.__path__=functions_path;" +
+    "sys.path.append('/sd');" +
+    "import _sci_accept_stage;" +
+    "os.remove('/sd/_sci_accept_stage.mpy');" +
+    "_sci_accept_stage.run()"
+)
+$DirectRunArtifact = (
+    "import gc,os,sys;gc.collect();" +
     "sys.path.append('/sd');" +
     "import _sci_accept_stage;" +
     "os.remove('/sd/_sci_accept_stage.mpy');" +
@@ -207,7 +214,15 @@ function Invoke-AcceptanceStage {
                 -FailureMessage "Unable to upload acceptance stage: $($Stage.Name)"
             Invoke-MpremoteCommand `
                 -Arguments @(
-                    "connect", $Port, "resume", "exec", $RunArtifact
+                    "connect", $Port, "resume", "exec", $(
+                        if ($Stage.Name -eq "boot_probe" -or
+                                $Stage.Name -eq "interaction_screen_tracer") {
+                            $DirectRunArtifact
+                        }
+                        else {
+                            $ScenarioRunArtifact
+                        }
+                    )
                 ) `
                 -FailureMessage "Acceptance stage failed: $($Stage.Name)"
         }

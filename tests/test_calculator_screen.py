@@ -37,15 +37,17 @@ class CalculatorDisplay:
     def __init__(self):
         self.direct = []
         self.text = []
+        self.fills = []
+        self.hlines = []
 
     def draw_rectangle(self, *args):
         pass
 
     def fill_rectangle(self, *args):
-        pass
+        self.fills.append(args)
 
     def draw_hline(self, *args):
-        pass
+        self.hlines.append(args)
 
     def draw_vline(self, *args):
         pass
@@ -398,6 +400,30 @@ def test_calculator_partial_editor_path_uses_scalar_layout_state():
 
     assert not hasattr(CalculatorScreen, "_panel_layout")
     screen.draw_present_rows(display)
+
+
+def test_calculator_partial_editor_redraw_keeps_static_footer_hint():
+    font = FontStub()
+    screen = CalculatorScreen(font, registry=build_registry(), variables={})
+    display = CalculatorDisplay()
+    screen.activate()
+    screen.draw(display)
+    screen.mark_presented()
+    display.direct.clear()
+    display.text.clear()
+    display.fills.clear()
+    display.hlines.clear()
+
+    screen.input_box.insert_str("1")
+    screen.draw_present_rows(display)
+
+    footer_draws = [item for item in display.direct if item[1] == 56]
+    assert all(
+        item[2] != calculator_module._INPUT_FOOTER_HINT.encode()
+        for item in footer_draws)
+    assert any(item[2] == b"1/96" for item in footer_draws)
+    assert (130, 54, 80, 10, 0) in display.fills
+    assert (130, 54, 80, 8) in display.hlines
 
 
 def test_calculator_history_cache_formats_only_the_visible_window(monkeypatch):
