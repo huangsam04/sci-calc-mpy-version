@@ -160,9 +160,8 @@ def test_published_resident_binding_is_the_only_state_for_bounded_matrix():
 def test_production_bounded_path_has_no_legacy_navigation_or_title_lookup():
     source = (SOURCE / "runtime_scenarios.py").read_text(encoding="utf-8")
     descriptor_start = source.index("class _ApplicationScenarioSession:")
-    legacy_start = source.index("class _LegacyApplicationBoundedSession:")
     adapter_start = source.index("class ResidentApplicationScenarioAdapter:")
-    descriptor = source[descriptor_start:legacy_start]
+    descriptor = source[descriptor_start:adapter_start]
     adapter = source[adapter_start:]
 
     for legacy_name in (

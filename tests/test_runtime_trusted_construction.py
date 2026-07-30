@@ -6,7 +6,6 @@ from runtime_materialize import RuntimeHandle
 from runtime_scenarios import ResidentApplicationScenarioAdapter
 from runtime_trusted_construction import (
     TrustedResidentScenarioConstruction,
-    build_compatible_resident_application_scenario_adapter,
     prepare_trusted_resident_scenario_adapter,
     require_trusted_resident_application_adapter)
 
@@ -96,26 +95,6 @@ def test_trusted_verifier_rejects_a_plain_adapter_on_the_same_binding():
 
     with pytest.raises(RuntimeError, match="Trusted resident adapter"):
         require_trusted_resident_application_adapter(binding, plain_adapter)
-
-
-def test_compatible_builder_preserves_host_failure_timing_but_not_verification():
-    foreign_binding = object()
-    adapter = build_compatible_resident_application_scenario_adapter(
-        foreign_binding)
-
-    assert adapter.require_resident_application_binding(
-        foreign_binding) is not None
-    with pytest.raises(TypeError, match="ApplicationBinding"):
-        require_trusted_resident_application_adapter(
-            foreign_binding, adapter)
-
-
-def test_compatible_adapter_cannot_bypass_the_construction_seal():
-    binding, _nav, _root = _binding()
-    adapter = build_compatible_resident_application_scenario_adapter(binding)
-
-    with pytest.raises(RuntimeError, match="not sealed"):
-        require_trusted_resident_application_adapter(binding, adapter)
 
 
 def test_prepublication_proof_rejects_a_replaced_controller():

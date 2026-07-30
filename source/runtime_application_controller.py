@@ -636,11 +636,3 @@ class _ResidentApplicationBoundedSession:
         self._capabilities = None
         self._closed = True
         return True
-
-
-def build_resident_application_scenario_adapter(binding):
-    """Build the compatibility adapter used by existing host fixtures."""
-    from runtime_trusted_construction import (
-        build_compatible_resident_application_scenario_adapter)
-
-    return build_compatible_resident_application_scenario_adapter(binding)

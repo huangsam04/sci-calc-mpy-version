@@ -125,11 +125,6 @@ def build_trusted_resident_application_scenario_adapter(binding):
     return _build_marked_resident_application_scenario_adapter(binding)
 
 
-def build_compatible_resident_application_scenario_adapter(binding):
-    """Build the marked real adapter without moving legacy host failure timing."""
-    return _build_marked_resident_application_scenario_adapter(binding)
-
-
 def _build_marked_resident_application_scenario_adapter(binding):
     """Construct the one real controller without allocating a base adapter first."""
 

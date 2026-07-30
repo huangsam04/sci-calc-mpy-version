@@ -6,7 +6,11 @@
 
 - [x] 变更前 `check.ps1` 基线通过：`1177 passed`，CPython 与 MicroPython 1.29 编译通过。
 - [ ] frozen manifest、固件构建、部署清单和按需页面生命周期有聚焦回归测试；动态 Add-ons 与用户数据路径保持可写。
-- [ ] 页面生命周期 COM5 定向验证及本地检查点后，按已证实调用关系完成一次有边界剪枝：`tools/release_deploy.py` 快速增量模式成为唯一正式部署入口，删除未发布版本 compatibility 层并把验收 fixture/scenario 移出普通 release，收窄 `Nav` 产品接口，清理 `.work` 过期产物并更新 `.work/LOCATIONS.md`；用户数据保护、OOM 恢复、一个 8192 B framebuffer、12 KiB 门槛和时延合同不变。
+- [x] 唯一正式部署入口收敛为 `tools/release_deploy.py` 快速增量模式；删除旧 `deploy.ps1`、ABI 探针及专属测试，聚焦回归 `28 passed`。
+- [x] 删除未发布 runtime aggregate/compatibility session、builder、wrapper 和专属测试；当前 bounded/OOM/close 恢复接口回归 `56 passed`。
+- [ ] 删除 1.3.0、legacy slot 和旧 adoption 专属路径及夹具，保留首次 provision、用户数据与掉电恢复。
+- [ ] 普通 release 排除 acceptance fixture/scenario；验收载荷由现有 `tools/run_device_acceptance.ps1` 临时上传和删除。
+- [ ] 收窄 `Nav` 普通接口并清理 `.work` 过期产物，更新 `.work/LOCATIONS.md`；内存、时延、OOM 与数据保护合同不变。
 - [ ] 最终 `check.ps1` 通过 CPython、全部 pytest 和仓库 MicroPython 1.29 `mpy-cross` 检查。
 - [ ] 自定义固件可重复增量构建；记录干净/增量构建与刷写耗时，不把慢速全量构建塞进普通应用增量部署。
 

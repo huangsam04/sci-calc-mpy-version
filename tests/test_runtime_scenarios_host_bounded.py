@@ -49,7 +49,7 @@ def test_host_bounded_session_runs_five_ordered_rounds_with_fixed_primitives():
     assert session.close() is True
 
 
-def test_host_bounded_session_proves_legacy_operations_per_completion():
+def test_host_bounded_session_proves_expected_operations_per_completion():
     controller = _InMemoryScenarioController()
     session = controller.open_bounded_session(None, APPLICATION_CAPABILITIES)
 
@@ -205,31 +205,3 @@ def test_host_bounded_plugin_stage_rejects_missing_dependency_before_commit():
     assert controller.plugin_live == ("committed",)
     assert controller.plugin_revision == 41
     assert session.close() is True
-
-
-def test_host_legacy_aggregate_perform_and_restore_remain_available():
-    class LegacyRestoreController(_InMemoryScenarioController):
-        def __init__(self):
-            _InMemoryScenarioController.__init__(self)
-            self.snapshot_calls = 0
-
-        def snapshot(self, capability):
-            self.snapshot_calls += 1
-            return _InMemoryScenarioController.snapshot(self, capability)
-
-    controller = LegacyRestoreController()
-    snapshot = controller.snapshot("calculator_history")
-
-    operations = controller.perform(None, "calculator_history", 0)
-    controller.variables["temporary"] = 99
-    controller.durable_variables.clear()
-    controller.page_stack.append("calculator")
-
-    assert operations == 60
-    assert controller.restore("calculator_history", snapshot)
-    assert controller.snapshot_calls == 1
-    assert controller.history == [("seed", "0")]
-    assert controller.history_cursor == 0
-    assert controller.variables == {"seed": 7}
-    assert controller.durable_variables == {"seed": 7}
-    assert controller.page_stack == ["root"]

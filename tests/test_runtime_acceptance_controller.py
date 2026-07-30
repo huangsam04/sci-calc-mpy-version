@@ -7,10 +7,11 @@ scenario leases used by one capability at a time.
 
 from runtime_acceptance import FAIL_INCOMPLETE, FAIL_MEMORY, STEP_MORE, run
 from runtime_application_controller import (
-    build_resident_application_scenario_adapter)
+    _ResidentApplicationScenarioController)
 from runtime_handle import ApplicationBinding
 from runtime_materialize import RuntimeHandle
-from runtime_scenarios import application_scenarios
+from runtime_scenarios import (
+    ResidentApplicationScenarioAdapter, application_scenarios)
 
 
 class _Nav:
@@ -103,7 +104,8 @@ def _runtime(calculator_error=None):
     nav = _Nav(root, {1: calculator, 2: plot})
     binding = ApplicationBinding(
         nav, root, object(), object(), object())
-    adapter = build_resident_application_scenario_adapter(binding)
+    adapter = ResidentApplicationScenarioAdapter(
+        _ResidentApplicationScenarioController(binding))
     runtime = RuntimeHandle(
         nav,
         root,

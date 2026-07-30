@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 
 from runtime_acceptance import (
-    FAIL_ERROR, FAIL_MEMORY, RUN_BOUNDED, RUN_END, RUN_START, STEP_DONE,
+    FAIL_ERROR, FAIL_MEMORY, RUN_BOUNDED, STEP_DONE,
     RuntimeHandle, run)
 from runtime_scenarios import (
     ACTION_CALCULATOR_HISTORY,
@@ -28,7 +28,6 @@ from runtime_scenarios import (
     UNAVAILABLE,
     _ApplicationScenarioSession,
     ResidentApplicationScenarioAdapter,
-    ScenarioUnavailable,
     application_matrix,
     application_scenarios,
 )
@@ -318,24 +317,6 @@ def test_diagnostics_are_seven_independent_five_round_reports():
         assert verdict.restored
 
 
-class _MatrixController:
-    def __init__(self):
-        self.calls = []
-
-    def supports(self, capability):
-        return capability in APPLICATION_CAPABILITIES
-
-    def snapshot(self, capability):
-        return len(self.calls)
-
-    def perform(self, runtime, capability, round_index):
-        self.calls.append((round_index, capability))
-        return 1
-
-    def restore(self, capability, snapshot):
-        return True
-
-
 class _BoundedMatrixSession:
     def __init__(self, capabilities):
         self.capabilities = capabilities
@@ -400,43 +381,6 @@ def test_resident_bounded_controller_resolves_adapter_at_open_once():
         assert (verdict.operations
                 == 5 * APPLICATION_OPERATION_COUNTS[action - 1])
         assert verdict.restored
-
-
-def test_resident_matrix_rejects_legacy_aggregate_controller():
-    controller = _MatrixController()
-    adapter = ResidentApplicationScenarioAdapter(controller)
-
-    report = run(
-        _runtime(adapter, mode="resident"),
-        application_matrix(),
-    )
-
-    assert controller.calls == []
-    assert report.errors == 1
-    assert report.rounds_completed == 0
-    assert report.scenarios_completed == 0
-    assert not report.accepted
-    for action in range(1, 8):
-        verdict = adapter.verdict(action)
-        assert verdict.status == UNAVAILABLE
-        assert verdict.restored
-
-
-def test_legacy_perform_is_explicitly_in_memory_only():
-    controller = _MatrixController()
-    adapter = ResidentApplicationScenarioAdapter(controller)
-
-    with pytest.raises(ScenarioUnavailable):
-        adapter.perform(
-            _runtime(adapter, mode="resident"),
-            ACTION_CALCULATOR_HISTORY,
-            0,
-        )
-
-    assert controller.calls == []
-    verdict = adapter.verdict(ACTION_CALCULATOR_HISTORY)
-    assert verdict.status == UNAVAILABLE
-    assert verdict.restored
 
 
 def test_bounded_limit_getter_oom_closes_the_controller_transaction():
@@ -1202,50 +1146,6 @@ def test_bounded_bridge_retries_the_same_close_memory_error_then_releases_refs()
     assert verdict.restored
 
 
-def test_application_matrix_runs_all_capabilities_in_order_under_one_report():
-    controller = _MatrixController()
-    adapter = ResidentApplicationScenarioAdapter(controller)
-    events = []
-
-    report = run(
-        _runtime(adapter),
-        application_matrix(rounds=1),
-        lambda event, current: events.append(event),
-    )
-
-    assert report.scenario_name == "application_matrix"
-    assert report.rounds_completed == 1
-    assert report.scenarios_completed == 7
-    assert controller.calls == [
-        (0, capability) for capability in APPLICATION_CAPABILITIES
-    ]
-    assert events.count(RUN_START) == 1
-    assert events.count(RUN_END) == 1
-    assert report.accepted
-    for action in range(1, 8):
-        assert adapter.verdict(action).operations == 1
-
-
-def test_application_matrix_repeats_the_complete_order_for_five_rounds():
-    controller = _MatrixController()
-    adapter = ResidentApplicationScenarioAdapter(controller)
-
-    report = run(_runtime(adapter), application_matrix())
-
-    assert controller.calls == [
-        (round_index, capability)
-        for round_index in range(5)
-        for capability in APPLICATION_CAPABILITIES
-    ]
-    assert report.rounds_expected == 5
-    assert report.rounds_completed == 5
-    assert report.scenarios_completed == 35
-    assert report.accepted
-    for action in range(1, 8):
-        assert adapter.verdict(action).rounds_completed == 5
-        assert adapter.verdict(action).operations == 5
-
-
 def test_host_adapter_executes_the_complete_matrix_under_one_baseline():
     adapter = InMemoryApplicationScenarioAdapter()
 
@@ -1281,190 +1181,6 @@ def test_resident_adapter_reports_each_missing_capability_as_unavailable():
         assert verdict.operations == 0
         assert verdict.restored
         assert verdict.reason == APPLICATION_CAPABILITIES[action - 1]
-
-
-class _ScenarioController:
-    def __init__(
-            self, capability="variable_quota_restart", fail=False,
-            restore_fail=False):
-        self.state = "original"
-        self.capability = capability
-        self.fail = fail
-        self.restore_fail = restore_fail
-
-    def supports(self, capability):
-        return capability == self.capability
-
-    def snapshot(self, capability):
-        return self.state
-
-    def perform(self, runtime, capability, round_index):
-        self.state = (capability, round_index)
-        if self.fail == "memory":
-            raise MemoryError
-        if self.fail:
-            raise ValueError("injected application failure")
-        return 5
-
-    def restore(self, capability, snapshot):
-        self.state = snapshot
-        if self.restore_fail == "memory":
-            raise MemoryError
-        if self.restore_fail:
-            raise RuntimeError("injected restore failure")
-        return True
-
-
-class _IdentityFailureController(_ScenarioController):
-    def __init__(self, error):
-        _ScenarioController.__init__(
-            self,
-            capability="plot_pipeline",
-            restore_fail=True,
-        )
-        self.error = error
-
-    def perform(self, runtime, capability, round_index):
-        self.state = (capability, round_index)
-        raise self.error
-
-
-def test_resident_adapter_uses_snapshot_perform_restore_for_variable_state():
-    controller = _ScenarioController()
-    adapter = ResidentApplicationScenarioAdapter(controller)
-    scenario = application_scenarios(rounds=1)[2]
-
-    report = run(_runtime(adapter), scenario)
-    verdict = adapter.verdict(ACTION_VARIABLE_QUOTA_RESTART)
-
-    assert report.accepted
-    assert controller.state == "original"
-    assert verdict.status == PASS
-    assert verdict.rounds_completed == 1
-    assert verdict.operations == 5
-    assert verdict.restored
-
-
-def test_resident_adapter_restores_state_before_reporting_controller_failure():
-    controller = _ScenarioController(capability="plot_pipeline", fail=True)
-    adapter = ResidentApplicationScenarioAdapter(controller)
-    scenario = application_scenarios(rounds=1)[3]
-
-    report = run(_runtime(adapter), scenario)
-    verdict = adapter.verdict(ACTION_PLOT_PIPELINE)
-
-    assert not report.accepted
-    assert report.errors == 1
-    assert controller.state == "original"
-    assert verdict.status == FAILED
-    assert verdict.rounds_completed == 0
-    assert verdict.restored
-
-
-def test_resident_adapter_restores_state_and_preserves_memory_error_identity():
-    controller = _ScenarioController(
-        capability="plot_pipeline",
-        fail="memory",
-    )
-    adapter = ResidentApplicationScenarioAdapter(controller)
-    scenario = application_scenarios(rounds=1)[3]
-
-    report = run(_runtime(adapter), scenario)
-    verdict = adapter.verdict(ACTION_PLOT_PIPELINE)
-
-    assert not report.accepted
-    assert report.memory_errors == 1
-    assert report.errors == 0
-    assert controller.state == "original"
-    assert verdict.status == FAILED
-    assert verdict.reason == "MemoryError"
-    assert verdict.rounds_completed == 0
-    assert verdict.restored
-
-
-def test_resident_adapter_keeps_perform_oom_primary_when_restore_also_fails():
-    controller = _ScenarioController(
-        capability="plot_pipeline",
-        fail="memory",
-        restore_fail=True,
-    )
-    adapter = ResidentApplicationScenarioAdapter(controller)
-    scenario = application_scenarios(rounds=1)[3]
-
-    report = run(_runtime(adapter), scenario)
-    verdict = adapter.verdict(ACTION_PLOT_PIPELINE)
-
-    assert not report.accepted
-    assert report.memory_errors == 1
-    assert report.errors == 0
-    assert controller.state == "original"
-    assert verdict.status == FAILED
-    assert verdict.reason == "Scenario restore failed"
-    assert verdict.rounds_completed == 0
-    assert not verdict.restored
-
-
-def test_resident_adapter_reraises_the_same_oom_after_restore_failure():
-    primary_error = MemoryError("injected primary OOM")
-    controller = _IdentityFailureController(primary_error)
-    adapter = ResidentApplicationScenarioAdapter(controller)
-
-    with pytest.raises(MemoryError) as caught:
-        adapter.perform(
-            _runtime(adapter),
-            ACTION_PLOT_PIPELINE,
-            0,
-        )
-
-    assert caught.value is primary_error
-    assert controller.state == "original"
-    verdict = adapter.verdict(ACTION_PLOT_PIPELINE)
-    assert verdict.status == FAILED
-    assert verdict.reason == "Scenario restore failed"
-    assert not verdict.restored
-
-
-def test_resident_adapter_reports_restore_oom_as_memory_failure():
-    controller = _ScenarioController(
-        capability="plot_pipeline",
-        restore_fail="memory",
-    )
-    adapter = ResidentApplicationScenarioAdapter(controller)
-    scenario = application_scenarios(rounds=1)[3]
-
-    report = run(_runtime(adapter), scenario)
-    verdict = adapter.verdict(ACTION_PLOT_PIPELINE)
-
-    assert not report.accepted
-    assert report.memory_errors == 1
-    assert report.errors == 0
-    assert controller.state == "original"
-    assert verdict.status == FAILED
-    assert verdict.reason == "Scenario restore failed"
-    assert verdict.rounds_completed == 0
-    assert not verdict.restored
-
-
-def test_resident_adapter_prioritizes_restore_oom_over_execution_error():
-    controller = _ScenarioController(
-        capability="plot_pipeline",
-        fail=True,
-        restore_fail="memory",
-    )
-    adapter = ResidentApplicationScenarioAdapter(controller)
-    scenario = application_scenarios(rounds=1)[3]
-
-    report = run(_runtime(adapter), scenario)
-    verdict = adapter.verdict(ACTION_PLOT_PIPELINE)
-
-    assert not report.accepted
-    assert report.memory_errors == 1
-    assert report.errors == 0
-    assert controller.state == "original"
-    assert verdict.status == FAILED
-    assert verdict.reason == "Scenario restore failed"
-    assert verdict.rounds_completed == 0
-    assert not verdict.restored
 
 
 def test_production_scenario_module_does_not_import_the_host_simulator():
