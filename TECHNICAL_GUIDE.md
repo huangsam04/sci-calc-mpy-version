@@ -486,8 +486,10 @@ Add-in 可在注册期使用 `registry.plugin(name)`，在回调运行期使用 
 ### 7.2 主菜单与计算器
 
 主菜单有 Calculator、Plot、Function Panel、Stopwatch、Settings 五项；返回根页面保留原选择。
-导航只把 `nav._managed` 中按对象身份注册的目标交给 `Nav.go_to()`。Calculator 和 Function Panel
-是紧凑页面对象而非 `UIElement` 子类，因此入口不依赖继承判断，也不会误走全局快捷键分支。
+菜单项只保存固定 `page_id`，`Nav.open(page_id)` 在首次和再次进入时按需导入、构造并激活页面；
+`Nav.back()` 停用离页对象、保存必要的紧凑状态并清除页面引用。普通产品接口只依赖 `open()`、
+`back()` 和 `current`，不保留页面注册表或验收专用租约。Calculator 和 Function Panel 是紧凑页面
+对象而非 `UIElement` 子类，因此入口不依赖继承判断，也不会误走全局快捷键分支。
 
 计算器有三种模式：输入、历史导航、错误弹窗。成功求值将 `(expr, result)` 插到最多 20 条历史
 的头部，清空输入；每个 `Number` 统一格式化为 `x.xxxx*10^x`。显示位数来自
@@ -735,10 +737,10 @@ release_deploy(port, mode):
 默认路径不创建备用槽，也不在复位后重新连接执行 resident smoke。`/sd/settings.json`、
 `/sd/vars.json`、`/sd/Add-ons` 和槽内未知文件不覆盖、不删除；新 managed 路径与未知文件同名时
 会在任何写入前拒绝。需要完整 A/B、逐项校验和冷启动
-resident smoke 时增加 `--transactional`；首次安装或修复 bootstrap 使用
-`--transactional --adopt`。MPY 模式固定使用仓库 `v1.29.0-preview` 的
-`mpy-cross -march=xtensawin -X no-source-lines`。同版本 COM5 实测从原完整流程 `374 s`、跳过
-adoption 的完整 A/B `65.890 s`，降至默认单会话增量 `17.352 s`。
+resident smoke 时增加 `--transactional`；同一选项也负责首次安装或修复 bootstrap。MPY 模式固定
+使用仓库 `v1.29.0-preview` 的
+`mpy-cross -march=xtensawin -X no-source-lines`。同版本 COM5 实测从原完整流程 `374 s`、精简后的
+完整 A/B `65.890 s`，降至默认单会话增量 `17.352 s`。
 
 `check.ps1` 强制使用仓库 MicroPython `v1.29.0-preview` 的 `mpy-cross`，依序生成字体、运行 pytest、
 CPython `compileall`、对所有源码使用 `-march=xtensawin` 编译 `.mpy`。它在兼容性或语法错误时立刻

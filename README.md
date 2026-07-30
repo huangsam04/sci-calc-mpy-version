@@ -68,10 +68,10 @@ selector。若新 managed 路径与未知文件同名，快速模式会在写入
 修复 bootstrap 使用：
 
 ```powershell
-..\.venv\python.exe .\tools\release_deploy.py --port PORTNAME --mode mpy --transactional --adopt
+..\.venv\python.exe .\tools\release_deploy.py --port PORTNAME --mode mpy --transactional
 ```
 
-同版本 COM5 实测：原完整流程 `374 s`，跳过 adoption 但仍完整 A/B 为 `65.890 s`，默认单会话
+同版本 COM5 实测：原完整流程 `374 s`，精简后的完整 A/B 为 `65.890 s`，默认单会话
 增量为 `17.352 s`。当前设备只发布 `mpy`，`functions/*.py` 始终保留源码。
 
 SD 卡和 OLED 共用 GPIO18/23 上的 SPI2，通过 CS4/CS5 分隔事务。内部
