@@ -12,6 +12,7 @@
 - [x] 普通 release 排除 24 个 acceptance/diagnostic fixture/scenario 资产：source 计划 `49 -> 25`、SD managed `33 -> 9`；现有 `tools/run_device_acceptance.ps1` 按需安装并清理 23 个固定载荷及阶段文件，相关主机回归 `370 passed`。
 - [x] `Nav` 普通产品接口收窄为 `open(page_id)`、`back()` 和 `current`，验收侧只适配该生命周期；删除页面预演租约及专属夹具，净变化 `+364/-2352` 行，扩展相关回归 `301 passed`、提交前边界复核 `212 passed`，10 个变更源码经 MicroPython `v1.29.0-preview` 编译通过。
 - [x] 清理 `.work` 过期产物并更新 `.work/LOCATIONS.md`：删除 `legacy`、过期 pytest 会话、旧探针/日志/缓存、临时载荷和重复 MPY，共 4844 个可重建文件；保留 frozen 固件、`ccache`、当前 MPY 与最新验收 profile。清理后为 10328 个文件、506655645 B（483.18 MiB），项目缓存无 `.work` 外残留，路径回归 `15 passed`。
+- [x] 有边界剪枝阶段 `check.ps1` 通过：`1090 passed in 20.63s`，脚本总耗时 25.3 s，CPython 与 MicroPython 1.29 兼容检查通过。
 - [ ] 最终 `check.ps1` 通过 CPython、全部 pytest 和仓库 MicroPython 1.29 `mpy-cross` 检查。
 - [ ] 自定义固件可重复增量构建；记录干净/增量构建与刷写耗时，不把慢速全量构建塞进普通应用增量部署。
 
