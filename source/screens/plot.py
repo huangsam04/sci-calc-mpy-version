@@ -18,10 +18,7 @@ from ui.error_popup import ErrorPopup
 OVERLAY_H = 14
 HINT_H = 10
 GRAPH_PAD_X = 2
-PLOT_PROGRESS_X = 42
-PLOT_PROGRESS_Y = 31
-PLOT_PROGRESS_W = 126
-PLOT_PROGRESS_H = 7
+PLOT_PROGRESS = (42, 31, 126, 7)
 ROBUST_SAMPLE_LIMIT = 12
 # The curve renderer joins adjacent points, so evaluating every second pixel
 # preserves the visible horizontal resolution while halving evaluator work.
@@ -365,7 +362,17 @@ class PlotScreen(UIElement):
             self._state[3][2] -= 1
         if status == 0:
             if self._state[3][0] < 0:
-                fill = self._curve_progress_fill(self._state[3][1])
+                job = self._state[3][1]
+                samples = (job.n + 1) // CURVE_SAMPLE_STEP
+                if job.phase == 0:
+                    done = job.index // CURVE_SAMPLE_STEP
+                elif job.phase == 1:
+                    done = samples + job.clear
+                elif job.phase == 2:
+                    done = samples * 2 + job.index // CURVE_SAMPLE_STEP
+                else:
+                    done = samples * 3
+                fill = done * (PLOT_PROGRESS[2] - 2) // (samples * 3)
                 encoded = -1 - fill
                 if encoded != self._state[3][0]:
                     self._state[3][0] = encoded
@@ -375,26 +382,6 @@ class PlotScreen(UIElement):
             return SETTLE_REDRAW
         self._state[3][0] = self.width
         return SETTLE_REDRAW
-
-    def _curve_progress_fill(self, job):
-        'Map completed Plot work to the progress bar interior width.'
-        samples = ((job.n + CURVE_SAMPLE_STEP - 1)
-                   // CURVE_SAMPLE_STEP)
-        auto_scale = job.phase == 0 or job.valid > 0
-        total = samples * (3 if auto_scale else 2)
-        if job.phase == 0:
-            done = min(samples, (
-                job.index + CURVE_SAMPLE_STEP - 1) // CURVE_SAMPLE_STEP)
-        elif job.phase == 1:
-            done = (samples if auto_scale else 0) + job.clear
-        elif job.phase == 2:
-            done = (samples * (2 if auto_scale else 1)
-                    + min(samples, (
-                        job.index + CURVE_SAMPLE_STEP - 1)
-                        // CURVE_SAMPLE_STEP))
-        else:
-            done = total
-        return done * (PLOT_PROGRESS_W - 2) // max(1, total)
 
     def _clear_presented_editor_state(self):
         # Mode is the validity sentinel; stale values in the other fixed
@@ -433,7 +420,7 @@ class PlotScreen(UIElement):
                 and presented[0] == 0 and presented[12] < 0):
             if self._state[3][0] == presented[12]:
                 return DAMAGE_NONE
-            damage.add(PLOT_PROGRESS_Y, PLOT_PROGRESS_H)
+            damage.add(PLOT_PROGRESS[1], PLOT_PROGRESS[3])
             return DAMAGE_PARTIAL
         state = self._editor_damage_state()
         if state == DAMAGE_PARTIAL:
@@ -845,28 +832,13 @@ class PlotScreen(UIElement):
     def _draw_plot_progress(self, display):
         if self._state[3][0] >= 0:
             return
+        x, y, width, height = PLOT_PROGRESS
         display.draw_text8x8(77, 19, 'Plotting', gs=15)
-        display.fill_rectangle(
-            PLOT_PROGRESS_X + 1, PLOT_PROGRESS_Y + 1,
-            PLOT_PROGRESS_W - 2, PLOT_PROGRESS_H - 2, 0)
-        display.draw_rectangle(
-            PLOT_PROGRESS_X, PLOT_PROGRESS_Y,
-            PLOT_PROGRESS_W, PLOT_PROGRESS_H, 8)
+        display.fill_rectangle(x + 1, y + 1, width - 2, height - 2, 0)
+        display.draw_rectangle(x, y, width, height, 8)
         fill = -self._state[3][0] - 1
         if fill > 0:
-            display.fill_rectangle(
-                PLOT_PROGRESS_X + 1, PLOT_PROGRESS_Y + 1,
-                fill, PLOT_PROGRESS_H - 2, 15)
-
-    def _draw_plot_progress_rows(self, display):
-        fill = -self._state[3][0] - 1
-        display.fill_rectangle(
-            PLOT_PROGRESS_X + 1, PLOT_PROGRESS_Y + 1,
-            PLOT_PROGRESS_W - 2, PLOT_PROGRESS_H - 2, 0)
-        if fill > 0:
-            display.fill_rectangle(
-                PLOT_PROGRESS_X + 1, PLOT_PROGRESS_Y + 1,
-                fill, PLOT_PROGRESS_H - 2, 15)
+            display.fill_rectangle(x + 1, y + 1, fill, height - 2, 15)
 
     def _ensure_footer_cache(self):
         'Refresh the one visible footer only when its state changes.'
@@ -915,7 +887,7 @@ class PlotScreen(UIElement):
     def draw_present_rows(self, display):
         'Redraw the settled editor overlay without repainting the graph.'
         if self._state[3][0] < 0:
-            self._draw_plot_progress_rows(display)
+            self._draw_plot_progress(display)
             return
         self._draw_overlay(display)
         self._draw_hint(display)

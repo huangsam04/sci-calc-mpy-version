@@ -537,20 +537,22 @@ def test_plot_submit_draws_progress_before_any_curve_work():
 
     display = ProgressDisplay()
     plot.draw(display)
+    progress_x, progress_y, progress_w, progress_h = (
+        plot_module.PLOT_PROGRESS)
 
     assert any(text == "Plotting" for _, _, text in display.text)
     assert (
-        plot_module.PLOT_PROGRESS_X,
-        plot_module.PLOT_PROGRESS_Y,
-        plot_module.PLOT_PROGRESS_W,
-        plot_module.PLOT_PROGRESS_H,
+        progress_x,
+        progress_y,
+        progress_w,
+        progress_h,
         8,
     ) in display.rectangles
     assert (
-        plot_module.PLOT_PROGRESS_X + 1,
-        plot_module.PLOT_PROGRESS_Y + 1,
-        plot_module.PLOT_PROGRESS_W - 2,
-        plot_module.PLOT_PROGRESS_H - 2,
+        progress_x + 1,
+        progress_y + 1,
+        progress_w - 2,
+        progress_h - 2,
         0,
     ) in display.fills
     assert plot._state[3][3][3] is pooled_job
@@ -580,15 +582,15 @@ def test_plot_progress_is_monotonic_and_only_damages_the_bar_rows():
                 damage = DamageMap()
                 assert plot.collect_present_damage(damage) == DAMAGE_PARTIAL
                 assert damage.ranges[0] == [
-                    plot_module.PLOT_PROGRESS_Y,
-                    plot_module.PLOT_PROGRESS_H,
+                    plot_module.PLOT_PROGRESS[1],
+                    plot_module.PLOT_PROGRESS[3],
                 ]
                 assert damage.ranges[1] == [0, 0]
                 plot.mark_presented()
                 fills.append(fill)
 
     assert len(fills) > 3
-    assert fills[-1] == plot_module.PLOT_PROGRESS_W - 2
+    assert fills[-1] == plot_module.PLOT_PROGRESS[2] - 2
     assert plot._state[3][0] == plot.width
     assert plot._state[3][1] is None
     assert plot._state[2][0] is not None
