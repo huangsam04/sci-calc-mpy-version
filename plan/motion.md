@@ -31,5 +31,9 @@
 - [x] 页面淡入/淡出和菜单滑动均未启用；新增动画状态 `0 B`、新增像素缓冲 `0 B`，未降低堆、时延、OOM 或数据保护门槛。
 - [x] 只诊断已测 `error_lifecycle` 热点：循环内结构符号字典候选把主机 `.` tokenizer 微测从 `1024/1711/687 B` 降至 `808/1447/639 B`（保留/峰值/瞬态），但等价 COM5 单 capability 探针从既有 `14752 B/60.456 ms` 退化至 `10208 B/61.472 ms`；已删除候选、专属测试和临时探针，不运行完整 matrix，也不降低门槛。
 - [x] 被否决候选清理后重建并仅刷写正式 frozen 应用分区（`1818192 B`，SHA-256 `6fc4215f03575c692e3d0e69cd6dc8b12fc4a45434ad6e3f5cca84ff28b71acb`）；设备 acceptance support/stage 已删除并让 OLED 硬件休眠，阶段 `check.ps1` 为 `1093 passed in 26.53s`、总耗时 `31.8s`。
+- [x] 同一 `error_lifecycle` 的错误格式化边界显示，把 `ParseError` 对象或其既有 `args[0]` 字符串传给当前 `ErrorPopup`，20 次均稳定分配 `2560 B`，五轮节省均为 `0 B`；不修改调用点，探针结束后 OLED 已休眠。
+- [x] 已测共同规范化分配：固定分支微探针把短错误 20 次分配从 `960 B` 降至 `320 B`，五轮均节省 `640 B`；但真实 COM5 `error_lifecycle` 仍只有 `10496 B` 空闲堆且最大 step `61.235 ms`，`MemoryError=0`、普通错误 0，未接近联合门禁，故删除快路径和专属测试且不运行完整 matrix。
+- [x] 第二个候选删除后再次回刷正式 frozen 镜像 `6fc4215f03575c692e3d0e69cd6dc8b12fc4a45434ad6e3f5cca84ff28b71acb`，清理 23 个 support 文件及 stage/hotspot，OLED 已休眠；阶段 `check.ps1` 为 `1093 passed in 25.92s`、总耗时 `31.3s`。
+- [x] 本轮三个已测边界到此收口：ErrorPopup 绘制已复用单 framebuffer、宽度内文本和 packed direct-text 路径；剩余垃圾来自通用 tokenizer/AST/异常求值链，继续处理需要重写解析模型或固定 scratch 系统，违反本轮简单优先、1--3 个热点和不扩展方案空间的约束，因此保持两项动效禁用。
 
 完成后回到 [PLAN](../PLAN.md) 勾选“两项动效”，再读取[验证分支](verification.md)。

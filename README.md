@@ -358,7 +358,7 @@ UI 会显示保存失败并每两秒重试。
 ..\.venv\python.exe -m mpremote connect PORTNAME reset
 ```
 
-最终主机检查为 `1093 passed in 26.53s`，脚本总耗时 `31.8s`，并通过 CPython 语法检查和
+最终主机检查为 `1093 passed in 25.92s`，脚本总耗时 `31.3s`，并通过 CPython 语法检查和
 MicroPython 1.29 `mpy-cross -march=xtensawin` 全源编译。主机 traced memory 只用于比较逻辑
 工作量，不替代真机堆或 SPI 时延。
 

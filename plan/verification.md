@@ -13,7 +13,7 @@
 - [x] `Nav` 普通产品接口收窄为 `open(page_id)`、`back()` 和 `current`，验收侧只适配该生命周期；删除页面预演租约及专属夹具，净变化 `+364/-2352` 行，扩展相关回归 `301 passed`、提交前边界复核 `212 passed`，10 个变更源码经 MicroPython `v1.29.0-preview` 编译通过。
 - [x] 清理 `.work` 过期产物并更新 `.work/LOCATIONS.md`：删除 `legacy`、过期 pytest 会话、旧探针/日志/缓存、临时载荷和重复 MPY，共 4844 个可重建文件；最终又删除已否决热点 MPY 和无调用方的旧 pytest-cache 修复脚本。保留 frozen 固件、`ccache`、当前 MPY 与最新验收 profile，项目缓存无 `.work` 外残留，路径回归 `15 passed`。
 - [x] 有边界剪枝阶段 `check.ps1` 通过：`1090 passed in 20.63s`，脚本总耗时 25.3 s，CPython 与 MicroPython 1.29 兼容检查通过。
-- [x] 最终 `check.ps1` 为 `1093 passed in 26.53s`，脚本总耗时 `31.8s`；CPython、全部 pytest 和仓库 MicroPython 1.29 `mpy-cross` 检查通过。
+- [x] 最终 `check.ps1` 为 `1093 passed in 25.92s`，脚本总耗时 `31.3s`；CPython、全部 pytest 和仓库 MicroPython 1.29 `mpy-cross` 检查通过。
 - [x] 自定义固件可重复增量构建：当前 frozen 集合完整重生成/重链接 `28.547s`、空增量 `6.852s`、仅写 factory 分区 `24.589s`；普通应用继续使用独立快速增量部署。
 
 最终边界统计（排除 `.work` 和 `.git`）：201 个文件、1956716 B（1.87 MiB），相对清理前 208 个文件约 2.17 MB 减少 7 个文件和约 0.21 MB；Python/PowerShell 为 183 个文件、52624 个物理行。以页面生命周期 checkpoint `03ac077` 为固定点，本轮有边界剪枝与收口共 `+1328/-7196` 行，净减 5868 行。最终主机检查后 `.work` 为 10598 个当前缓存/产物、509600027 B（485.99 MiB），位置仍符合 `.work/LOCATIONS.md`。
