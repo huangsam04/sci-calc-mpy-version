@@ -7,7 +7,8 @@ class RuntimeHandle:
     """Identity-stable view of one already-constructed calculator runtime."""
 
     __slots__ = (
-        "nav", "root", "targets", "mode", "version", "_runtime_state")
+        "nav", "root", "targets", "mode", "version", "_runtime_state",
+        "_buffer_snapshot")
     _application_binding_sealed = True
     _scenario_adapter_sealed = True
 
@@ -29,6 +30,7 @@ class RuntimeHandle:
         self._runtime_state = (
             scenario_adapter, application_binding,
             optional_buffer_target, optional_buffer_size)
+        self._buffer_snapshot = None
 
     def __getattr__(self, name):
         if name == "scenario_adapter":
@@ -104,20 +106,52 @@ class RuntimeHandle:
         return adapter
 
     def buffer_snapshot(self):
-        snapshot = []
         renderer = getattr(self.nav, "renderer", None)
         display = getattr(renderer, "display", None)
         main_buffer = getattr(display, "gs4_buf", None)
-        if main_buffer is not None:
-            snapshot.append(("main", len(main_buffer), id(main_buffer)))
-
         memory = getattr(self.nav, "memory", None)
         plot_workspace = getattr(memory, "_plot_curve", None)
-        if plot_workspace is not None:
-            snapshot.append((
-                "plot_curve", len(plot_workspace), id(plot_workspace)))
-        snapshot.sort()
-        return tuple(snapshot)
+        snapshot = self._buffer_snapshot
+        if snapshot is not None:
+            if main_buffer is None:
+                if plot_workspace is None and len(snapshot) == 0:
+                    return snapshot
+                if (plot_workspace is not None
+                        and len(snapshot) == 1
+                        and snapshot[0][0] == "plot_curve"
+                        and snapshot[0][1] == len(plot_workspace)
+                        and snapshot[0][2] == id(plot_workspace)):
+                    return snapshot
+            elif plot_workspace is None:
+                if (len(snapshot) == 1
+                        and snapshot[0][0] == "main"
+                        and snapshot[0][1] == len(main_buffer)
+                        and snapshot[0][2] == id(main_buffer)):
+                    return snapshot
+            elif (len(snapshot) == 2
+                    and snapshot[0][0] == "main"
+                    and snapshot[0][1] == len(main_buffer)
+                    and snapshot[0][2] == id(main_buffer)
+                    and snapshot[1][0] == "plot_curve"
+                    and snapshot[1][1] == len(plot_workspace)
+                    and snapshot[1][2] == id(plot_workspace)):
+                return snapshot
+
+        if main_buffer is None:
+            if plot_workspace is None:
+                snapshot = ()
+            else:
+                snapshot = ((
+                    "plot_curve", len(plot_workspace), id(plot_workspace)),)
+        elif plot_workspace is None:
+            snapshot = (("main", len(main_buffer), id(main_buffer)),)
+        else:
+            snapshot = (
+                ("main", len(main_buffer), id(main_buffer)),
+                ("plot_curve", len(plot_workspace), id(plot_workspace)),
+            )
+        self._buffer_snapshot = snapshot
+        return snapshot
 
     def accepts_buffer_snapshot(self, baseline, snapshot, optional_target):
         for item in baseline:

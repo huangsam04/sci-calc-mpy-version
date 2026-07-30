@@ -18,7 +18,7 @@
 
 ## COM5 统一验收
 
-最新候选（2026-07-31）：快速增量部署成功，耗时 `31.355 s`，release ID `f8a6badf6054926605642a5bac6725b57e2ce876c6221a0c7b8381152687b9f9`。统一验收的 boot probe 通过（版本 1.4.0、resident/root ready、单一 8192 B framebuffer、104 B Plot workspace、MPY/Viper ABI 正确）；application matrix 因最低堆 `9888 B < 12288 B` 按门槛停止，`MemoryError=0`、普通错误 `0`、最大 step `22.774 ms`。临时 support/stage 载荷已删除，OLED 已休眠。当前输出只能把 `calculator_history phase=5` 归因给最慢 step；下一批先补齐最低堆位置数据，再选择一个热点，不得把该轮勾为通过。
+最新候选（2026-07-31）：快速增量部署成功，耗时 `31.355 s`，release ID `f8a6badf6054926605642a5bac6725b57e2ce876c6221a0c7b8381152687b9f9`。统一验收的 boot probe 通过（版本 1.4.0、resident/root ready、单一 8192 B framebuffer、104 B Plot workspace、MPY/Viper ABI 正确）。移除逐 step snapshot 临时分配后，application matrix 完成场景从 `5` 增至 `10`，但 `error_lifecycle` 最低堆仍为 `10352 B < 12288 B`，回收 step `37.657 ms > 32 ms`；`MemoryError=0`、普通错误 `0`。两个自动 GC 阈值候选虽达到 `15200 B`，最大 step 分别为 `41.810/40.875 ms`，已删除。按门禁不启用两项动画；临时 support/stage 载荷均已删除，OLED 已休眠，后续验收不得把该轮勾为通过。
 
 - [ ] 确认运行模块来自预期 frozen/SD 位置，版本和 manifest 一致，用户文件未丢失，framebuffer 始终为同一个 8192 B 对象。
 - [ ] 最大用户状态连续五轮覆盖入口、计算、函数面板、绘图、Stopwatch、Settings、辅助面板、错误恢复和快速往返；`MemoryError=0`，堆不持续下降。

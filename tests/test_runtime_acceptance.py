@@ -106,6 +106,28 @@ def test_buffer_snapshot_includes_the_single_display_framebuffer():
     )
 
 
+def test_buffer_snapshot_reuses_identity_until_a_live_buffer_changes():
+    root = object()
+    main_buffer = bytearray(8192)
+    nav = _ResidentNav(root, {"main": main_buffer})
+    runtime = RuntimeHandle(nav, root, ())
+
+    baseline = runtime.buffer_snapshot()
+    assert runtime.buffer_snapshot() is baseline
+
+    curve_buffer = bytearray(104)
+    nav.memory._plot_curve = curve_buffer
+    with_curve = runtime.buffer_snapshot()
+    assert with_curve is not baseline
+    assert runtime.buffer_snapshot() is with_curve
+
+    nav.memory._plot_curve = None
+    restored = runtime.buffer_snapshot()
+    assert restored == baseline
+    assert restored is not with_curve
+    assert runtime.buffer_snapshot() is restored
+
+
 class _InMemoryNav:
     def __init__(self, root):
         self.current = root
