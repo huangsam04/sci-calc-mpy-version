@@ -66,6 +66,32 @@ _FROZEN_MODULE_PATHS = frozenset((
     "screens/stopwatch.py",
     "screens/variable_panel.py",
 ))
+_ACCEPTANCE_ONLY_PATHS = frozenset((
+    "benchmarks.py",
+    "diagnostics.py",
+    "nav_scenario.py",
+    "runtime_acceptance.py",
+    "runtime_acceptance_bounded.py",
+    "runtime_application_controller.py",
+    "runtime_fixture_pack.py",
+    "runtime_materialize.py",
+    "runtime_scenarios.py",
+    "runtime_trusted_construction.py",
+    "calc/plugin_fixture.py",
+    "calc/scenario_variables.py",
+    "functions/_acceptance_core.py",
+    "functions/_acceptance_dependent.py",
+    "functions/_acceptance_missing.py",
+    "screens/about_scenario.py",
+    "screens/calculator_scenario.py",
+    "screens/function_panel_scenario.py",
+    "screens/function_picker_scenario.py",
+    "screens/letter_panel_scenario.py",
+    "screens/plot_scenario.py",
+    "screens/settings_scenario.py",
+    "screens/stopwatch_scenario.py",
+    "screens/variable_panel_scenario.py",
+))
 _FONT_OUTPUTS = {
     "fonts/Bally7x9.c": "fonts/Bally7x9.xglcd",
     "fonts/FixedFont5x8.c": "fonts/FixedFont5x8.xglcd",
@@ -132,7 +158,7 @@ def is_compiled_in_mpy(path):
     """True when the mpy plan expects a compiled output for *path*."""
     if not path.endswith(".py"):
         return False
-    if is_frozen_module(path):
+    if is_frozen_module(path) or path in _ACCEPTANCE_ONLY_PATHS:
         return False
     if path in _INTERNAL_DISPLAY_PATHS:
         return True
@@ -334,6 +360,9 @@ def _source_asset(path, content, mode, build_files):
 
 
 def _source_assets(path, content, mode, build_files):
+    if path in _ACCEPTANCE_ONLY_PATHS:
+        return ()
+
     if path == "runtime_scenarios_host.py":
         return (_asset(
             "host:runtime_scenarios_host",

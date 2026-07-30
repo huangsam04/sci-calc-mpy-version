@@ -23,6 +23,7 @@ MISSING_SELECTION = ("plugin:_acceptance_missing",)
 
 _SLOT_PREFIX = "/sd/.slots/"
 _FIXTURE_DIRECTORY_SUFFIX = "/functions"
+_TRANSIENT_FIXTURE_DIRECTORY = "/sd/_sci_accept_support/functions"
 _SLOT_NAMES = ("A", "B")
 _SHA256_BYTES = 32
 _RELEASE_ID_LENGTH = 64
@@ -65,7 +66,9 @@ def _is_managed_snapshot(snapshot):
                 or slot_name not in _SLOT_NAMES
                 or type(root) is not str
                 or root != _SLOT_PREFIX + slot_name
-                or snapshot.directory != root + _FIXTURE_DIRECTORY_SUFFIX
+                or snapshot.directory not in (
+                    root + _FIXTURE_DIRECTORY_SUFFIX,
+                    _TRANSIENT_FIXTURE_DIRECTORY)
                 or not _is_lower_hex_release_id(snapshot.release_id)
                 or not _is_digest(snapshot.manifest_sha256)
                 or not _same_fixed_tuple(snapshot.files, FIXTURE_FILES)

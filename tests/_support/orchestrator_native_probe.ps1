@@ -11,9 +11,10 @@ $script:ResetCount = 0
 $Adapter = {
     param([string[]]$Arguments)
 
+    $LogRecord = ($Arguments -join "`t").Replace("`r", "\r").Replace("`n", "\n")
     Add-Content `
         -LiteralPath $env:SCI_CALC_FAKE_MPREMOTE_LOG `
-        -Value ($Arguments -join "`t")
+        -Value $LogRecord
     if ($Arguments[-1] -eq "reset") {
         $script:ResetCount += 1
         if (

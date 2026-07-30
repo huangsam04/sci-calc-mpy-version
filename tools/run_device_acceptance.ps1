@@ -17,13 +17,86 @@ $WorkRoot = Join-Path $ProjectRoot ".work"
 $MpyCross = Join-Path `
     $WorkspaceRoot "micropython\mpy-cross\build\mpy-cross.exe"
 $RemoteArtifact = "/sd/_sci_accept_stage.mpy"
+$SupportRoot = "/sd/_sci_accept_support"
+$SupportModulePaths = @(
+    "benchmarks.py",
+    "nav_scenario.py",
+    "runtime_acceptance.py",
+    "runtime_acceptance_bounded.py",
+    "runtime_application_controller.py",
+    "runtime_fixture_pack.py",
+    "runtime_materialize.py",
+    "runtime_scenarios.py",
+    "runtime_trusted_construction.py",
+    "calc/plugin_fixture.py",
+    "calc/scenario_variables.py",
+    "screens/about_scenario.py",
+    "screens/calculator_scenario.py",
+    "screens/function_panel_scenario.py",
+    "screens/function_picker_scenario.py",
+    "screens/letter_panel_scenario.py",
+    "screens/plot_scenario.py",
+    "screens/settings_scenario.py",
+    "screens/stopwatch_scenario.py",
+    "screens/variable_panel_scenario.py"
+)
+$SupportModules = @($SupportModulePaths | ForEach-Object {
+    $ModulePath = $_.Substring(0, $_.Length - 3)
+    [PSCustomObject]@{
+        Script = "source/" + $_
+        Artifact = ".work/mpy/device-acceptance-support/" + $ModulePath + ".mpy"
+        Remote = $SupportRoot + "/" + $ModulePath + ".mpy"
+    }
+})
+$SupportSources = @(
+    "functions/_acceptance_core.py",
+    "functions/_acceptance_dependent.py",
+    "functions/_acceptance_missing.py"
+) | ForEach-Object {
+    [PSCustomObject]@{
+        Script = "source/" + $_
+        Artifact = "source/" + $_
+        Remote = $SupportRoot + "/" + $_
+    }
+}
+$SupportPayloads = @($SupportModules) + @($SupportSources)
+$CleanupRemoteFiles = @($RemoteArtifact) + @($SupportPayloads | ForEach-Object {
+    $_.Remote
+})
+$CleanupFilesLiteral = "(" + (($CleanupRemoteFiles | ForEach-Object {
+    "'" + $_ + "'"
+}) -join ",") + ",)"
+$PrepareSupport = (
+    "import os`n" +
+    "for p in ('$SupportRoot','$SupportRoot/calc'," +
+    "'$SupportRoot/screens','$SupportRoot/functions'):`n" +
+    " try: os.mkdir(p)`n" +
+    " except OSError as e:`n" +
+    "  if not e.args or e.args[0]!=17: raise`n" +
+    "print('ACCEPTANCE_SUPPORT_READY')"
+)
+$CleanupSupport = (
+    "import os,runtime_handle as h`n" +
+    "r=h.get_resident_runtime()`n" +
+    "if r is not None: r._nav.renderer.display.sleep()`n" +
+    "for p in ${CleanupFilesLiteral}:`n" +
+    " try: os.remove(p)`n" +
+    " except OSError as e:`n" +
+    "  if not e.args or e.args[0]!=2: raise`n" +
+    "for p in ('$SupportRoot/functions','$SupportRoot/screens'," +
+    "'$SupportRoot/calc','$SupportRoot'):`n" +
+    " try: os.rmdir(p)`n" +
+    " except OSError as e:`n" +
+    "  if not e.args or e.args[0]!=2: raise`n" +
+    "print('ACCEPTANCE_SUPPORT_REMOVED')"
+)
 $ScenarioRunArtifact = (
     "import gc,os,sys;gc.collect();" +
-    "import calc,screens,functions,calc.plugin_reload;slot=sys.path[1];" +
-    "assert slot.startswith('/sd/.slots/');" +
-    "calc.__path__=slot+'/calc';" +
-    "screens.__path__=slot+'/screens';" +
-    "functions.__path__=slot+'/functions';" +
+    "support='$SupportRoot';sys.path.insert(0,support);" +
+    "import calc,screens,functions,calc.plugin_reload;" +
+    "calc.__path__=support+'/calc';" +
+    "screens.__path__=support+'/screens';" +
+    "functions.__path__=support+'/functions';" +
     "sys.path.append('/sd');" +
     "import _sci_accept_stage;" +
     "os.remove('/sd/_sci_accept_stage.mpy');" +
@@ -112,6 +185,37 @@ function Build-AcceptanceArtifacts {
             throw "mpy-cross did not create device tool: $LocalArtifact"
         }
     }
+
+    foreach ($Payload in $SupportModules) {
+        $LocalScript = Join-Path `
+            $ProjectRoot $Payload.Script.Replace("/", "\")
+        $LocalArtifact = Join-Path `
+            $ProjectRoot $Payload.Artifact.Replace("/", "\")
+        if (-not (Test-Path -LiteralPath $LocalScript -PathType Leaf)) {
+            throw "Missing acceptance support module: $LocalScript"
+        }
+        New-Item -ItemType Directory -Force `
+            -Path (Split-Path -Parent $LocalArtifact) | Out-Null
+        & $MpyCross -march=xtensawin -X no-source-lines `
+            -s $Payload.Script -o $LocalArtifact $LocalScript
+        if ($LASTEXITCODE -ne 0) {
+            throw "mpy-cross failed for acceptance support: $($Payload.Script)"
+        }
+        if (
+            -not (Test-Path -LiteralPath $LocalArtifact -PathType Leaf) -or
+            (Get-Item -LiteralPath $LocalArtifact).Length -le 0
+        ) {
+            throw "mpy-cross did not create acceptance support: $LocalArtifact"
+        }
+    }
+
+    foreach ($Payload in $SupportSources) {
+        $LocalScript = Join-Path `
+            $ProjectRoot $Payload.Script.Replace("/", "\")
+        if (-not (Test-Path -LiteralPath $LocalScript -PathType Leaf)) {
+            throw "Missing acceptance support source: $LocalScript"
+        }
+    }
 }
 
 function Invoke-MpremoteCommand {
@@ -155,6 +259,42 @@ function Invoke-DeviceReset {
             -Arguments @("connect", $Port, "resume", "exec", $SleepResident) `
             -FailureMessage "Unable to sleep the OLED after resetting $Port"
     }
+}
+
+function Install-AcceptanceSupport {
+    if ($DryRun) {
+        Write-Output "ACCEPTANCE_SUPPORT_INSTALL files=$($SupportPayloads.Count)"
+        return
+    }
+    Invoke-MpremoteCommand `
+        -Arguments @("connect", $Port, "resume", "exec", $PrepareSupport) `
+        -FailureMessage "Unable to prepare temporary acceptance support"
+    foreach ($Payload in $SupportPayloads) {
+        $LocalArtifact = Join-Path `
+            $ProjectRoot $Payload.Artifact.Replace("/", "\")
+        if (
+            $null -eq $MpremoteAdapter -and
+            -not (Test-Path -LiteralPath $LocalArtifact -PathType Leaf)
+        ) {
+            throw "Missing acceptance support artifact: $LocalArtifact"
+        }
+        Invoke-MpremoteCommand `
+            -Arguments @(
+                "connect", $Port, "resume", "fs", "cp",
+                $LocalArtifact, (":" + $Payload.Remote)
+            ) `
+            -FailureMessage "Unable to upload acceptance support: $($Payload.Script)"
+    }
+}
+
+function Remove-AcceptanceSupport {
+    if ($DryRun) {
+        Write-Output "ACCEPTANCE_SUPPORT_REMOVE files=$($SupportPayloads.Count)"
+        return
+    }
+    Invoke-MpremoteCommand `
+        -Arguments @("connect", $Port, "resume", "exec", $CleanupSupport) `
+        -FailureMessage "Unable to remove temporary acceptance support"
 }
 
 function Invoke-AcceptanceStage {
@@ -202,8 +342,7 @@ function Invoke-AcceptanceStage {
             Invoke-MpremoteCommand `
                 -Arguments @(
                     "connect", $Port, "resume", "exec", $(
-                        if ($Stage.Name -eq "boot_probe" -or
-                                $Stage.Name -eq "interaction_screen_tracer") {
+                        if ($Stage.Name -eq "boot_probe") {
                             $DirectRunArtifact
                         }
                         else {
@@ -256,9 +395,37 @@ if (-not $DryRun -and $null -eq $MpremoteAdapter) {
 }
 
 Invoke-DeviceReset
-
-foreach ($Stage in $Stages) {
-    Invoke-AcceptanceStage -Stage $Stage
+$SupportStarted = $true
+$AcceptanceFailure = $null
+try {
+    Install-AcceptanceSupport
+    foreach ($Stage in $Stages) {
+        Invoke-AcceptanceStage -Stage $Stage
+    }
+}
+catch {
+    $AcceptanceFailure = $_
+}
+finally {
+    if ($SupportStarted) {
+        try {
+            Remove-AcceptanceSupport
+        }
+        catch {
+            if ($null -eq $AcceptanceFailure) {
+                $AcceptanceFailure = $_
+            }
+            else {
+                Write-Error (
+                    "Acceptance support cleanup also failed: " +
+                    $_.Exception.Message
+                ) -ErrorAction Continue
+            }
+        }
+    }
+}
+if ($null -ne $AcceptanceFailure) {
+    throw $AcceptanceFailure
 }
 
 if ($DryRun) {

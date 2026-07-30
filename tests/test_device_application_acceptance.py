@@ -3,6 +3,8 @@ from pathlib import Path
 
 import pytest
 
+from calc import plugin_fixture
+
 
 TOOLS = Path(__file__).parents[1] / "tools"
 sys.path.insert(0, str(TOOLS))
@@ -73,6 +75,37 @@ def test_device_application_acceptance_runs_the_shared_five_round_matrix(
         "APPLICATION_RESULT PASS memory_errors=0 errors=0 failure_mask=0")
     assert "framebuffer_bytes=8192" in lines[-2]
     assert runtime.display.sleep_count == 2
+
+
+def test_device_application_acceptance_binds_transient_fixture_before_runtime(
+        monkeypatch):
+    runtime = _Runtime()
+    report = _Report()
+    calls = []
+
+    monkeypatch.setattr(
+        plugin_fixture,
+        "configure_transient_fixture",
+        lambda directory: calls.append(("fixture", directory)),
+    )
+    monkeypatch.setattr(
+        device_application_acceptance,
+        "_resident_runtime",
+        lambda: calls.append(("runtime", None)) or runtime,
+    )
+    monkeypatch.setattr(
+        device_application_acceptance,
+        "_run_matrix",
+        lambda candidate: calls.append(("matrix", candidate)) or report,
+    )
+
+    device_application_acceptance.run(emit=lambda _line: None)
+
+    assert calls == [
+        ("fixture", "/sd/_sci_accept_support/functions"),
+        ("runtime", None),
+        ("matrix", runtime),
+    ]
 
 
 def test_device_application_acceptance_rejects_a_failed_shared_report(

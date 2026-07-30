@@ -15,6 +15,7 @@ FIXTURE_FILES = (
     "_acceptance_dependent.py",
     "_acceptance_missing.py",
 )
+TRANSIENT_DIRECTORY = "/sd/_sci_accept_support/functions"
 
 
 class _SelectedSlot:
@@ -111,6 +112,40 @@ class _Disk:
             raise OSError("unexpected fixture stat: " + path) from error
 
 
+class _TransientDisk:
+    def __init__(self, payloads):
+        self.files = {
+            TRANSIENT_DIRECTORY + "/" + filename: bytes(payload)
+            for filename, payload in payloads.items()
+        }
+        self.opened = []
+        self.statted = []
+        self.streams = []
+        self.read_error = None
+        self.close_errors = {}
+        self.close_failures = {}
+        self.never_ending_path = None
+
+    def open(self, path, mode):
+        assert mode == "rb"
+        assert path.startswith(TRANSIENT_DIRECTORY + "/")
+        self.opened.append(path)
+        try:
+            stream = _Stream(self, path, self.files[path])
+        except KeyError as error:
+            raise OSError("unexpected transient fixture path: " + path) from error
+        self.streams.append(stream)
+        return stream
+
+    def stat(self, path):
+        assert path.startswith(TRANSIENT_DIRECTORY + "/")
+        self.statted.append(path)
+        try:
+            return _Stat(len(self.files[path]))
+        except KeyError as error:
+            raise OSError("unexpected transient fixture stat: " + path) from error
+
+
 def _payloads():
     return {
         "_acceptance_core.py": b"CORE = 1\n",
@@ -175,6 +210,20 @@ def _install(monkeypatch, disk, root=None, name="A", release_id=RELEASE_ID,
     return selected
 
 
+def _install_transient(monkeypatch, disk, name="A", release_id=RELEASE_ID):
+    root = SLOT_BASE + "/" + name
+    selected = _SelectedSlot(name, release_id, b"m" * 32)
+    monkeypatch.setattr(
+        plugin_fixture,
+        "_active_slot_evidence",
+        lambda: (root, selected, SLOT_BASE, "release.manifest"),
+    )
+    monkeypatch.setattr(plugin_fixture, "open", disk.open, raising=False)
+    monkeypatch.setattr(plugin_fixture.os, "stat", disk.stat)
+    monkeypatch.setattr(plugin_fixture, "_transient_snapshot", None)
+    return selected
+
+
 def _finish(candidate, limit=200):
     for _ in range(limit):
         if candidate.step():
@@ -188,6 +237,51 @@ def _assert_unavailable(candidate, reason):
     assert candidate.available is False
     assert candidate.snapshot is None
     assert candidate.reason == reason
+
+
+def test_configures_and_reverifies_only_the_fixed_transient_fixture(
+        monkeypatch):
+    payloads = _payloads()
+    disk = _TransientDisk(payloads)
+    selected = _install_transient(monkeypatch, disk)
+
+    snapshot = plugin_fixture.configure_transient_fixture(
+        TRANSIENT_DIRECTORY)
+    candidate = _finish(plugin_fixture.PluginScenarioFixtureCandidate())
+
+    assert snapshot.root == "/sd/.slots/A"
+    assert snapshot.directory == TRANSIENT_DIRECTORY
+    assert snapshot.slot_name == "A"
+    assert snapshot.release_id == RELEASE_ID
+    assert snapshot.manifest_sha256 == selected.manifest_sha256
+    assert candidate.available is True
+    assert candidate.snapshot is snapshot
+    assert tuple(disk.statted) == tuple(
+        TRANSIENT_DIRECTORY + "/" + filename
+        for filename in FIXTURE_FILES)
+
+
+def test_transient_configuration_failure_clears_the_previous_binding(
+        monkeypatch):
+    disk = _TransientDisk(_payloads())
+    _install_transient(monkeypatch, disk)
+    plugin_fixture.configure_transient_fixture(TRANSIENT_DIRECTORY)
+    del disk.files[TRANSIENT_DIRECTORY + "/_acceptance_missing.py"]
+
+    with pytest.raises(OSError, match="transient fixture path"):
+        plugin_fixture.configure_transient_fixture(TRANSIENT_DIRECTORY)
+
+    assert plugin_fixture._transient_snapshot is None
+
+
+def test_transient_configuration_rejects_any_other_directory(monkeypatch):
+    disk = _TransientDisk(_payloads())
+    _install_transient(monkeypatch, disk)
+
+    with pytest.raises(ValueError, match="transient fixture directory"):
+        plugin_fixture.configure_transient_fixture("/sd/Add-ons")
+
+    assert plugin_fixture._transient_snapshot is None
 
 
 @pytest.mark.parametrize("name, root", (

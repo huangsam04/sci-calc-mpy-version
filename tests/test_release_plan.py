@@ -199,7 +199,7 @@ def test_frozen_display_driver_remains_only_a_bootstrap_anchor():
     )
 
 
-def test_frozen_modules_are_omitted_from_slots_but_dynamic_modules_remain():
+def test_frozen_and_acceptance_only_modules_are_omitted_from_slots():
     snapshot = ReleaseTreeSnapshot.from_files((
         ("calc/parser.py", b"# frozen calculator core\n"),
         ("calc/scenario_variables.py", b"# dynamic acceptance transaction\n"),
@@ -216,12 +216,10 @@ def test_frozen_modules_are_omitted_from_slots_but_dynamic_modules_remain():
     assert "sd:calc/parser" not in keys
     assert "sd:functions/basic" not in keys
     assert "sd:screens/calculator" not in keys
-    assert {
-        "sd:calc/scenario_variables",
-        "sd:functions/_acceptance_core",
-        "sd:screens/calculator_scenario",
-        "sd:version",
-    }.issubset(keys)
+    assert "sd:version" in keys
+    assert "sd:calc/scenario_variables" not in keys
+    assert "sd:functions/_acceptance_core" not in keys
+    assert "sd:screens/calculator_scenario" not in keys
 
 
 def test_font_sources_remain_host_only_and_generated_fonts_are_deployed():
@@ -476,17 +474,17 @@ def test_current_source_tree_has_one_explicit_release_classification(tmp_path):
         mode="source",
     )
 
-    assert len(plan.assets) == 49
+    assert len(plan.assets) == 25
     assert Counter((asset.zone, asset.role) for asset in plan.assets) == {
         ("internal", "bootstrap_fixed"): 10,
-        ("sd", "managed_release"): 33,
+        ("sd", "managed_release"): 9,
         ("sd", "seed_if_absent"): 2,
         ("host", "host_only"): 4,
     }
     assert Counter(
         asset.kind for asset in plan.assets if asset.role != "host_only"
     ) == {
-        "source": 40,
+        "source": 16,
         "font": 3,
         "seed": 2,
     }
@@ -508,45 +506,10 @@ def test_current_source_tree_has_one_explicit_release_classification(tmp_path):
         asset for asset in plan.assets
         if asset.zone == "sd" and is_frozen_module(asset.source_path)
     ]
-    for key, relative_path in (
-            ("sd:calc/plugin_fixture", "calc/plugin_fixture.py"),
-            ("sd:calc/scenario_variables", "calc/scenario_variables.py"),
-            ("sd:screens/calculator_scenario",
-             "screens/calculator_scenario.py"),
-            ("sd:screens/about_scenario",
-             "screens/about_scenario.py"),
-            ("sd:screens/letter_panel_scenario",
-             "screens/letter_panel_scenario.py"),
-            ("sd:screens/function_picker_scenario",
-             "screens/function_picker_scenario.py"),
-            ("sd:screens/variable_panel_scenario",
-             "screens/variable_panel_scenario.py"),
-            ("sd:screens/settings_scenario",
-             "screens/settings_scenario.py"),
-            ("sd:screens/stopwatch_scenario",
-             "screens/stopwatch_scenario.py"),
-            ("sd:screens/plot_scenario",
-             "screens/plot_scenario.py"),
-            ("sd:screens/function_panel_scenario",
-             "screens/function_panel_scenario.py"),
-            ("sd:nav_scenario", "nav_scenario.py"),
-            ("sd:runtime_application_controller",
-             "runtime_application_controller.py"),
-            ("sd:runtime_acceptance_bounded",
-             "runtime_acceptance_bounded.py"),
-            ("sd:runtime_fixture_pack", "runtime_fixture_pack.py"),
-            ("sd:runtime_materialize", "runtime_materialize.py"),
-            ("sd:runtime_trusted_construction",
-             "runtime_trusted_construction.py"),
-            ("sd:functions/_acceptance_core",
-             "functions/_acceptance_core.py"),
-            ("sd:functions/_acceptance_dependent",
-             "functions/_acceptance_dependent.py"),
-            ("sd:functions/_acceptance_missing",
-             "functions/_acceptance_missing.py")):
-        asset = next(asset for asset in plan.assets if asset.key == key)
-        assert (asset.zone, asset.role, asset.kind, asset.relative_path) == (
-            "sd", "managed_release", "source", relative_path)
+    assert not (
+        {asset.source_path for asset in plan.assets}
+        & release_plan_module._ACCEPTANCE_ONLY_PATHS
+    )
 
 
 def test_current_mpy_plan_selects_exactly_one_format_per_device_module(
@@ -576,8 +539,8 @@ def test_current_mpy_plan_selects_exactly_one_format_per_device_module(
     assert Counter(
         asset.kind for asset in plan.assets if asset.role != "host_only"
     ) == {
-        "source": 14,
-        "mpy": 26,
+        "source": 11,
+        "mpy": 5,
         "font": 3,
         "seed": 2,
     }
@@ -590,53 +553,10 @@ def test_current_mpy_plan_selects_exactly_one_format_per_device_module(
         asset for asset in plan.assets
         if asset.zone == "sd" and is_frozen_module(asset.source_path)
     ]
-    for key, relative_path in (
-            ("sd:calc/plugin_fixture", "calc/plugin_fixture.mpy"),
-            ("sd:calc/scenario_variables", "calc/scenario_variables.mpy"),
-            ("sd:screens/calculator_scenario",
-             "screens/calculator_scenario.mpy"),
-            ("sd:screens/about_scenario",
-             "screens/about_scenario.mpy"),
-            ("sd:screens/letter_panel_scenario",
-             "screens/letter_panel_scenario.mpy"),
-            ("sd:screens/function_picker_scenario",
-             "screens/function_picker_scenario.mpy"),
-            ("sd:screens/variable_panel_scenario",
-             "screens/variable_panel_scenario.mpy"),
-            ("sd:screens/settings_scenario",
-             "screens/settings_scenario.mpy"),
-            ("sd:screens/stopwatch_scenario",
-             "screens/stopwatch_scenario.mpy"),
-            ("sd:screens/plot_scenario",
-             "screens/plot_scenario.mpy"),
-            ("sd:screens/function_panel_scenario",
-             "screens/function_panel_scenario.mpy"),
-            ("sd:nav_scenario", "nav_scenario.mpy")):
-        asset = next(asset for asset in plan.assets if asset.key == key)
-        assert (asset.zone, asset.role, asset.kind, asset.relative_path) == (
-            "sd", "managed_release", "mpy", relative_path)
-    for key, relative_path in (
-            ("sd:runtime_application_controller",
-             "runtime_application_controller.mpy"),
-            ("sd:runtime_acceptance_bounded",
-             "runtime_acceptance_bounded.mpy"),
-            ("sd:runtime_fixture_pack", "runtime_fixture_pack.mpy"),
-            ("sd:runtime_materialize", "runtime_materialize.mpy"),
-            ("sd:runtime_trusted_construction",
-             "runtime_trusted_construction.mpy")):
-        asset = next(asset for asset in plan.assets if asset.key == key)
-        assert (asset.zone, asset.role, asset.kind, asset.relative_path) == (
-            "sd", "managed_release", "mpy", relative_path)
-    for key, relative_path in (
-            ("sd:functions/_acceptance_core",
-             "functions/_acceptance_core.py"),
-            ("sd:functions/_acceptance_dependent",
-             "functions/_acceptance_dependent.py"),
-            ("sd:functions/_acceptance_missing",
-             "functions/_acceptance_missing.py")):
-        asset = next(asset for asset in plan.assets if asset.key == key)
-        assert (asset.zone, asset.role, asset.kind, asset.relative_path) == (
-            "sd", "managed_release", "source", relative_path)
+    assert not (
+        {asset.source_path for asset in plan.assets}
+        & release_plan_module._ACCEPTANCE_ONLY_PATHS
+    )
     sd_modules = [
         asset.relative_path.rsplit(".", 1)[0]
         for asset in plan.assets
@@ -644,7 +564,7 @@ def test_current_mpy_plan_selects_exactly_one_format_per_device_module(
         and asset.kind in ("source", "mpy")
         and asset.role == "managed_release"
     ]
-    assert len(sd_modules) == len(set(sd_modules)) == 30
+    assert len(sd_modules) == len(set(sd_modules)) == 6
 
 
 def test_cleanup_uses_the_previous_owned_manifest_not_a_remote_listing():

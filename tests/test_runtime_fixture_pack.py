@@ -70,6 +70,13 @@ def test_binds_only_the_verified_fixed_slot_fixture_snapshot():
         pack._snapshot = snapshot
 
 
+def test_binds_the_fixed_transient_acceptance_fixture_directory():
+    snapshot = _snapshot(directory="/sd/_sci_accept_support/functions")
+    pack = bind_verified_candidate(_ready_candidate(snapshot))
+
+    assert pack.directory == "/sd/_sci_accept_support/functions"
+
+
 @pytest.mark.parametrize("changes", (
     {"root": "/sd/Add-ons"},
     {"directory": "/sd/.slots/A/Add-ons"},

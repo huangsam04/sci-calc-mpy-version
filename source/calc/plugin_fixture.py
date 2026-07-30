@@ -27,6 +27,8 @@ _FIXTURE_PATHS = (
 )
 _VALID_SELECTION = ("plugin:_acceptance_dependent",)
 _MISSING_SELECTION = ("plugin:_acceptance_missing",)
+_TRANSIENT_FIXTURE_DIRECTORY = "/sd/_sci_accept_support/functions"
+_transient_snapshot = None
 
 # These bounds cover the current release manifest while putting a fixed limit
 # on malformed SD input.  They are deliberately independent of directory
@@ -848,6 +850,64 @@ class PluginScenarioFixtureSnapshot:
         return PluginScenarioFixtureCandidate(self)
 
 
+def configure_transient_fixture(directory):
+    """Bind the fixed acceptance files without changing the release manifest."""
+    global _transient_snapshot
+    _transient_snapshot = None
+    if directory != _TRANSIENT_FIXTURE_DIRECTORY:
+        raise ValueError("invalid transient fixture directory")
+    root, selected, slot_base, manifest_name = _active_slot_evidence()
+    name = getattr(selected, "name", None)
+    release_id = getattr(selected, "release_id", None)
+    manifest_sha256 = getattr(selected, "manifest_sha256", None)
+    if (not isinstance(root, str)
+            or slot_base != _SLOT_BASE
+            or manifest_name != "release.manifest"
+            or name not in _SLOT_NAMES
+            or root != slot_base + "/" + name
+            or not _is_lower_hex(release_id)
+            or not isinstance(manifest_sha256, (bytes, bytearray))
+            or len(manifest_sha256) != _SHA256_BYTES):
+        raise RuntimeError("transient fixture slot identity is unavailable")
+
+    chunk = bytearray(_CHUNK_SIZE)
+    view = memoryview(chunk)
+    digests = [None, None, None]
+    sizes = [0, 0, 0]
+    stream = None
+    try:
+        for index in range(len(_FIXTURE_FILES)):
+            path = directory + "/" + _FIXTURE_FILES[index]
+            digest = hashlib.sha256()
+            total = 0
+            stream = open(path, "rb")
+            while True:
+                count = stream.readinto(chunk)
+                if not count:
+                    break
+                total += count
+                if total > MAX_PLUGIN_SOURCE_BYTES:
+                    raise ValueError("transient fixture file exceeds limit")
+                digest.update(chunk if count == _CHUNK_SIZE else view[:count])
+            stream.close()
+            stream = None
+            if total <= 0:
+                raise ValueError("transient fixture file is empty")
+            digests[index] = digest.digest()
+            sizes[index] = total
+    finally:
+        if stream is not None:
+            stream.close()
+        view = None
+        chunk = None
+
+    _transient_snapshot = PluginScenarioFixtureSnapshot(
+        root, directory, name, release_id, bytes(manifest_sha256),
+        digests[0], digests[1], digests[2],
+        sizes[0], sizes[1], sizes[2])
+    return _transient_snapshot
+
+
 class PluginScenarioFixtureCandidate:
     """Incrementally verify the release-owned fixture pack for one slot."""
 
@@ -861,6 +921,8 @@ class PluginScenarioFixtureCandidate:
         "_file_bytes")
 
     def __init__(self, snapshot=None):
+        if snapshot is None:
+            snapshot = _transient_snapshot
         if (snapshot is not None
                 and not isinstance(snapshot, PluginScenarioFixtureSnapshot)):
             raise ValueError("invalid fixture snapshot")

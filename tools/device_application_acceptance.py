@@ -147,6 +147,10 @@ def _run_matrix(runtime):
 
 def run(runtime=None, emit=print):
     if runtime is None:
+        from calc.plugin_fixture import configure_transient_fixture
+
+        configure_transient_fixture(
+            "/sd/_sci_accept_support/functions")
         runtime = _resident_runtime()
     if runtime is None or getattr(runtime, "mode", None) != "resident":
         raise RuntimeError("Release mode requires a resident runtime")

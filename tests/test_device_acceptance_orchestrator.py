@@ -14,6 +14,37 @@ _STAGE_SCRIPTS = (
     "device_interaction_acceptance.py",
     "device_frame_allocation_probe.py",
 )
+_SUPPORT_MODULE_PATHS = (
+    "benchmarks.mpy",
+    "nav_scenario.mpy",
+    "runtime_acceptance.mpy",
+    "runtime_acceptance_bounded.mpy",
+    "runtime_application_controller.mpy",
+    "runtime_fixture_pack.mpy",
+    "runtime_materialize.mpy",
+    "runtime_scenarios.mpy",
+    "runtime_trusted_construction.mpy",
+    "calc/plugin_fixture.mpy",
+    "calc/scenario_variables.mpy",
+    "screens/about_scenario.mpy",
+    "screens/calculator_scenario.mpy",
+    "screens/function_panel_scenario.mpy",
+    "screens/function_picker_scenario.mpy",
+    "screens/letter_panel_scenario.mpy",
+    "screens/plot_scenario.mpy",
+    "screens/settings_scenario.mpy",
+    "screens/stopwatch_scenario.mpy",
+    "screens/variable_panel_scenario.mpy",
+)
+_SUPPORT_SOURCE_PATHS = (
+    "functions/_acceptance_core.py",
+    "functions/_acceptance_dependent.py",
+    "functions/_acceptance_missing.py",
+)
+_SUPPORT_REMOTE_PATHS = tuple(
+    "/sd/_sci_accept_support/" + path
+    for path in _SUPPORT_MODULE_PATHS + _SUPPORT_SOURCE_PATHS
+)
 
 
 def _copy_orchestrator(tmp_path, missing_stage=""):
@@ -85,14 +116,28 @@ def _compiled_protocol_events(commands):
         if command[-1] == "reset":
             events.append(("reset", command[1]))
         elif "cp" in command:
-            events.append(("upload", Path(command[-2]).name))
+            remote = command[-1]
+            if remote.startswith(":/sd/_sci_accept_support/"):
+                events.append(("support_upload", remote[1:]))
+            else:
+                events.append(("stage_upload", Path(command[-2]).name))
         elif "exec" in command:
-            if "_sci_accept_stage.run()" in command[-1]:
-                events.append(("execute", "_sci_accept_stage.run()"))
-            elif "gc.collect()" in command[-1]:
+            code = command[-1]
+            if "ACCEPTANCE_SUPPORT_READY" in code:
+                events.append(("support_prepare", "fixed"))
+            elif "ACCEPTANCE_SUPPORT_REMOVED" in code:
+                events.append(("support_remove", "fixed"))
+            elif "_sci_accept_stage.run()" in code:
+                mode = (
+                    "support"
+                    if "/sd/_sci_accept_support" in code
+                    else "direct"
+                )
+                events.append(("stage_execute", mode))
+            elif "gc.collect()" in code:
                 events.append(("prepare", "resident"))
             else:
-                events.append(("execute", command[-1]))
+                events.append(("execute", code))
         elif "rm" in command:
             events.append(("cleanup", Path(command[-1]).name))
         else:
@@ -100,21 +145,28 @@ def _compiled_protocol_events(commands):
     return events
 
 
-def _expected_compiled_protocol_events():
-    events = [("reset", "TEST_PORT")]
-    for artifact in (
+def _expected_compiled_protocol_events(stage_count=5):
+    events = [
+        ("reset", "TEST_PORT"),
+        ("support_prepare", "fixed"),
+    ]
+    events.extend(
+        ("support_upload", remote) for remote in _SUPPORT_REMOTE_PATHS)
+    artifacts = (
         "device_boot_probe.mpy",
         "device_application_acceptance.mpy",
         "device_runtime_monitor.mpy",
         "device_interaction_acceptance.mpy",
         "device_frame_allocation_probe.mpy",
-    ):
+    )
+    for index, artifact in enumerate(artifacts[:stage_count]):
         events.extend((
             ("prepare", "resident"),
-            ("upload", artifact),
-            ("execute", "_sci_accept_stage.run()"),
+            ("stage_upload", artifact),
+            ("stage_execute", "direct" if index == 0 else "support"),
             ("reset", "TEST_PORT"),
         ))
+    events.append(("support_remove", "fixed"))
     return events
 
 
@@ -160,6 +212,7 @@ def test_device_acceptance_dry_run_orders_five_existing_tracers():
     ]
     assert events == [
         "ACCEPTANCE_RESET TEST_PORT",
+        "ACCEPTANCE_SUPPORT_INSTALL files=23",
         "ACCEPTANCE_STAGE boot_probe",
         ("ACCEPTANCE_COMMAND TEST_PORT "
          ".work/mpy/device-tools/device_boot_probe.mpy"),
@@ -180,6 +233,7 @@ def test_device_acceptance_dry_run_orders_five_existing_tracers():
         ("ACCEPTANCE_COMMAND TEST_PORT "
          ".work/mpy/device-tools/device_frame_allocation_probe.mpy"),
         "ACCEPTANCE_RESET TEST_PORT",
+        "ACCEPTANCE_SUPPORT_REMOVE files=23",
         "ACCEPTANCE_DRY_RUN_COMPLETE TEST_PORT stages=5",
     ]
     assert "application_matrix" in result.stdout
@@ -188,7 +242,7 @@ def test_device_acceptance_dry_run_orders_five_existing_tracers():
 def test_device_acceptance_sleeps_through_the_nav_owner_interface():
     source = ORCHESTRATOR.read_text(encoding="utf-8")
 
-    assert source.count("r._nav.renderer.display.sleep()") == 2
+    assert source.count("r._nav.renderer.display.sleep()") == 3
     assert "_binding_state[" not in source
 
 
@@ -222,6 +276,7 @@ def test_device_acceptance_failure_still_resets_before_stopping(tmp_path):
     ]
     assert events == [
         "ACCEPTANCE_RESET TEST_PORT",
+        "ACCEPTANCE_SUPPORT_INSTALL files=23",
         "ACCEPTANCE_STAGE boot_probe",
         ("ACCEPTANCE_COMMAND TEST_PORT "
          ".work/mpy/device-tools/device_boot_probe.mpy"),
@@ -234,6 +289,7 @@ def test_device_acceptance_failure_still_resets_before_stopping(tmp_path):
         ("ACCEPTANCE_COMMAND TEST_PORT "
          ".work/mpy/device-tools/device_runtime_monitor.mpy"),
         "ACCEPTANCE_RESET TEST_PORT",
+        "ACCEPTANCE_SUPPORT_REMOVE files=23",
     ]
 
 
@@ -268,8 +324,10 @@ def test_device_acceptance_missing_stage_script_still_resets(tmp_path):
     ]
     assert events == [
         "ACCEPTANCE_RESET TEST_PORT",
+        "ACCEPTANCE_SUPPORT_INSTALL files=23",
         "ACCEPTANCE_STAGE boot_probe",
         "ACCEPTANCE_RESET TEST_PORT",
+        "ACCEPTANCE_SUPPORT_REMOVE files=23",
     ]
 
 
@@ -283,7 +341,7 @@ def test_stage_and_reset_failure_preserves_stage_error_and_reports_reset(
 
     assert result.returncode != 0
     assert _compiled_protocol_events(commands) == (
-        _expected_compiled_protocol_events()[:5]
+        _expected_compiled_protocol_events(stage_count=1)
     )
     assert "PROBE_CAUGHT Acceptance stage failed: boot_probe" in result.stdout
     assert (
@@ -300,12 +358,29 @@ def test_native_stage_failure_resets_then_stops(tmp_path):
 
     assert result.returncode != 0
     assert _compiled_protocol_events(commands) == (
-        _expected_compiled_protocol_events()[:13]
+        _expected_compiled_protocol_events(stage_count=3)
     )
     assert (
         "PROBE_CAUGHT Acceptance stage failed: runtime_target_tracer"
         in result.stdout
     )
+
+
+def test_failure_cleanup_removes_stage_and_fixed_support_payloads(tmp_path):
+    result, commands = _run_native_orchestrator(
+        tmp_path,
+        fail_stage_script="device_runtime_monitor.py",
+    )
+
+    assert result.returncode != 0
+    cleanup = next(
+        command[-1] for command in commands
+        if "exec" in command
+        and "ACCEPTANCE_SUPPORT_REMOVED" in command[-1]
+    )
+    assert "/sd/_sci_accept_stage.mpy" in cleanup
+    for remote in _SUPPORT_REMOTE_PATHS:
+        assert remote in cleanup
 
 
 def test_native_reset_failure_stops_before_the_next_stage(tmp_path):
@@ -357,14 +432,15 @@ def test_compiled_stage_removes_its_artifact_before_running(tmp_path):
         assert code.index(
             "os.remove('/sd/_sci_accept_stage.mpy')") < code.index(
                 "_sci_accept_stage.run()")
-        if index in (0, 3):
+        if index == 0:
             assert "import calc.plugin_fixture" not in code
             assert "screens.about_scenario" not in code
             continue
-        assert "slot=sys.path[1]" in code
-        assert "calc.__path__=slot+'/calc'" in code
-        assert "screens.__path__=slot+'/screens'" in code
-        assert "functions.__path__=slot+'/functions'" in code
+        assert "support='/sd/_sci_accept_support'" in code
+        assert "sys.path.insert(0,support)" in code
+        assert "calc.__path__=support+'/calc'" in code
+        assert "screens.__path__=support+'/screens'" in code
+        assert "functions.__path__=support+'/functions'" in code
         assert "plugin_fixture" not in code
         assert "_scenario" not in code
         assert "calc_path=" not in code
@@ -379,8 +455,8 @@ def test_injected_adapter_rejects_ambiguous_pipeline_output(tmp_path):
     assert result.returncode != 0
     assert _compiled_protocol_events(commands) == [
         ("reset", "TEST_PORT"),
-        ("prepare", "resident"),
-        ("reset", "TEST_PORT"),
+        ("support_prepare", "fixed"),
+        ("support_remove", "fixed"),
     ]
     assert (
         "PROBE_CAUGHT "
