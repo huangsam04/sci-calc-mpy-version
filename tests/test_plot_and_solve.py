@@ -80,6 +80,23 @@ class CurveDisplay:
         pass
 
 
+class ProgressDisplay(CurveDisplay):
+    def __init__(self):
+        super().__init__()
+        self.text = []
+        self.rectangles = []
+        self.fills = []
+
+    def draw_text8x8(self, x, y, text, **_kwargs):
+        self.text.append((x, y, text))
+
+    def draw_rectangle(self, *args):
+        self.rectangles.append(args)
+
+    def fill_rectangle(self, *args):
+        self.fills.append(args)
+
+
 def _curve_job(auto_scale=False, graph_w=1, graph_h=1, sample_count=1):
     return plot_module._CurveJob(auto_scale, graph_w, graph_h, sample_count)
 
@@ -505,6 +522,92 @@ def test_plot_defers_curve_work_to_bounded_idle_steps(monkeypatch):
     assert plot.settle_step() == SETTLE_MORE
     assert starts == [True]
     assert plot.settle_step() == SETTLE_REDRAW
+
+
+def test_plot_submit_draws_progress_before_any_curve_work():
+    plot = PlotScreen(None, registry=build_registry())
+    pooled_job = plot._state[3][3][3]
+    plot._enter_edit()
+    plot.input_box.set_str("sin(x)^2+cos(x)^2+sqrt(abs(x))")
+
+    assert plot.update(KeyboardStub(), (3, 3, False)) == "REDRAW"
+    assert plot._state[2][2] is True
+    assert plot._state[3][1] is None
+    assert plot._state[3][0] == -1
+
+    display = ProgressDisplay()
+    plot.draw(display)
+
+    assert any(text == "Plotting" for _, _, text in display.text)
+    assert (
+        plot_module.PLOT_PROGRESS_X,
+        plot_module.PLOT_PROGRESS_Y,
+        plot_module.PLOT_PROGRESS_W,
+        plot_module.PLOT_PROGRESS_H,
+        8,
+    ) in display.rectangles
+    assert plot._state[3][3][3] is pooled_job
+    assert not hasattr(plot, "progress_buffer")
+
+
+def test_plot_progress_is_monotonic_and_only_damages_the_bar_rows():
+    plot = PlotScreen(None, registry=build_registry())
+    plot._enter_edit()
+    plot.input_box.set_str("sin(x)^2+cos(x)^2+sqrt(abs(x))")
+    assert plot.update(KeyboardStub(), (3, 3, False)) == "REDRAW"
+    plot.mark_presented()
+
+    fills = [0]
+    flags = SETTLE_MORE
+    steps = 0
+    while flags & SETTLE_MORE:
+        flags = plot.settle_step()
+        steps += 1
+        assert steps < 80
+        encoded = plot._state[3][0]
+        if encoded < 0:
+            fill = -encoded - 1
+            assert fill >= fills[-1]
+            if fill != fills[-1]:
+                assert flags & SETTLE_REDRAW
+                damage = DamageMap()
+                assert plot.collect_present_damage(damage) == DAMAGE_PARTIAL
+                assert damage.ranges[0] == [
+                    plot_module.PLOT_PROGRESS_Y,
+                    plot_module.PLOT_PROGRESS_H,
+                ]
+                assert damage.ranges[1] == [0, 0]
+                plot.mark_presented()
+                fills.append(fill)
+
+    assert len(fills) > 3
+    assert fills[-1] == plot_module.PLOT_PROGRESS_W - 2
+    assert plot._state[3][0] == plot.width
+    assert plot._state[3][1] is None
+    assert plot._state[2][0] is not None
+
+
+def test_plot_new_input_cancels_progress_without_collecting(monkeypatch):
+    plot = PlotScreen(None, registry=build_registry())
+    plot._enter_edit()
+    plot.input_box.set_str("x^2")
+    assert plot.update(KeyboardStub(), (3, 3, False)) == "REDRAW"
+    assert plot.settle_step() == SETTLE_MORE
+    assert plot._state[3][1] is not None
+    assert plot._state[3][3][1][2] is not None
+
+    monkeypatch.setattr(
+        plot_module.gc,
+        "collect",
+        lambda: pytest.fail("input cancellation must not collect"),
+    )
+
+    assert plot.update(KeyboardStub(), (3, 3, False)) == "REDRAW"
+    assert plot._state[1][3] == 1
+    assert plot._state[3][0] == plot.width
+    assert plot._state[3][1] is None
+    assert plot._state[2][2] is False
+    assert plot._state[3][3][1][2] is None
 
 
 def test_plot_editor_uses_overlay_and_footer_rows_at_its_legal_resting_y():
