@@ -28,6 +28,11 @@ class BindingStub:
         self._binding_state = (screens, object(), {}, object(), nav)
 
 
+
+def test_release_version_is_1_4_0():
+    assert VERSION == "1.4.0"
+
+
 def test_boot_probe_reports_version_root_and_buffer_contract():
     module = runpy.run_path(str(TOOLS / "device_boot_probe.py"))
     lines = []
