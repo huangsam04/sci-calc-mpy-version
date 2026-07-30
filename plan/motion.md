@@ -29,5 +29,7 @@
 
 - [x] 真机重新验证最大用户状态门禁；在连续五轮 Calculator history/error 路径稳定复现低堆和超时，`MemoryError=0`，失败后恢复根页、清理载荷并休眠 OLED。
 - [x] 页面淡入/淡出和菜单滑动均未启用；新增动画状态 `0 B`、新增像素缓冲 `0 B`，未降低堆、时延、OOM 或数据保护门槛。
+- [x] 只诊断已测 `error_lifecycle` 热点：循环内结构符号字典候选把主机 `.` tokenizer 微测从 `1024/1711/687 B` 降至 `808/1447/639 B`（保留/峰值/瞬态），但等价 COM5 单 capability 探针从既有 `14752 B/60.456 ms` 退化至 `10208 B/61.472 ms`；已删除候选、专属测试和临时探针，不运行完整 matrix，也不降低门槛。
+- [x] 被否决候选清理后重建并仅刷写正式 frozen 应用分区（`1818192 B`，SHA-256 `6fc4215f03575c692e3d0e69cd6dc8b12fc4a45434ad6e3f5cca84ff28b71acb`）；设备 acceptance support/stage 已删除并让 OLED 硬件休眠，阶段 `check.ps1` 为 `1093 passed in 26.53s`、总耗时 `31.8s`。
 
 完成后回到 [PLAN](../PLAN.md) 勾选“两项动效”，再读取[验证分支](verification.md)。

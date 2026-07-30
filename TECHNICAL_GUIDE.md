@@ -765,7 +765,7 @@ CPython `compileall`、对所有源码使用 `-march=xtensawin` 编译 `.mpy`。
 4. 验收侧缓存同一 application matrix 内不变的 framebuffer 身份快照；该缓存不进入普通 release。
    没有增加像素缓冲、通用动画层、`LazyScreen`、SWAP 或第二 framebuffer。
 
-最终 `check.ps1` 为 `1093 passed in 26.72s`，脚本总耗时 `32.2s`；CPython compileall 和
+最终 `check.ps1` 为 `1093 passed in 26.53s`，脚本总耗时 `31.8s`；CPython compileall 和
 MicroPython 1.29 全源 mpy-cross 均通过。
 
 ### 10.2 COM5 严格门禁（1.4.0）
