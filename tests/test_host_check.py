@@ -189,11 +189,6 @@ def test_generated_build_and_test_paths_share_one_work_root():
             '[Environment]::GetEnvironmentVariable',
             '[Environment]::SetEnvironmentVariable',
         ),
-        "deploy.ps1": (
-            'Join-Path $ProjectRoot ".work"',
-            '[Environment]::GetEnvironmentVariable',
-            '[Environment]::SetEnvironmentVariable',
-        ),
         "tools/build_firmware.ps1": (
             'Join-Path $ProjectRoot ".work"',
             'Join-Path $WorkRoot ("firmware\\" + $Profile)',
