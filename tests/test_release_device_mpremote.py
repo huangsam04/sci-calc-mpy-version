@@ -15,6 +15,7 @@ import bootenv
 import bootlog
 import bootsel
 import bootsupervisor
+from tools import release_deploy
 from tools import release_device_mpremote as mpadapter
 from tools import release_adoption
 from tools.release_apply import ReleaseFailure, apply_release
@@ -76,6 +77,7 @@ class _DeviceTwin:
         self.staging_mutator = None
         self.limited_calls = []
         self.read_file_calls = 0
+        self.write_paths = []
         self._connected = False
         self._last_boot = None
 
@@ -138,6 +140,7 @@ class _DeviceTwin:
         return mapped.read_bytes()
 
     def write_file(self, path, data):
+        self.write_paths.append(path)
         mapped = self._map(path)
         mapped.parent.mkdir(parents=True, exist_ok=True)
         mapped.write_bytes(bytes(data))
@@ -300,6 +303,8 @@ class _DeviceTwin:
             return self._owned_directory_count(params)
         if code is mpadapter.OWNED_TREE_ENTRY_KIND_CODE:
             return self._owned_entry_kind(params)
+        if code is mpadapter.OWNED_TREE_REMOVE_BATCH_CODE:
+            return self._owned_remove_batch(params)
         if code is mpadapter.OWNED_TREE_REMOVE_FILE_CODE:
             return self._owned_remove_file(params)
         if code is mpadapter.OWNED_TREE_REMOVE_DIRECTORY_CODE:
@@ -504,6 +509,26 @@ class _DeviceTwin:
         except OSError:
             return "F"
         return "E"
+
+    def _owned_remove_batch(self, params):
+        try:
+            files = ast.literal_eval(params["files"])
+            directories = ast.literal_eval(params["directories"])
+            root = self._map(self._owned_string(params, "root"))
+            for path in files:
+                mapped = self._map(path)
+                if mapped.exists():
+                    mapped.unlink()
+            for path in directories:
+                mapped = self._map(path)
+                if mapped.exists():
+                    mapped.rmdir()
+            if root.exists():
+                root.rmdir()
+            return "E"
+        except (AssertionError, KeyError, OSError, TypeError, ValueError,
+                SyntaxError):
+            return "F"
 
     @staticmethod
     def _safe_owned_relative(path):
@@ -998,6 +1023,7 @@ def _seed_confirmed_device(twin, plan, extra_files=()):
     twin.sessions = 0
     twin.resets = 0
     twin.closes = 0
+    twin.write_paths = []
 
 
 def test_exact_unmarked_transition_slot_is_claimed_then_erased(tmp_path):
@@ -1096,6 +1122,138 @@ def test_happy_path_release_end_to_end(tmp_path):
         code is mpadapter.RELEASE_CONTROL_COLLECT_CODE
         for code, _limit in twin.limited_calls
     ) == 2
+    batch_remove = getattr(mpadapter, "OWNED_TREE_REMOVE_BATCH_CODE", None)
+    assert batch_remove is not None
+    assert sum(
+        code is batch_remove for code, _limit in twin.limited_calls
+    ) == 1
+    assert sum(
+        code is mpadapter.VERIFY_SLOT_CODE
+        for code, _limit in twin.limited_calls
+    ) == 3
+
+
+def test_fast_release_syncs_only_managed_changes_in_the_confirmed_slot(
+        tmp_path):
+    old_plan = _plan("1.3.0", legacy=True)
+    new_plan = _plan("1.4.0")
+    sentinels = {
+        "/sd/settings.json": b'{"brightness":73,"user":true}\n',
+        "/sd/vars.json": b'{"answer":42}\n',
+        "/sd/Add-ons/user_pack.py": b"# user add-on\n",
+        "/sd/.slots/A/notes.txt": b"private notes\n",
+    }
+    adapter, twin = _adapter_and_twin(
+        tmp_path, lambda boot: _smoke_lines("1.4.0"))
+    _seed_confirmed_device(twin, old_plan, sentinels.items())
+
+    result = release_deploy.apply_fast_release(new_plan, adapter)
+
+    assert result == new_plan.release_id
+    selector = _read_selector(twin)
+    assert selector.confirmed.name == "A"
+    assert selector.confirmed.release_id == new_plan.release_id
+    assert not twin.exists("/sd/.slots/B")
+    assert not twin.exists("/sd/.slots/A/legacy.py")
+    for location, payload in sentinels.items():
+        assert twin.read_file(location) == payload
+    root = "/sd/.slots/A/"
+    assert [path for path in twin.write_paths if path.startswith(root)] == [
+        root + "catalog.py",
+        root + "main.py",
+        root + "version.py",
+        root + bootenv.MANIFEST_NAME,
+        root + mpadapter.OWNER_MARKER_NAME,
+    ]
+    assert twin.sessions == 1
+    assert twin.resets == 1
+
+
+def test_fast_release_does_not_retransmit_an_unchanged_release(tmp_path):
+    plan = _plan("1.4.0")
+    adapter, twin = _adapter_and_twin(
+        tmp_path, lambda boot: _smoke_lines("1.4.0"))
+    _seed_confirmed_device(twin, plan)
+
+    assert release_deploy.apply_fast_release(plan, adapter) == plan.release_id
+
+    assert not any(
+        path.startswith("/sd/.slots/A/") for path in twin.write_paths)
+    assert twin.sessions == 1
+    assert twin.resets == 1
+
+
+def test_fast_release_rejects_an_untrusted_owner_before_writing(tmp_path):
+    plan = _plan("1.4.0")
+    adapter, twin = _adapter_and_twin(
+        tmp_path, lambda boot: _smoke_lines("1.4.0"))
+    _seed_confirmed_device(twin, plan)
+    twin.write_file("/sd/.slots/A/" + mpadapter.OWNER_MARKER_NAME, b"bad")
+    twin.write_paths = []
+
+    with pytest.raises(ValueError, match="owner marker"):
+        release_deploy.apply_fast_release(plan, adapter)
+
+    assert twin.write_paths == []
+    assert twin.sessions == 1
+    assert twin.resets == 1
+
+
+def test_fast_release_preserves_an_unowned_new_managed_path(tmp_path):
+    old_plan = _plan("1.3.0", legacy=True)
+    new_plan = _plan("1.4.0")
+    adapter, twin = _adapter_and_twin(
+        tmp_path, lambda boot: _smoke_lines("1.4.0"))
+    _seed_confirmed_device(twin, old_plan)
+    path = "/sd/.slots/A/catalog.py"
+    twin.write_file(path, b"# user upload\n")
+    twin.write_paths = []
+
+    with pytest.raises(ValueError, match="unowned file"):
+        release_deploy.apply_fast_release(new_plan, adapter)
+
+    assert twin.read_file(path) == b"# user upload\n"
+    assert twin.write_paths == []
+    assert _read_selector(twin).confirmed.release_id == old_plan.release_id
+
+
+def test_fast_release_requires_transactional_adoption_without_confirmed_slot(
+        tmp_path):
+    plan = _plan("1.4.0")
+    adapter, twin = _adapter_and_twin(
+        tmp_path, lambda boot: _smoke_lines("1.4.0"))
+
+    with pytest.raises(
+            ValueError, match=r"--transactional --adopt"):
+        release_deploy.apply_fast_release(plan, adapter)
+
+    assert twin.write_paths == []
+    assert twin.sessions == 1
+    assert twin.resets == 1
+
+
+def test_interrupted_fast_release_does_not_commit_the_new_selector(tmp_path):
+    old_plan = _plan("1.3.0", legacy=True)
+    new_plan = _plan("1.4.0")
+    adapter, twin = _adapter_and_twin(
+        tmp_path, lambda boot: _smoke_lines("1.4.0"))
+    _seed_confirmed_device(twin, old_plan)
+    write_file = twin.write_file
+
+    def interrupt_manifest(path, payload):
+        if path.endswith("/" + bootenv.MANIFEST_NAME):
+            raise KeyboardInterrupt("transfer interrupted")
+        write_file(path, payload)
+
+    twin.write_file = interrupt_manifest
+
+    with pytest.raises(KeyboardInterrupt, match="transfer interrupted"):
+        release_deploy.apply_fast_release(new_plan, adapter)
+
+    selector = _read_selector(twin)
+    assert selector.confirmed.release_id == old_plan.release_id
+    assert (binascii.hexlify(selector.confirmed.manifest_sha256).decode()
+            == old_plan.manifest_sha256)
 
 
 def test_trial_smoke_failure_rejects_the_trial(tmp_path):
@@ -1418,6 +1576,40 @@ def test_cleanup_reset_enters_boot_only_raw_repl():
     device.reset_to_boot_repl()
 
     assert device._transport.soft_resets == [True]
+
+
+def test_device_reuses_created_directories_across_file_uploads():
+    class _FsTransport:
+        def __init__(self):
+            self.directories = set()
+            self.mkdir_calls = []
+            self.writes = []
+
+        def fs_mkdir(self, path):
+            self.mkdir_calls.append(path)
+            if path in self.directories:
+                raise OSError("already exists")
+            self.directories.add(path)
+
+        def fs_writefile(self, path, payload):
+            self.writes.append((path, payload))
+
+    device = mpadapter.MpremoteDevice("COM-test")
+    device._transport = _FsTransport()
+
+    device.write_file("/sd/.staging/release/calc/a.mpy", b"a")
+    device.write_file("/sd/.staging/release/calc/b.mpy", b"b")
+
+    assert device._transport.mkdir_calls == [
+        "/sd",
+        "/sd/.staging",
+        "/sd/.staging/release",
+        "/sd/.staging/release/calc",
+    ]
+    assert device._transport.writes == [
+        ("/sd/.staging/release/calc/a.mpy", b"a"),
+        ("/sd/.staging/release/calc/b.mpy", b"b"),
+    ]
 
 
 @pytest.mark.parametrize("response,message", (

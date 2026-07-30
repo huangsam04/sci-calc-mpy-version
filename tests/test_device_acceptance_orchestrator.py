@@ -113,7 +113,6 @@ def _expected_compiled_protocol_events():
             ("prepare", "resident"),
             ("upload", artifact),
             ("execute", "_sci_accept_stage.run()"),
-            ("cleanup", "_sci_accept_stage.mpy"),
             ("reset", "TEST_PORT"),
         ))
     return events
@@ -277,7 +276,7 @@ def test_stage_and_reset_failure_preserves_stage_error_and_reports_reset(
 
     assert result.returncode != 0
     assert _compiled_protocol_events(commands) == (
-        _expected_compiled_protocol_events()[:6]
+        _expected_compiled_protocol_events()[:5]
     )
     assert "PROBE_CAUGHT Acceptance stage failed: boot_probe" in result.stdout
     assert (
@@ -294,7 +293,7 @@ def test_native_stage_failure_resets_then_stops(tmp_path):
 
     assert result.returncode != 0
     assert _compiled_protocol_events(commands) == (
-        _expected_compiled_protocol_events()[:16]
+        _expected_compiled_protocol_events()[:13]
     )
     assert (
         "PROBE_CAUGHT Acceptance stage failed: runtime_target_tracer"
@@ -335,6 +334,20 @@ def test_injected_adapter_runs_all_five_stages_without_workspace_python(
         "ACCEPTANCE_COMPLETE TEST_PORT stages=5 "
         "animation=removed_heap_below_12k"
     ) in result.stdout
+
+
+def test_compiled_stage_removes_its_artifact_before_running(tmp_path):
+    result, commands = _run_native_orchestrator(tmp_path)
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    executions = [
+        command[-1] for command in commands
+        if "exec" in command and "_sci_accept_stage.run()" in command[-1]
+    ]
+    assert len(executions) == 5
+    for code in executions:
+        assert code.index("os.remove('/sd/_sci_accept_stage.mpy')") < code.index(
+            "_sci_accept_stage.run()")
 
 
 def test_injected_adapter_rejects_ambiguous_pipeline_output(tmp_path):

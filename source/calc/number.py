@@ -23,7 +23,15 @@ MAX_MODULO_SHIFT = 200
 
 
 def _digit_count(value):
-    return len(str(abs(value)))
+    value = abs(value)
+    digits = 1
+    while value >= 1000000000:
+        value //= 1000000000
+        digits += 9
+    while value >= 10:
+        value //= 10
+        digits += 1
+    return digits
 
 
 def _normalise_pair(coefficient, exponent, significant_digits=WORKING_DIGITS):

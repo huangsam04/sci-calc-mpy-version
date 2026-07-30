@@ -2,6 +2,7 @@ import json
 
 import pytest
 
+from calc import number as number_module
 from calc.functions import EvalContext, build_registry
 from calc.number import Number
 from calc.parser import ParseError, evaluate
@@ -25,6 +26,19 @@ def test_large_addends_with_different_coefficient_lengths_are_not_discarded():
     result = evaluate("999999999999999999999999999999+1e34", context)
 
     assert result.to_scientific(4) == "1.0001*10^34"
+
+
+def test_large_integer_normalisation_does_not_need_a_decimal_string(monkeypatch):
+    def reject_decimal_string(_value):
+        raise MemoryError("decimal rendering unavailable")
+
+    monkeypatch.setattr(
+        number_module, "str", reject_decimal_string, raising=False)
+
+    result = Number(10 ** 95)
+
+    assert result.coefficient == 1
+    assert result.exponent == 95
 
 
 def test_high_precision_display_digits_do_not_change_the_stored_result():

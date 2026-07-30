@@ -14,8 +14,8 @@
 
 - [x] **入口修复**：[导航分支](plan/navigation.md)。已用主机回归修复 Calculator 和 Function Panel 的入口分发。
 - [x] **绘图反馈**：[绘图分支](plan/plot-feedback.md)。在方程提交后显示真实进度，不增加像素存储。
-- [ ] **内存、动效与版本**：[动效分支](plan/motion.md)。先测量和清理热点；只有真机最小空闲堆达到 12 KiB 才启用两项既定动效，并把版本升级到 `1.4.0`。
-- [ ] **验证与说明**：[验证分支](plan/verification.md)。运行现有检查和 COM5 统一验收，再同步 README、TECHNICAL_GUIDE 和 USER_GUIDE。
+- [x] **内存、动效与版本**：[动效分支](plan/motion.md)。已处理两个可复现分配热点；12 KiB 真机门禁失败，动效保持禁用，版本为 `1.4.0`。
+- [x] **验证与说明**：[验证分支](plan/verification.md)。`1177 passed`，COM5 五阶段统一验收通过，OLED 已休眠，现有说明已同步。
 
 ## 执行顺序
 

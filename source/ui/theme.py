@@ -27,6 +27,11 @@ def get_direct_text_draw(display):
 
 
 def fit_text(text, width, font):
+    if font is None:
+        max_chars = width // 8
+        if len(text) <= max_chars:
+            return text
+        return text[:max(0, max_chars - 1)] + "~"
     if text_width(text, font) <= width:
         return text
     suffix = "~"

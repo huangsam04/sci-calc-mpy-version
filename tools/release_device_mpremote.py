@@ -15,6 +15,7 @@ from tools.release_plan import (
     MPY_ABI_TAG,
     SOURCE_ABI_TAG,
     _validated_manifest,
+    cleanup_candidates,
 )
 from tools.release_protocol import (
     ColdBootObservation,
@@ -896,6 +897,29 @@ OWNED_TREE_REMOVE_DIRECTORY_CODE = (
     "else:\n"
     "    print('E')")
 
+OWNED_TREE_REMOVE_BATCH_CODE = (
+    "import os\n"
+    "files={files}\n"
+    "directories={directories}\n"
+    "root={root}\n"
+    "ok=False\n"
+    "def _remove(path,directory=False):\n"
+    "    try:\n"
+    "        os.rmdir(path) if directory else os.remove(path)\n"
+    "    except OSError as error:\n"
+    "        code=error.args[0] if error.args else -1\n"
+    "        if code!=2: raise\n"
+    "try:\n"
+    "    for path in files: _remove(path)\n"
+    "    for path in directories: _remove(path,True)\n"
+    "    _remove(root,True)\n"
+    "    ok=True\n"
+    "except MemoryError:\n"
+    "    raise\n"
+    "except Exception:\n"
+    "    pass\n"
+    "print('E' if ok else 'F')")
+
 OWNED_TREE_ACTIVATE_CODE = (
     "import os\n"
     "src={src}\n"
@@ -1339,17 +1363,23 @@ class _OwnedReleaseTrees:
         raise ValueError("owned release directory erase failed")
 
     def _erase_verified(self, spec, present_files, present_directories):
-        for relative_path in spec.asset_paths:
-            if relative_path in present_files:
-                self._delete_file(_owned_full_path(spec.root, relative_path))
-        for directory in sorted(
+        files = tuple(
+            _owned_full_path(spec.root, relative_path)
+            for relative_path in (
+                spec.asset_paths
+                + (bootenv.MANIFEST_NAME, OWNER_MARKER_NAME))
+            if relative_path in present_files)
+        directories = tuple(
+            _owned_full_path(spec.root, directory)
+            for directory in sorted(
                 present_directories - {""},
-                key=lambda path: (path.count("/"), path), reverse=True):
-            self._delete_directory(_owned_full_path(spec.root, directory))
-        for relative_path in (bootenv.MANIFEST_NAME, OWNER_MARKER_NAME):
-            if relative_path in present_files:
-                self._delete_file(_owned_full_path(spec.root, relative_path))
-        self._delete_directory(spec.root, root=True)
+                key=lambda path: (path.count("/"), path), reverse=True))
+        token = self._exec_token(
+            OWNED_TREE_REMOVE_BATCH_CODE,
+            files=repr(files), directories=repr(directories),
+            root=repr(spec.root))
+        if token != "E":
+            raise ValueError("owned release batch erase failed")
         return "ERASED"
 
     def _marker_only_erase(self, root, release_id, manifest_sha256):
@@ -1431,7 +1461,8 @@ class _OwnedReleaseTrees:
         self._verify_spec(spec)
 
     def activate(self, claim, plan, slot_name):
-        self.verify(claim, plan)
+        # release_apply calls verify immediately before select_trial in the
+        # same guarded session; no device write can occur between the calls.
         destination = self._slot_root(slot_name)
         self._device.makedirs(bootenv.SLOT_BASE)
         if self._entry_kind(bootenv.SLOT_BASE, slot_name) != "M":
@@ -1737,6 +1768,101 @@ class _MpremoteSession:
                     or receipt.matched_mask != expected_mask):
                 raise ValueError(
                     "stable bootstrap anchor verification failed")
+
+    def sync_confirmed(self, plan):
+        """Update one already-provisioned confirmed slot in place."""
+        selector = self._read_selector()
+        if (selector is None or selector.confirmed is None
+                or selector.trial is not None
+                or selector.confirmation_pending):
+            raise ValueError(
+                "fast deployment requires one stable confirmed slot; "
+                "use --transactional --adopt to provision or repair it")
+        current_ref = _entry_to_ref(selector.confirmed)
+        root = self._trees._slot_root(current_ref.name)
+        manifest_path = _owned_full_path(root, bootenv.MANIFEST_NAME)
+        manifest_bytes = self._device.read_file(manifest_path)
+        if manifest_bytes is None:
+            raise ValueError("confirmed slot manifest is missing")
+        manifest_sha256 = hashlib.sha256(manifest_bytes).hexdigest()
+        if manifest_sha256 not in (
+                current_ref.manifest_sha256, plan.manifest_sha256):
+            raise ValueError("confirmed slot manifest hash mismatch")
+        manifest = _validated_manifest(manifest_bytes)
+        expected_release_id = (
+            plan.release_id
+            if manifest_sha256 == plan.manifest_sha256
+            else current_ref.release_id)
+        if manifest["release_id"] != expected_release_id:
+            raise ValueError("confirmed slot manifest identity mismatch")
+
+        owner_path = _owned_full_path(root, OWNER_MARKER_NAME)
+        owner = self._device.read_file(owner_path)
+        expected_owner = owner_marker_payload(
+            manifest["release_id"], manifest_sha256)
+        previous_owner = owner_marker_payload(
+            current_ref.release_id, current_ref.manifest_sha256)
+        if owner not in (expected_owner, previous_owner):
+            raise ValueError("confirmed slot owner marker mismatch")
+
+        self.validate_bootstrap(plan)
+        current_hashes = {
+            record["path"]: record["sha256"]
+            for record in manifest["assets"]
+            if record["role"] == "managed_release"
+            and record["zone"] == "sd"
+        }
+        managed = tuple(
+            asset for asset in plan.assets
+            if asset.role == "managed_release" and asset.zone == "sd")
+        for asset in managed:
+            if (asset.relative_path not in current_hashes
+                    and self._device.exists(
+                        _owned_full_path(root, asset.relative_path))):
+                raise ValueError(
+                    "new managed path conflicts with an unowned file; "
+                    "use --transactional to preserve it")
+        for asset in managed:
+            if current_hashes.get(asset.relative_path) != asset.sha256:
+                self._device.write_file(
+                    _owned_full_path(root, asset.relative_path),
+                    asset.payload)
+
+        for zone, relative_path in cleanup_candidates(
+                manifest_bytes, manifest_sha256, plan):
+            if zone != "sd":
+                continue
+            token = self._trees._exec_token(
+                OWNED_TREE_REMOVE_FILE_CODE,
+                path=repr(_owned_full_path(root, relative_path)))
+            if token not in ("E", "M"):
+                raise ValueError("obsolete managed file erase failed")
+
+        if (manifest_sha256 != plan.manifest_sha256
+                or owner != owner_marker_payload(
+                    plan.release_id, plan.manifest_sha256)):
+            self._device.write_file(manifest_path, plan.manifest_bytes)
+            self._device.write_file(
+                owner_path,
+                owner_marker_payload(plan.release_id, plan.manifest_sha256))
+
+        new_entry = bootsel.SlotEntry(
+            current_ref.name, plan.release_id,
+            binascii.unhexlify(plan.manifest_sha256))
+        if selector.confirmed != new_entry:
+            selector = self._write_selector(bootsel.SelectorData(
+                0, new_entry, None, 0, False, selector.retired, False))
+
+        for asset in plan.assets:
+            if asset.role == "seed_if_absent":
+                path = _device_path(asset.zone, asset.relative_path)
+                if not self._device.exists(path):
+                    self._device.write_file(path, asset.payload)
+        return SelectionTicket(
+            selector.generation,
+            SlotRef(
+                current_ref.name, plan.release_id, plan.manifest_sha256),
+            already_confirmed=True)
 
     def stage(self, plan):
         selector = self._read_selector()
@@ -2051,9 +2177,11 @@ class MpremoteDevice:
         self._baudrate = baudrate
         self._connect_wait = connect_wait
         self._transport = None
+        self._known_directories = set()
 
     def connect(self):
         from mpremote.transport_serial import SerialTransport
+        self._known_directories.clear()
         self._transport = SerialTransport(
             self._port, self._baudrate, wait=self._connect_wait)
         self._transport.enter_raw_repl(soft_reset=False)
@@ -2125,10 +2253,13 @@ class MpremoteDevice:
         current = ""
         for part in path.strip("/").split("/"):
             current += "/" + part
+            if current in self._known_directories:
+                continue
             try:
                 self._transport.fs_mkdir(current)
             except OSError:
                 pass
+            self._known_directories.add(current)
 
     def exists(self, path):
         return self._transport.fs_exists(path)

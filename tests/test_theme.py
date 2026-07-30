@@ -1,5 +1,6 @@
 from ui.theme import (
-    draw_footer, draw_footer_cached, draw_footer_fast, draw_header_fast)
+    draw_footer, draw_footer_cached, draw_footer_fast, draw_header_fast,
+    fit_text)
 
 
 class DisplaySpy:
@@ -23,6 +24,23 @@ class DisplaySpy:
 class FontStub:
     def measure_text(self, text):
         return len(text) * 6
+
+
+class SliceCountingText(str):
+    slices = 0
+
+    def __getitem__(self, key):
+        if isinstance(key, slice):
+            type(self).slices += 1
+        return type(self)(super().__getitem__(key))
+
+
+def test_builtin_font_fits_long_text_with_one_final_slice():
+    text = SliceCountingText("1234567890" * 4)
+    SliceCountingText.slices = 0
+
+    assert fit_text(text, 104, None) == "123456789012~"
+    assert SliceCountingText.slices == 1
 
 
 def test_fast_footer_draws_static_and_dynamic_text_directly_as_bytes():

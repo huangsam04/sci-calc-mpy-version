@@ -41,151 +41,116 @@ def _reset_root(runtime, nav, root, present):
             nav.present_current()
 
 
-def run(runtime=None, emit=print):
-    if runtime is None:
-        runtime = _resident_runtime()
-    if runtime is None or getattr(runtime, "mode", "resident") != "resident":
-        raise RuntimeError("Release mode requires a resident runtime")
-    targets = getattr(runtime, "targets", None)
-    if targets is None:
-        targets = runtime.screens
-    nav = getattr(runtime, "nav", None)
-    if nav is None:
-        nav = runtime._nav
-    root = getattr(runtime, "root", None)
-    if root is None:
-        root = targets[0]
-    if not targets:
-        raise RuntimeError("Runtime monitor has no resident targets")
-    canonical = len(targets) == 10 and root is targets[0]
-    first = 1 if canonical else 0
-    stop = 6 if canonical else len(targets)
+def _free():
+    reporter = getattr(gc, "mem_free", None)
+    return reporter() if reporter is not None else -1
 
-    stats = [0] * 10
-    failure = [None]
-    _reset_root(runtime, nav, root, False)
-    gc.collect()
-    heap_before = gc.mem_free() if hasattr(gc, "mem_free") else -1
-    stats[5] = heap_before
-    baseline = _buffer_state(nav)
-    stats[7] = baseline[0] + baseline[2]
-    if canonical and baseline != (8192, baseline[1], 104, baseline[3]):
-        stats[9] |= 32
-    emit("MONITOR_START mode=resident rounds=5 heap_before="
-         + str(heap_before) + " buffer_peak_bytes=" + str(stats[7]))
 
-    def sample(started, allow_plot, target_index, phase):
-        elapsed = time.ticks_diff(time.ticks_us(), started)
-        free = gc.mem_free() if hasattr(gc, "mem_free") else -1
-        stats[4] += 1
-        if stats[5] < 0 or (free >= 0 and free < stats[5]):
-            stats[5] = free
-        if elapsed > stats[6]:
-            stats[6] = elapsed
-        if elapsed >= MAX_BLOCKING_STEP_US:
-            stats[9] |= 4
-            emit("MONITOR_SLOW target=" + str(target_index)
-                 + " phase=" + str(phase) + " step_us=" + str(elapsed))
-        state = _buffer_state(nav)
-        size = state[0] + state[2]
-        if size > stats[7]:
-            stats[7] = size
-        if state != baseline:
-            stats[8] += 1
-            stats[9] |= 32
-
-    def settle(allow_plot):
-        for _ in range(MAX_SETTLE_STEPS):
-            started = time.ticks_us()
-            try:
-                flags = nav.settle_current()
-                if flags & SETTLE_COLLECT:
-                    gc.collect()
-                if flags & SETTLE_REDRAW:
-                    nav.present_current()
-            except MemoryError as error:
-                stats[0] += 1
-                stats[9] |= 1
-                failure[0] = error
-                flags = 0
-            except Exception as error:
-                stats[1] += 1
-                stats[9] |= 2
-                failure[0] = error
-                flags = 0
-            sample(started, allow_plot, target_index, 2)
-            if failure[0] is not None or not flags & SETTLE_MORE:
-                return failure[0] is None
+def _capture_failure(stats, failure, error):
+    if isinstance(error, MemoryError):
+        stats[0] += 1
+        stats[9] |= 1
+    else:
         stats[1] += 1
         stats[9] |= 2
-        failure[0] = RuntimeError("Page settle work exceeded its fixed bound")
-        return False
+    failure[0] = error
 
-    try:
-        for round_index in range(TOTAL_ROUNDS):
-            for target_index in range(first, stop):
-                target = targets[target_index]
-                allow_plot = canonical and target_index == 2
+
+def _sample(nav, stats, baseline, started, target_index, phase, emit):
+    elapsed = time.ticks_diff(time.ticks_us(), started)
+    free = _free()
+    stats[4] += 1
+    if stats[5] < 0 or (free >= 0 and free < stats[5]):
+        stats[5] = free
+    if elapsed > stats[6]:
+        stats[6] = elapsed
+    if elapsed >= MAX_BLOCKING_STEP_US:
+        stats[9] |= 4
+        emit("MONITOR_SLOW target=" + str(target_index)
+             + " phase=" + str(phase) + " step_us=" + str(elapsed))
+    state = _buffer_state(nav)
+    size = state[0] + state[2]
+    if size > stats[7]:
+        stats[7] = size
+    if state != baseline:
+        stats[8] += 1
+        stats[9] |= 32
+
+
+def _settle(nav, stats, failure, baseline, target_index, emit):
+    for _ in range(MAX_SETTLE_STEPS):
+        started = time.ticks_us()
+        try:
+            flags = nav.settle_current()
+            if flags & SETTLE_COLLECT:
+                gc.collect()
+            if flags & SETTLE_REDRAW:
+                nav.present_current()
+        except Exception as error:
+            _capture_failure(stats, failure, error)
+            flags = 0
+        _sample(nav, stats, baseline, started, target_index, 2, emit)
+        if failure[0] is not None or not flags & SETTLE_MORE:
+            return failure[0] is None
+    stats[1] += 1
+    stats[9] |= 2
+    failure[0] = RuntimeError("Page settle work exceeded its fixed bound")
+    return False
+
+
+def _exercise_targets(
+        nav, targets, first, stop, stats, failure, baseline, emit):
+    for round_index in range(TOTAL_ROUNDS):
+        for target_index in range(first, stop):
+            started = time.ticks_us()
+            try:
+                nav.go_to(targets[target_index])
+                nav.present_current()
+            except Exception as error:
+                _capture_failure(stats, failure, error)
+            _sample(
+                nav, stats, baseline, started, target_index, 1, emit)
+            if (failure[0] is not None
+                    or not _settle(
+                        nav, stats, failure, baseline, target_index, emit)):
+                break
+
+            started = time.ticks_us()
+            try:
+                nav.go_back()
+                nav.present_current()
+            except Exception as error:
+                _capture_failure(stats, failure, error)
+            _sample(
+                nav, stats, baseline, started, target_index, 3, emit)
+            if (failure[0] is not None
+                    or not _settle(
+                        nav, stats, failure, baseline, target_index, emit)):
+                break
+            collector = getattr(nav, "collect_pending", None)
+            if collector is not None:
                 started = time.ticks_us()
                 try:
-                    nav.go_to(target)
-                    nav.present_current()
-                except MemoryError as error:
-                    stats[0] += 1
-                    stats[9] |= 1
-                    failure[0] = error
+                    collector()
                 except Exception as error:
-                    stats[1] += 1
-                    stats[9] |= 2
-                    failure[0] = error
-                sample(started, allow_plot, target_index, 1)
-                if failure[0] is not None or not settle(allow_plot):
-                    break
-
-                started = time.ticks_us()
-                try:
-                    nav.go_back()
-                    nav.present_current()
-                except MemoryError as error:
-                    stats[0] += 1
-                    stats[9] |= 1
-                    failure[0] = error
-                except Exception as error:
-                    stats[1] += 1
-                    stats[9] |= 2
-                    failure[0] = error
-                sample(started, False, target_index, 3)
-                if failure[0] is not None or not settle(False):
-                    break
-                collector = getattr(nav, "collect_pending", None)
-                if collector is not None:
-                    started = time.ticks_us()
-                    try:
-                        collector()
-                    except MemoryError as error:
-                        stats[0] += 1
-                        stats[9] |= 1
-                        failure[0] = error
-                    except Exception as error:
-                        stats[1] += 1
-                        stats[9] |= 2
-                        failure[0] = error
-                    sample(started, False, target_index, 4)
-                if failure[0] is not None:
-                    break
-                stats[3] += 1
+                    _capture_failure(stats, failure, error)
+                _sample(
+                    nav, stats, baseline, started, target_index, 4, emit)
             if failure[0] is not None:
                 break
-            stats[2] = round_index + 1
-    finally:
-        _reset_root(runtime, nav, root, True)
+            stats[3] += 1
+        if failure[0] is not None:
+            break
+        stats[2] = round_index + 1
 
+
+def _finish(nav, stats, failure, baseline, heap_before, emit):
     if failure[0] is not None:
         emit("MONITOR_ERROR " + type(failure[0]).__name__
              + " " + str(failure[0]))
         failure[0] = None
     gc.collect()
-    heap_after = gc.mem_free() if hasattr(gc, "mem_free") else -1
+    heap_after = _free()
     if stats[5] < 0 or (heap_after >= 0 and heap_after < stats[5]):
         stats[5] = heap_after
     heap_delta = (
@@ -216,6 +181,47 @@ def run(runtime=None, emit=print):
     if stats[9] != 0:
         raise RuntimeError("Device runtime acceptance failed")
     return stats
+
+
+def run(runtime=None, emit=print):
+    if runtime is None:
+        runtime = _resident_runtime()
+    if runtime is None or getattr(runtime, "mode", "resident") != "resident":
+        raise RuntimeError("Release mode requires a resident runtime")
+    targets = getattr(runtime, "targets", None)
+    if targets is None:
+        targets = runtime.screens
+    if not targets:
+        raise RuntimeError("Runtime monitor has no resident targets")
+    nav = getattr(runtime, "nav", None)
+    if nav is None:
+        nav = runtime._nav
+    root = getattr(runtime, "root", None)
+    if root is None:
+        root = targets[0]
+    canonical = len(targets) == 10 and root is targets[0]
+    first = 1 if canonical else 0
+    stop = 6 if canonical else len(targets)
+
+    stats = [0] * 10
+    failure = [None]
+    _reset_root(runtime, nav, root, False)
+    gc.collect()
+    heap_before = _free()
+    stats[5] = heap_before
+    baseline = _buffer_state(nav)
+    stats[7] = baseline[0] + baseline[2]
+    if canonical and baseline != (8192, baseline[1], 104, baseline[3]):
+        stats[9] |= 32
+    emit("MONITOR_START mode=resident rounds=5 heap_before="
+         + str(heap_before) + " buffer_peak_bytes=" + str(stats[7]))
+
+    try:
+        _exercise_targets(
+            nav, targets, first, stop, stats, failure, baseline, emit)
+    finally:
+        _reset_root(runtime, nav, root, True)
+    return _finish(nav, stats, failure, baseline, heap_before, emit)
 
 
 if __name__ == "__main__":

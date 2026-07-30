@@ -57,13 +57,22 @@ MicroPython 按 `_boot.py → /boot.py → /main.py` 启动。无 SD 卡、挂�
 该入口会：
 
 1. 生成字体和确定性的 source/MPY 发布清单，并在接触设备前验证全部摘要；
-2. 首次采用时安装固定的内部启动、选择、日志与恢复模块；后续发布先核对这组锚点；
-3. 将完整候选版本写入非活动 A/B 槽，逐项核对 SHA-256 后才设置一次性试启动；
-4. 复位并验证实际启动的 release/manifest 身份，成功后确认候选槽并清理已退役槽；
-5. 始终把 `functions/*.py` 保持为源码，并仅在 `/sd/settings.json`、`/sd/vars.json` 不存在时写入种子。
+2. 核对稳定 confirmed 槽的 selector、manifest 和 owner 标记；
+3. 只上传 SHA-256 变化或新增的 managed 文件，只删除旧 manifest 明确拥有而新版本移除的文件；
+4. 最后提交 manifest、owner 和 selector，复位后立即返回。
 
-当前设备只发布 `mpy`。发布入口可在中断后重入，不会把不完整候选设为活动槽，也不会覆盖用户
-设置、变量或未被清单拥有的 SD 内容。
+默认快速模式不创建备用槽，也不再次连接运行 resident smoke。它不会覆盖 `/sd/settings.json`、
+`/sd/vars.json`、`/sd/Add-ons` 或槽内未知文件；中断时也不会把新 manifest 身份提前写入
+selector。若新 managed 路径与未知文件同名，快速模式会在写入前拒绝。已 provision 的设备需要
+完整 A/B 和冷启动校验时使用 `--transactional`。首次安装或
+修复 bootstrap 使用：
+
+```powershell
+..\.venv\python.exe .\tools\release_deploy.py --port PORTNAME --mode mpy --transactional --adopt
+```
+
+同版本 COM5 实测：原完整流程 `374 s`，跳过 adoption 但仍完整 A/B 为 `65.890 s`，默认单会话
+增量为 `17.352 s`。当前设备只发布 `mpy`，`functions/*.py` 始终保留源码。
 
 SD 卡和 OLED 共用 GPIO18/23 上的 SPI2，通过 CS4/CS5 分隔事务。内部
 `sdcard.py` 使用官方 Python block-device 驱动；不要替换成独占 SPI host 的
@@ -345,7 +354,7 @@ UI 会显示保存失败并每两秒重试。
 ..\.venv\python.exe -m mpremote connect PORTNAME reset
 ```
 
-当前主机基线为 `1164 passed`，并通过 CPython 语法检查和 MicroPython 1.29
+当前主机检查为 `1177 passed`，并通过 CPython 语法检查和 MicroPython 1.29
 `mpy-cross -march=xtensawin` 全源编译。最终五轮主机驻留导航为 0 次 `MemoryError`、8192 B
 framebuffer 峰值、16,000 us 最大阻塞步和 5,625 B 稳态 traced peak；这些数据用于比较逻辑
 工作量，不替代真机堆或 SPI 时延。
@@ -358,10 +367,10 @@ framebuffer 峰值、16,000 us 最大阻塞步和 5,625 B 稳态 traced peak；�
 
 该脚本是唯一正式验收入口，依次执行 resident 启动缓冲探针、最大用户状态应用矩阵、五轮运行时
 目标导航、五轮捕获边沿到屏幕提交的交互探针，以及 16 帧秒表局部刷新分配探针；每阶段后都复位
-设备并让 OLED 休眠。1.3.0 的上一轮 COM5 动效门禁基线报告：单一 framebuffer 为 8192 B、固定 Plot 工作区
+设备并让 OLED 休眠。1.4.0 的最终 COM5 验收报告：单一 framebuffer 为 8192 B、固定 Plot 工作区
 为 104 B；20 条历史（共 768 字符）、16 个变量、20 个秒表圈和 3 个插件连续五轮无错误，稳态
-最低空闲堆 6416 B、观测到的瞬态最低值 592 B；125 个 runtime step 最大 30.116 ms、最低空闲堆
-4752 B；OLED 唤醒时捕获边沿到可见提交最大 18.699 ms、堆漂移 0；16 个秒表帧的堆增量全部为 0。
+最低空闲堆 5760 B、观测到的瞬态最低值 400 B；125 个 runtime step 最大 30.165 ms、最低空闲堆
+4272 B；OLED 唤醒时捕获边沿到可见提交最大 19.226 ms、堆漂移 0；16 个秒表帧的堆增量全部为 0。
 
 ## 实机回归清单
 
@@ -369,7 +378,7 @@ framebuffer 峰值、16,000 us 最大阻塞步和 5,625 B 稳态 traced peak；�
 2. 计算、赋值、重启，确认变量持久化；开关插件后再次进入函数选择器。
 3. 快速输入、长按 DEL/ESC、Shift+RPN、Shift+Tab，确认没有重复事件。
 4. 运行 `tools/run_device_acceptance.ps1` 完成统一验收；必须看到
-   `ACCEPTANCE_COMPLETE PORTNAME stages=5 animation=removed_heap_below_12k`。1.4.0 必须在部署后重新得到同一结果。
+   `ACCEPTANCE_COMPLETE PORTNAME stages=5 animation=removed_heap_below_12k`。1.4.0 已在 COM5 得到该结果。
 5. 运行秒表 30 分钟，并检查绘图、缩放、求解和错误弹窗。
 
 诊断模式每五秒输出平均渲染耗时、present 耗时和空闲堆。统一验收目标仍是输入到可见像素小于

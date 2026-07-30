@@ -199,6 +199,106 @@ def test_deploy_sequence_adopts_then_applies_end_to_end(tmp_path):
     assert twin.closes >= 4
 
 
+def test_fast_deploy_skips_repeated_adoption(monkeypatch, tmp_path):
+    project_root, _files = _project(tmp_path / "project")
+    device_calls = []
+    applied = []
+    lines = []
+
+    def unexpected_adoption_device():
+        device_calls.append(True)
+        raise AssertionError("fast deploy must not open an adoption session")
+
+    def apply(plan, adapter):
+        applied.append((plan, adapter))
+        return plan.release_id
+
+    monkeypatch.setattr(release_deploy, "apply_release", apply)
+
+    release_id = release_deploy.run(
+        "TWIN",
+        "source",
+        _compiler([]),
+        unexpected_adoption_device,
+        project_root=project_root,
+        adapter_factory=lambda factory: ("adapter", factory),
+        boot_wait_s=0,
+        emit=lines.append,
+        adopt=False,
+    )
+
+    assert release_id == applied[0][0].release_id
+    assert applied[0][1] == ("adapter", unexpected_adoption_device)
+    assert device_calls == []
+    assert "RELEASE_ADOPTION_SKIPPED already-provisioned" in lines
+    assert not any(
+        line.startswith("RELEASE_ADOPTION_RECEIPT ") for line in lines)
+
+
+def test_run_uses_fast_release_when_transactional_mode_is_disabled(
+        monkeypatch, tmp_path):
+    project_root, _files = _project(tmp_path / "project")
+    applied = []
+
+    def fast_apply(plan, adapter):
+        applied.append((plan, adapter))
+        return plan.release_id
+
+    monkeypatch.setattr(release_deploy, "apply_fast_release", fast_apply)
+    monkeypatch.setattr(
+        release_deploy, "apply_release",
+        lambda plan, adapter: pytest.fail("transactional release was used"))
+
+    release_id = release_deploy.run(
+        "TWIN",
+        "source",
+        _compiler([]),
+        lambda: pytest.fail("unexpected direct device contact"),
+        project_root=project_root,
+        adapter_factory=lambda factory: ("adapter", factory),
+        boot_wait_s=0,
+        emit=lambda line: None,
+        adopt=False,
+        transactional=False,
+    )
+
+    assert release_id == applied[0][0].release_id
+    assert applied[0][1][0] == "adapter"
+
+
+def test_run_forwards_boot_wait_to_the_default_release_adapter(
+        monkeypatch, tmp_path):
+    project_root, _files = _project(tmp_path / "project")
+    adapters = []
+
+    def make_adapter(factory, boot_wait_s):
+        adapter = (factory, boot_wait_s)
+        adapters.append(adapter)
+        return adapter
+
+    monkeypatch.setattr(
+        release_deploy.release_device_mpremote,
+        "MpremoteReleaseAdapter", make_adapter)
+    monkeypatch.setattr(
+        release_deploy, "apply_fast_release",
+        lambda plan, adapter: plan.release_id)
+
+    release_deploy.run(
+        "TWIN",
+        "source",
+        _compiler([]),
+        lambda: None,
+        project_root=project_root,
+        boot_wait_s=3,
+        emit=lambda line: None,
+        adopt=False,
+        transactional=False,
+    )
+
+    assert len(adapters) == 1
+    assert adapters[0][1] == 3
+
+
 def test_deploy_rejects_an_invalid_plan_before_creating_a_device(
         monkeypatch, tmp_path):
     project_root, _ = _project(tmp_path / "project")

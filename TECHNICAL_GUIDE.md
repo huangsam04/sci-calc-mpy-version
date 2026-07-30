@@ -719,25 +719,26 @@ frame_p95():
 ```
 
 它先在主机生成 source/MPY 两份确定性发布计划，选择指定模式，并在任何设备接触前校验清单、
-字体输出、编译产物、路径边界和每项 SHA-256。设备首次采用时安装固定 bootstrap；后续发布则核对
-bootstrap 身份，然后使用非活动槽进行一次 A/B 事务。
+字体输出、编译产物、路径边界和每项 SHA-256。默认路径面向已 provision 的开发板，在稳定的
+confirmed 槽中做一次单会话增量同步：
 
 ```text
 release_deploy(port, mode):
     prepare and validate immutable release plan
-    adopt or verify internal bootstrap; reset and close transport
-    resume any bounded cleanup from an interrupted prior release
-    stage every managed asset under /sd/.staging
-    verify file hashes and manifest; atomically rename to inactive A/B slot
-    arm one-shot trial selector; reset
-    verify boot log selected the exact release and run resident smoke probe
-    confirm trial, retire prior slot, then erase only manifest-owned retired files
+    require one stable confirmed selector and trusted manifest/owner
+    upload only new or SHA-changed managed files into that slot
+    remove only obsolete files owned by the prior manifest
+    commit manifest, owner and selector last; reset once and return
     seed /sd/settings.json and /sd/vars.json only when absent
 ```
 
-MPY 模式固定使用仓库 `v1.29.0-preview` 的 `mpy-cross -march=xtensawin -X no-source-lines`；设备端
-resident smoke 同时验证 Viper ABI、release/manifest 身份和启动记录。任一步失败都不会确认候选槽，
-并会尽力复位、关闭连接；可变用户状态不属于不可变槽，也不会被后续发布覆盖。
+默认路径不创建备用槽，也不在复位后重新连接执行 resident smoke。`/sd/settings.json`、
+`/sd/vars.json`、`/sd/Add-ons` 和槽内未知文件不覆盖、不删除；新 managed 路径与未知文件同名时
+会在任何写入前拒绝。需要完整 A/B、逐项校验和冷启动
+resident smoke 时增加 `--transactional`；首次安装或修复 bootstrap 使用
+`--transactional --adopt`。MPY 模式固定使用仓库 `v1.29.0-preview` 的
+`mpy-cross -march=xtensawin -X no-source-lines`。同版本 COM5 实测从原完整流程 `374 s`、跳过
+adoption 的完整 A/B `65.890 s`，降至默认单会话增量 `17.352 s`。
 
 `check.ps1` 强制使用仓库 MicroPython `v1.29.0-preview` 的 `mpy-cross`，依序生成字体、运行 pytest、
 CPython `compileall`、对所有源码使用 `-march=xtensawin` 编译 `.mpy`。它在兼容性或语法错误时立刻
@@ -761,27 +762,26 @@ CPython `compileall`、对所有源码使用 `-march=xtensawin` 编译 `.mpy`。
 多次 COM5 冷启动在导入设备探针前测得 10,752–11,200 B 干净空闲堆。这个数值足以稳定运行
 下述有界用户状态，但低于 12,288 B 动效门槛。无动效模式的稳态门槛保持 4096 B；它只在同时
 覆盖最大历史、变量、圈数、固定插件、错误恢复、绘图与页面往返的应用矩阵中判定，不能由空启动
-样本替代。最终 `check.ps1` 为 `1164 passed`，CPython compileall 和 MicroPython 1.29 全源
+样本替代。最终 `check.ps1` 为 `1177 passed`，CPython compileall 和 MicroPython 1.29 全源
 mpy-cross 均通过。
 
-### 10.2 COM5 动效门禁基线（1.3.0）
+### 10.2 COM5 最终验收（1.4.0）
 
-上一正式发布 `ea9a9910e61290dc2cefaeb32e3443346f072c9bf2e8dddeec900a023b5c9bbf` 已确认，manifest
-SHA-256 为 `2890e021b36ae96d49c4a2665978d500d3ae24d2d3f9cf2bdd62f7ee8185b9bc`。统一入口为：
+发布 `a4bc9edde9c7b19c16ef0b9f355029397282afdd39bac343905d4b936865ab8d` 已确认，manifest
+SHA-256 为 `9a3694fcc991347ad1a44d9ad3e63e6130e2d56b5aa813eb2e4e15c33c816db5`。统一入口为：
 
 ```powershell
 .\tools\run_device_acceptance.ps1 -Port PORTNAME
 ```
 
-COM5 的 1.3.0 完整五阶段结果如下；每阶段复位后均发送 SSD1322 硬件休眠命令。它用于否决
-1.4.0 动效，不替代 1.4.0 部署后的最终统一验收。
+COM5 的 1.4.0 完整五阶段结果如下；每阶段复位后均发送 SSD1322 硬件休眠命令。
 
 | 检查 | 真机结果 |
 | --- | --- |
 | 启动与固定缓冲 | resident ready；framebuffer 8192 B；Plot 工作区 104 B；Viper ABI 通过 |
-| 最大用户状态五轮 | 历史 20 条/768 字符、变量 16、圈数 20、插件 3；`MemoryError=0`、错误 0；稳态最低 6416 B，观测瞬态最低 592 B，漂移 -32 B |
-| runtime 五轮 | 25 个场景、125 steps；最大 30.116 ms；最低 4752 B；漂移 -288 B；buffer 峰值 8296 B 且身份不变 |
-| OLED 唤醒时捕获边沿到可见提交 | 五轮最大 18.699 ms；堆 5776 B → 5776 B；`MemoryError=0`、错误 0 |
+| 最大用户状态五轮 | 历史 20 条/768 字符、变量 16、圈数 20、插件 3；`MemoryError=0`、错误 0；稳态最低 5760 B，观测瞬态最低 400 B，漂移 -32 B |
+| runtime 五轮 | 25 个场景、125 steps；最大 30.165 ms；最低 4272 B；漂移 -256 B；buffer 峰值 8296 B 且身份不变 |
+| OLED 唤醒时捕获边沿到可见提交 | 五轮最大 19.226 ms；堆 4992 B → 4992 B；`MemoryError=0`、错误 0 |
 | 秒表逐帧分配 | 16/16 帧已提交；每帧堆增量 0；总增量 0 |
 
 运行结束必须出现
@@ -798,10 +798,15 @@ COM5 的 1.3.0 完整五阶段结果如下；每阶段复位后均发送 SSD1322
 1 次，最终版本连续 5 次 `MemoryError=0`，随后完整五阶段验收通过。这项修改只提高验收探针在
 分裂堆上的可加载性和测量真实性，不计作生产应用的空闲堆收益。
 
+1.4.0 最终验收还复现了 runtime monitor 单个 `run` raw bytecode 为 1198 B 时的连续块申请失败。
+保持相同 25 场景、五轮和输出协议，把导航、settle、统计与收尾拆成固定 helper 后，最大代码块降为
+349 B；干净真机复跑为 125 steps、`heap_min=4272 B`、`MemoryError=0`。验收器现在在成功导入
+临时 `.mpy` 后、执行负载前由同一预编译命令自删文件，避免阶段末低堆清理和复位后再次污染堆。
+
 ### 10.4 动效门禁
 
 菜单 ease-out 和页面硬件亮度淡出/淡入均未保留。12 KiB 门槛没有降低，源码中没有动画状态、
-新增像素缓冲或逐帧 GC。1.4.0 仍须在 COM5 重新完成统一验收；若以后重新考虑动效，必须先在最大
+新增像素缓冲或逐帧 GC。1.4.0 已在 COM5 完成统一验收；若以后重新考虑动效，必须先在最大
 受支持用户状态和连续五轮操作下把最低空闲堆提高到至少 12 KiB，再重新运行同一统一验收。
 
 ## 11. 验证范围与维护准则

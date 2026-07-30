@@ -17,8 +17,10 @@ $MpyCross = Join-Path `
     $WorkspaceRoot "micropython\mpy-cross\build\mpy-cross.exe"
 $RemoteArtifact = "/sd/_sci_accept_stage.mpy"
 $RunArtifact = (
-    "import gc;gc.collect();import sys;sys.path.insert(0,'/sd');" +
-    "import _sci_accept_stage;_sci_accept_stage.run()"
+    "import gc,os,sys;gc.collect();sys.path.insert(0,'/sd');" +
+    "import _sci_accept_stage;" +
+    "os.remove('/sd/_sci_accept_stage.mpy');" +
+    "_sci_accept_stage.run()"
 )
 $PrepareResident = (
     "import gc,runtime_handle as h;gc.collect();" +
@@ -151,7 +153,6 @@ function Invoke-AcceptanceStage {
         $ProjectRoot $Stage.Artifact.Replace("/", "\")
     Write-Output "ACCEPTANCE_STAGE $($Stage.Name)"
     $StageFailure = $null
-    $ArtifactCopied = $false
     try {
         if (-not (Test-Path -LiteralPath $LocalScript)) {
             throw "Missing device acceptance script: $LocalScript"
@@ -183,7 +184,6 @@ function Invoke-AcceptanceStage {
                     $LocalArtifact, (":" + $RemoteArtifact)
                 ) `
                 -FailureMessage "Unable to upload acceptance stage: $($Stage.Name)"
-            $ArtifactCopied = $true
             Invoke-MpremoteCommand `
                 -Arguments @(
                     "connect", $Port, "resume", "exec", $RunArtifact
@@ -195,29 +195,6 @@ function Invoke-AcceptanceStage {
         $StageFailure = $_
     }
     finally {
-        if ($ArtifactCopied) {
-            try {
-                Invoke-MpremoteCommand `
-                    -Arguments @(
-                        "connect", $Port, "resume", "fs", "rm",
-                        (":" + $RemoteArtifact)
-                    ) `
-                    -FailureMessage (
-                        "Unable to remove temporary acceptance artifact " +
-                        "after $($Stage.Name)"
-                    )
-            }
-            catch {
-                if ($null -eq $StageFailure) {
-                    $StageFailure = $_
-                }
-                else {
-                    Write-Error `
-                        "Acceptance cleanup also failed: $($_.Exception.Message)" `
-                        -ErrorAction Continue
-                }
-            }
-        }
         try {
             Invoke-DeviceReset
         }
