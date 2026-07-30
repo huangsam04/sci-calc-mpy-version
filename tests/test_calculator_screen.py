@@ -90,8 +90,6 @@ def test_calculator_consumes_supplied_event_and_records_result():
 
     assert screen._state[0] == [("2+3", 5.0)]
     assert screen.input_box.get_str() == ""
-
-
 def test_calculator_uses_queued_shift_snapshot_not_live_matrix_state():
     screen = CalculatorScreen(None, registry=build_registry(), variables={})
     screen.input_box.set_str("1")
@@ -424,6 +422,29 @@ def test_calculator_partial_editor_redraw_keeps_static_footer_hint():
     assert any(item[2] == b"1/96" for item in footer_draws)
     assert (130, 54, 80, 10, 0) in display.fills
     assert (130, 54, 80, 8) in display.hlines
+
+
+def test_calculator_detach_and_rebuild_preserves_user_state_by_identity():
+    registry = build_registry()
+    variables = {}
+    screen = CalculatorScreen(
+        None, registry=registry, variables=variables, display_digits=7)
+    screen.input_box.set_str("1+2")
+    history = screen._state[0]
+    history.append(("1+2", "3"))
+    input_box = screen.input_box
+    context = screen.context
+
+    retained = screen.detach_state()
+    restored = CalculatorScreen(
+        None, registry=registry, variables=variables,
+        retained_state=retained)
+
+    assert restored.input_box is input_box
+    assert restored.context is context
+    assert restored._state[0] is history
+    assert restored.input_box.get_str() == "1+2"
+    assert restored._state[3][0][2] == 7
 
 
 def test_calculator_history_cache_formats_only_the_visible_window(monkeypatch):

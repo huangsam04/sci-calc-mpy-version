@@ -60,7 +60,7 @@ class FunctionPanel:
         # Fixed tables keep the instance block at four keys. Each retained
         # table is no wider than the allocations already proven at boot.
         self._state = (
-            [request_settings, settings, None, None],
+            [request_settings, settings, {}, None],
             ["", None, "", None],
             [plugin_dependencies, plugin_files],
         )
@@ -147,7 +147,7 @@ class FunctionPanel:
         if self._state[1][3] is not None:
             raise RuntimeError("Function panel scenario transaction is active")
         self._flags &= ~1
-        self._state[0][2] = {}
+        self._state[0][2].clear()
         self._state[1][2] = ""
         auto_enabled, _ = self._ensure_all_enabled_dependencies()
         if not self._flags & 4 or auto_enabled:

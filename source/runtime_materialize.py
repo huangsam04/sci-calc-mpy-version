@@ -22,7 +22,7 @@ class RuntimeHandle:
         self.version = version
         if (optional_buffer_size and optional_buffer_target is None
                 and isinstance(application_binding, ApplicationBinding)):
-            optional_buffer_target = application_binding.plot
+            optional_buffer_target = application_binding._nav.memory
         # Acceptance permits exactly one rebuildable Plot curve buffer. Keep
         # its target and size beside the two existing runtime references so
         # boot does not allocate an allow-list plus its nested row tuple.
@@ -141,15 +141,19 @@ class RuntimeHandle:
 def build_runtime(binding, mode="resident"):
     if not isinstance(binding, ApplicationBinding):
         raise RuntimeError("Resident application binding is unavailable")
-    binding.require_canonical_screens()
+    binding.require_page_owner()
     nav = binding._nav
     if nav is None:
         raise RuntimeError("Resident application binding is unavailable")
+    from runtime_trusted_construction import (
+        prepare_trusted_resident_scenario_adapter)
     from version import VERSION
-    screens = binding.screens
-    return RuntimeHandle(
-        nav, screens[0], screens, mode=mode, version=VERSION,
-        optional_buffer_size=104, application_binding=binding)
+    construction = prepare_trusted_resident_scenario_adapter(binding)
+    runtime = RuntimeHandle(
+        nav, binding.root, (), mode=mode, version=VERSION,
+        optional_buffer_size=104, scenario_adapter=construction.adapter,
+        application_binding=binding)
+    return construction.seal_runtime(runtime)
 
 
 def get_resident_runtime():

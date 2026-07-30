@@ -148,10 +148,11 @@ def test_memory_intensive_operation_releases_plot_then_collects(monkeypatch):
 
     nav = NavHarness()
     nav.memory = memory
-    nav._managed = ()
+    nav.stack = ()
+    nav._pending_screen = None
     nav._collect_pending = True
-    nav._release_registered_screens = (
-        lambda active: main.Nav._release_registered_screens(nav, active))
+    nav._release_owned_screens = (
+        lambda active: main.Nav._release_owned_screens(nav, active))
     main.Nav.prepare_memory_intensive_operation(nav, object())
 
     assert memory.get_plot_workspace() is workspace

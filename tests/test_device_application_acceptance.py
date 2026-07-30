@@ -12,107 +12,122 @@ import device_application_acceptance
 
 class _Display:
     def __init__(self):
-        self.gs4_buf = bytearray(8192)
         self.sleep_count = 0
 
     def sleep(self):
         self.sleep_count += 1
 
 
-class _Memory:
-    def __init__(self):
-        self._plot_curve = bytearray(104)
+class _Runtime:
+    mode = "resident"
 
-    def get_plot_workspace(self):
-        return self._plot_curve
-
-
-class _Binding:
     def __init__(self):
         self.display = _Display()
-        nav = type("Nav", (), {})()
-        nav.renderer = type("Renderer", (), {"display": self.display})()
-        nav.memory = _Memory()
-        self._binding_state = (
-            tuple(object() for _ in range(10)),
-            object(), {}, object(), nav,
-        )
+        renderer = type("Renderer", (), {"display": self.display})()
+        self.nav = type("Nav", (), {"renderer": renderer})()
 
 
-@pytest.fixture
-def device_heap(monkeypatch):
-    monkeypatch.setattr(
-        device_application_acceptance.gc, "mem_free", lambda: 20000,
-        raising=False)
+class _Report:
+    def __init__(self, *, accepted=True, memory_errors=0, errors=0,
+                 primary_error=None, failure_mask=0):
+        self.accepted = accepted
+        self.memory_errors = memory_errors
+        self.errors = errors
+        self.primary_error = primary_error
+        self.failure_mask = failure_mask
+        self.rounds_completed = 5 if accepted else 0
+        self.scenarios_completed = 35 if accepted else 0
+        self.runtime_steps = 400
+        self.heap_min = 20000
+        self.heap_after = 21000
+        self.heap_delta = -160
+        self.blocking_max_us = 24000
+        self.buffer_peak_bytes = 8296
+        self.step_name = "calculator_history"
+        self.phase = 1
+        self.bounded_close_attempts = 1
+        self.bounded_session_restored = True
+        self.blocking_round = 0
+        self.blocking_step = 1
 
 
-def test_device_application_acceptance_runs_exactly_five_resident_rounds(
-        monkeypatch, device_heap):
-    binding = _Binding()
-    rounds = []
+def test_device_application_acceptance_runs_the_shared_five_round_matrix(
+        monkeypatch):
+    runtime = _Runtime()
     lines = []
+    calls = []
+    report = _Report()
 
-    def exercise(state):
-        assert state is binding._binding_state
-        rounds.append(len(rounds) + 1)
-        return 18000
+    def run_matrix(candidate):
+        calls.append(candidate)
+        return report
 
     monkeypatch.setattr(
-        device_application_acceptance, "_exercise_round", exercise)
+        device_application_acceptance, "_run_matrix", run_matrix)
 
-    report = device_application_acceptance.run(binding, emit=lines.append)
+    result = device_application_acceptance.run(runtime, emit=lines.append)
 
-    assert rounds == [1, 2, 3, 4, 5]
-    assert report == (20000, 0, 0, 0)
-    assert lines[-1] == "APPLICATION_RESULT PASS memory_errors=0 errors=0"
+    assert calls == [runtime]
+    assert result == (20000, -160, 0, 0)
+    assert lines[-1] == (
+        "APPLICATION_RESULT PASS memory_errors=0 errors=0 failure_mask=0")
     assert "framebuffer_bytes=8192" in lines[-2]
-    assert binding.display.sleep_count == 2
+    assert runtime.display.sleep_count == 2
 
 
-def test_device_application_acceptance_enforces_operation_reserve(
-        monkeypatch, device_heap):
-    binding = _Binding()
+def test_device_application_acceptance_rejects_a_failed_shared_report(
+        monkeypatch):
+    runtime = _Runtime()
     lines = []
     monkeypatch.setattr(
-        device_application_acceptance, "_exercise_round", lambda _state: 3500)
-    monkeypatch.setattr(
-        device_application_acceptance, "_sample", lambda: 3500)
+        device_application_acceptance,
+        "_run_matrix",
+        lambda _runtime: _Report(
+            accepted=False, errors=1, failure_mask=8),
+    )
 
-    with pytest.raises(RuntimeError, match="operation reserve"):
-        device_application_acceptance.run(binding, emit=lines.append)
+    with pytest.raises(RuntimeError, match="application matrix"):
+        device_application_acceptance.run(runtime, emit=lines.append)
 
-    assert lines[-1] == "APPLICATION_RESULT FAIL memory_errors=0 errors=1"
-    assert binding.display.sleep_count == 2
+    assert lines[-1] == (
+        "APPLICATION_RESULT FAIL memory_errors=0 errors=1 failure_mask=8")
+    assert runtime.display.sleep_count == 2
 
 
 def test_device_application_acceptance_preserves_memory_error_and_sleeps_oled(
-        monkeypatch, device_heap):
-    binding = _Binding()
+        monkeypatch):
+    runtime = _Runtime()
     failure = MemoryError("measured")
-    lines = []
-
-    def fail(_state):
-        raise failure
-
     monkeypatch.setattr(
-        device_application_acceptance, "_exercise_round", fail)
+        device_application_acceptance,
+        "_run_matrix",
+        lambda _runtime: _Report(
+            accepted=False, memory_errors=1,
+            primary_error=failure, failure_mask=1),
+    )
 
     with pytest.raises(MemoryError) as caught:
-        device_application_acceptance.run(binding, emit=lines.append)
+        device_application_acceptance.run(runtime, emit=lambda _line: None)
 
     assert caught.value is failure
-    assert lines[-1] == "APPLICATION_RESULT FAIL memory_errors=1 errors=0"
-    assert binding.display.sleep_count == 2
+    assert runtime.display.sleep_count == 2
 
 
-def test_device_application_entry_has_no_legacy_matrix_import_graph():
+def test_device_application_entry_has_no_resident_screen_tuple_path():
     source = (TOOLS / "device_application_acceptance.py").read_text(
         encoding="utf-8")
 
-    assert "runtime_materialize" not in source
-    assert "runtime_scenarios" not in source
-    assert "runtime_acceptance" not in source
-    assert "runtime_application_controller" not in source
-    assert "controller=" not in source
-    assert "history.clear()" not in source
-    assert "laps.clear()" not in source
+    assert "runtime_materialize" in source
+    assert "runtime_acceptance" in source
+    assert "application_scenarios" in source
+    assert "_SCENARIO_MODULES" in source
+    assert "_drop_modules" in source
+    assert "_binding_state" not in source
+    assert ".screens" not in source
+
+
+def test_variable_scenario_preloads_its_calculator_lease_dependency():
+    assert device_application_acceptance._SCENARIO_MODULES[2] == (
+        "calc.scenario_variables",
+        "screens.calculator_scenario",
+    )

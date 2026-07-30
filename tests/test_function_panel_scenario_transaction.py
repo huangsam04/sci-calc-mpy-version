@@ -68,6 +68,23 @@ def test_target_lazily_imports_function_panel_scenario_transaction(
     assert transaction.panel is panel
 
 
+def test_fresh_function_panel_can_prepare_scenario_before_activation():
+    panel = FunctionPanel(
+        None,
+        {"enabled_functions": ["basic", "plugin:alpha"]},
+        {"alpha": ()},
+        [("alpha", "alpha.py")],
+    )
+    toggled = panel._state[0][2]
+
+    transaction = panel.open_scenario_transaction()
+    _finish(transaction)
+
+    assert transaction.close() is True
+    assert panel._state[0][2] is toggled
+    assert panel._items[-1] == ("plugin:alpha", True, False)
+
+
 def test_function_panel_scenario_transaction_preserves_semantic_references(
         monkeypatch):
     panel, settings, _, dependencies, _ = _panel(monkeypatch)

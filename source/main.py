@@ -52,7 +52,7 @@ def _boot_progress(display, step, total, label="", operation=""):
     display.draw_text8x8(
         210 - len(progress) * 8, 44, progress, gs=8)
     if operation:
-        detail = "(" + operation + ")"
+        detail = operation
         if len(detail) > 29:
             detail = detail[:28] + "~"
         display.draw_text8x8(12, 54, detail, gs=7)
@@ -107,19 +107,12 @@ def _drain_input_batch(nav, keyboard, handler):
 
 
 def _navigate_registered_page(nav, current, result, event):
-    """Enter a resident page returned by the current screen.
-
-    Calculator and Function Panel deliberately use compact standalone screen
-    classes, so their navigation contract is registration identity rather than
-    inheritance from UIElement.
-    """
-    if result is current:
+    """Enter a fixed page id returned by Main Menu or Settings."""
+    if (isinstance(result, bool) or not isinstance(result, int)
+            or result <= PAGE_ROOT or result > PAGE_VARIABLE_PANEL):
         return False
-    for screen in nav._managed:
-        if result is screen:
-            nav.go_to(screen, event)
-            return True
-    return False
+    nav.open(result, event)
+    return True
 
 
 def _page_update_requested(keyboard, event):
@@ -140,12 +133,14 @@ def _refresh_sidebar_if_due(renderer, now, last_refresh):
 
 
 def _toggle_angle_mode(registry, settings, persistence, renderer,
-                       plot_screen=None):
+                       nav=None):
     """Update calculation state and its sidebar pixels in one input step."""
     registry.angle_mode = 1 - registry.angle_mode
     settings["angle_mode"] = registry.angle_mode
-    if plot_screen is not None:
-        plot_screen.on_angle_mode_changed()
+    if nav is not None:
+        plot_screen = nav.find_page(PAGE_PLOT)
+        if plot_screen is not None:
+            plot_screen.on_angle_mode_changed()
     renderer.invalidate_sidebar()
     persistence.request_settings(settings)
 
@@ -158,7 +153,7 @@ def _blocks_global_shortcuts(screen):
     return bool(checker)
 
 
-def _open_context_letter_panel(screen, event, letter_panel, nav):
+def _open_context_letter_panel(screen, event, nav):
     """Open Letters only from a page's currently visible input context."""
     if event is None or _blocks_global_shortcuts(screen):
         return False
@@ -169,8 +164,7 @@ def _open_context_letter_panel(screen, event, letter_panel, nav):
     target = target_getter() if callable(target_getter) else None
     if target is None:
         return False
-    letter_panel._state[0] = target
-    nav.go_to(letter_panel, event)
+    nav.open(PAGE_LETTERS, event)
     return True
 
 
@@ -435,18 +429,28 @@ def _draw_crash(display, error):
 
 # ── Screen navigation ───────────────────────────────────────────
 
-# The resident acceptance controller imports these only after acquiring the
-# already-constructed pages through ApplicationBinding.  Values follow that
-# binding's fixed order, excluding its root Main Menu.
-PAGE_SCENARIO_CALCULATOR = 1
-PAGE_SCENARIO_PLOT = 2
-PAGE_SCENARIO_ADDONS = 3
-PAGE_SCENARIO_STOPWATCH = 4
-PAGE_SCENARIO_SETTINGS = 5
-PAGE_SCENARIO_ABOUT = 6
-PAGE_SCENARIO_LETTERS = 7
-PAGE_SCENARIO_FUNCTION_PICKER = 8
-PAGE_SCENARIO_VARIABLE_PANEL = 9
+# Main Menu rows and Nav use these fixed scalars instead of page objects.
+PAGE_ROOT = 0
+PAGE_CALCULATOR = 1
+PAGE_PLOT = 2
+PAGE_FUNCTION_PANEL = 3
+PAGE_STOPWATCH = 4
+PAGE_SETTINGS = 5
+PAGE_ABOUT = 6
+PAGE_LETTERS = 7
+PAGE_FUNCTION_PICKER = 8
+PAGE_VARIABLE_PANEL = 9
+
+# Acceptance actions deliberately share the production page vocabulary.
+PAGE_SCENARIO_CALCULATOR = PAGE_CALCULATOR
+PAGE_SCENARIO_PLOT = PAGE_PLOT
+PAGE_SCENARIO_ADDONS = PAGE_FUNCTION_PANEL
+PAGE_SCENARIO_STOPWATCH = PAGE_STOPWATCH
+PAGE_SCENARIO_SETTINGS = PAGE_SETTINGS
+PAGE_SCENARIO_ABOUT = PAGE_ABOUT
+PAGE_SCENARIO_LETTERS = PAGE_LETTERS
+PAGE_SCENARIO_FUNCTION_PICKER = PAGE_FUNCTION_PICKER
+PAGE_SCENARIO_VARIABLE_PANEL = PAGE_VARIABLE_PANEL
 
 # Keep the screen vocabulary available without adding alternate action values.
 PAGE_SCENARIO_FUNCTION_PANEL = PAGE_SCENARIO_ADDONS
@@ -467,14 +471,19 @@ else:
 
 
 class Nav:
-    """Resident-page navigation and rebuildable-resource ownership."""
+    """Exclusive owner for root, active pages, and rebuildable resources."""
 
     __slots__ = (
-        "memory", "renderer", "stack", "_managed", "_input_locked",
+        "memory", "renderer", "stack", "_page_ids", "_page_builder",
+        "_page_context", "_page_state", "_pending_screen", "_pending_id",
+        "_scenario_screen", "_scenario_id", "_scenario_parent",
+        "_scenario_released",
+        "_input_locked",
         "_collect_pending", "last_present_us", "_page_scenario_transaction",
         "_active_screen")
 
-    def __init__(self, display, font_small, registry, memory=None):
+    def __init__(self, display, font_small, registry, memory=None,
+                 page_builder=None):
         from ui.memory import MemoryManager
         from ui.renderer import Renderer
         from ui.sidebar import Sidebar
@@ -482,24 +491,262 @@ class Nav:
         self.renderer = Renderer(
             display, Sidebar(font_small, registry), memory=self.memory)
         self.stack = []
-        self._managed = ()
+        self._page_ids = []
+        self._page_builder = page_builder
+        self._page_context = None
+        self._page_state = [None] * 10
+        self._pending_screen = None
+        self._pending_id = PAGE_ROOT
+        self._scenario_screen = None
+        self._scenario_id = PAGE_ROOT
+        self._scenario_parent = None
+        self._scenario_released = False
         self._input_locked = False
         self._collect_pending = False
         self.last_present_us = 0
         self._page_scenario_transaction = None
         self._active_screen = None
 
-    def register_screens(self, screens):
-        self._managed = tuple(screens)
-
     @property
     def current(self):
         return self.stack[-1]
 
+    @property
+    def current_page_id(self):
+        return self._page_ids[-1]
+
     def boot(self, screen):
         self.stack[:] = [screen]
+        self._page_ids[:] = [PAGE_ROOT]
         self._active_screen = None
         self._activate_screen(screen)
+
+    def configure_pages(
+            self, font_main, font_small, registry, variables, settings,
+            persistence, version):
+        """Bind shared state without constructing any non-root page."""
+        self._page_context = (
+            font_main, font_small, registry, variables,
+            settings, persistence, version)
+
+    def _build_page(self, page_id, parent):
+        builder = self._page_builder
+        if builder is not None:
+            return builder(page_id, parent)
+        context = self._page_context
+        if context is None:
+            raise RuntimeError("Page construction is not configured")
+        font_main = context[0]
+        font_small = context[1]
+        registry = context[2]
+        state = self._page_state[page_id]
+        if page_id == PAGE_CALCULATOR:
+            from screens.calculator import CalculatorScreen
+            screen = CalculatorScreen(
+                font_main, font_small, registry, context[3],
+                display_digits=context[4].get("display_digits", 4),
+                retained_state=state)
+        elif page_id == PAGE_PLOT:
+            from screens.plot import PlotScreen
+            screen = PlotScreen(
+                font_main, font_small, registry, memory=self.memory,
+                retained_state=state)
+        elif page_id == PAGE_FUNCTION_PANEL:
+            from screens.function_panel import FunctionPanel
+            screen = FunctionPanel(
+                context[5].request_settings, context[4],
+                registry.plugin_dependencies, registry.plugin_files)
+            screen.set_load_errors(registry.plugin_errors)
+        elif page_id == PAGE_STOPWATCH:
+            from screens.stopwatch import StopwatchScreen
+            screen = StopwatchScreen(font_small, retained_state=state)
+        elif page_id == PAGE_SETTINGS:
+            from screens.settings import SettingsScreen
+            screen = SettingsScreen(
+                font_small, self.renderer.display, context[4], PAGE_ABOUT,
+                request_save=context[5].request_settings,
+                on_display_digits_change=self.set_calculator_display_digits)
+        elif page_id == PAGE_ABOUT:
+            from screens.about import AboutScreen
+            screen = AboutScreen(font_small, context[6])
+        elif page_id == PAGE_LETTERS:
+            from screens.letter_panel import LetterPanel
+            target_getter = getattr(parent, "letter_input_target", None)
+            target = target_getter() if callable(target_getter) else None
+            if target is None:
+                raise RuntimeError("Letter input target is unavailable")
+            screen = LetterPanel(font_small, target)
+        elif page_id == PAGE_FUNCTION_PICKER:
+            from screens.function_picker import FunctionPicker
+            screen = FunctionPicker(font_small, parent)
+        elif page_id == PAGE_VARIABLE_PANEL:
+            from screens.variable_panel import VariablePanel
+            screen = VariablePanel(font_small, parent)
+        else:
+            raise ValueError("Unknown page id")
+        self._page_state[page_id] = None
+        return screen
+
+    def _retire_page(self, page_id, screen):
+        context = self._page_context
+        if context is not None:
+            detach_callbacks = getattr(context[5], "detach_callbacks", None)
+            if detach_callbacks is not None:
+                detach_callbacks(screen)
+        detacher = getattr(screen, "detach_state", None)
+        if detacher is not None:
+            self._page_state[page_id] = detacher()
+        self._collect_pending = True
+
+    def set_calculator_display_digits(self, value):
+        index = 0
+        while index < len(self._page_ids):
+            if self._page_ids[index] == PAGE_CALCULATOR:
+                self.stack[index].set_display_digits(value)
+                return
+            index += 1
+        state = self._page_state[PAGE_CALCULATOR]
+        if state is not None:
+            state[3][0][2] = value
+
+    def open(self, page_id, trigger_event=None):
+        """Construct one known page before changing the visible path."""
+        self._require_ordinary_navigation()
+        if (isinstance(page_id, bool) or not isinstance(page_id, int)
+                or page_id <= PAGE_ROOT or page_id > PAGE_VARIABLE_PANEL):
+            raise ValueError("Unknown page id")
+        parent = self.current
+        from_pending = self._pending_id == page_id
+        if from_pending:
+            screen = self._pending_screen
+            self._pending_screen = None
+            self._pending_id = PAGE_ROOT
+        else:
+            screen = self._build_page(page_id, parent)
+        try:
+            self._go_to(screen, trigger_event)
+        except BaseException:
+            if from_pending:
+                self._pending_screen = screen
+                self._pending_id = page_id
+                raise
+            try:
+                if getattr(screen, "detach_state", None) is None:
+                    self._release_departing_screen(screen)
+                self._retire_page(page_id, screen)
+            except BaseException:
+                pass
+            raise
+        self._page_ids.append(page_id)
+        return screen
+
+    def back(self, trigger_event=None):
+        """Return one level and forget the departed page reference."""
+        self._require_ordinary_navigation()
+        if len(self.stack) <= 1:
+            self._ensure_current_active()
+            return self.current
+        old = self.current
+        page_id = self.current_page_id
+        self._go_back(trigger_event)
+        self._page_ids.pop()
+        self.renderer.invalidate()
+        self._retire_page(page_id, old)
+        return self.current
+
+    def defer_back(self, trigger_event=None):
+        """Return while one quiet follow-up still requires the old page."""
+        self._require_ordinary_navigation()
+        if len(self.stack) <= 1:
+            return self.current
+        if self._pending_screen is not None:
+            raise RuntimeError("A deferred page is already pending")
+        old = self.current
+        page_id = self.current_page_id
+        self._go_back(trigger_event)
+        self._page_ids.pop()
+        self.renderer.invalidate()
+        self._pending_screen = old
+        self._pending_id = page_id
+        return self.current
+
+    def find_page(self, page_id):
+        index = len(self._page_ids) - 1
+        while index >= 0:
+            if self._page_ids[index] == page_id:
+                return self.stack[index]
+            index -= 1
+        if self._pending_id == page_id:
+            return self._pending_screen
+        return None
+
+    def release_pending(self, page_id):
+        if self._pending_id != page_id:
+            return False
+        screen = self._pending_screen
+        self._pending_screen = None
+        self._pending_id = PAGE_ROOT
+        self._retire_page(page_id, screen)
+        return True
+
+    def acquire_scenario_page(self, page_id):
+        """Acquire one acceptance-only page while the ordinary root is idle."""
+        if (len(self.stack) != 1 or self.current_page_id != PAGE_ROOT
+                or self._scenario_screen is not None):
+            raise RuntimeError("Scenario page is unavailable")
+        parent = self.current
+        if page_id in (
+                PAGE_LETTERS, PAGE_FUNCTION_PICKER, PAGE_VARIABLE_PANEL):
+            parent = self._build_page(PAGE_CALCULATOR, self.current)
+            self._scenario_parent = parent
+        try:
+            screen = self._build_page(page_id, parent)
+        except BaseException:
+            if self._scenario_parent is not None:
+                calculator = self._scenario_parent
+                self._scenario_parent = None
+                self._retire_page(PAGE_CALCULATOR, calculator)
+            raise
+        self._scenario_screen = screen
+        self._scenario_id = page_id
+        self._scenario_released = False
+        return screen
+
+    def release_scenario_page(self, page_id, screen):
+        if (self._scenario_id != page_id
+                or self._scenario_screen is not screen):
+            raise RuntimeError("Scenario page is foreign")
+        self._scenario_screen = None
+        self._scenario_id = PAGE_ROOT
+        self.renderer.invalidate()
+        if not self._scenario_released:
+            self._release_screen(screen)
+        self._scenario_released = False
+        self._retire_page(page_id, screen)
+        parent = self._scenario_parent
+        self._scenario_parent = None
+        if parent is not None:
+            self._release_screen(parent)
+            self._retire_page(PAGE_CALCULATOR, parent)
+        return True
+
+    def calculator_context(self):
+        screen = self.find_page(PAGE_CALCULATOR)
+        if screen is not None:
+            return screen.context
+        state = self._page_state[PAGE_CALCULATOR]
+        return state[2] if state is not None else None
+
+    def set_calculator_storage_error(self, message):
+        screen = self.find_page(PAGE_CALCULATOR)
+        if screen is not None:
+            screen.set_storage_error(message)
+            return
+        state = self._page_state[PAGE_CALCULATOR]
+        if state is not None:
+            storage = state[3][0][3]
+            storage[0] = message
+            storage[1] = time.ticks_ms()
 
     def _activate_screen(self, screen):
         screen.activate()
@@ -543,13 +790,16 @@ class Nav:
             released = self.memory.release_plot_workspace() or released
         return released
 
-    def _release_registered_screens(self, active_screen=None):
-        """Release all inactive resident-page caches through the common seam."""
+    def _release_owned_screens(self, active_screen=None):
+        """Release rebuildable state from the pages Nav currently owns."""
         released = False
-        for screen in self._managed:
+        for screen in self.stack:
             if screen is active_screen:
                 continue
             released = self._release_screen(screen) or released
+        pending = self._pending_screen
+        if pending is not None and pending is not active_screen:
+            released = self._release_screen(pending) or released
         return released
 
     def _deactivate_stack(self):
@@ -637,13 +887,14 @@ class Nav:
                 or self.current is not transaction._prepared_screen):
             raise RuntimeError("Page scenario navigation state is unexpected")
         self._go_back(trigger_event)
+        self._scenario_released = True
 
     def _require_ordinary_navigation(self):
         """Keep public navigation from escaping an active page lease."""
         if self._page_scenario_transaction is not None:
             raise RuntimeError("Page scenario transaction owns navigation")
 
-    def open_page_scenario_transaction(self, canonical_screens):
+    def open_page_scenario_transaction(self):
         """Open the controller-only bounded auxiliary-page primitive."""
         if self._page_scenario_transaction is not None:
             raise RuntimeError("Page scenario transaction is already active")
@@ -653,7 +904,7 @@ class Nav:
             from nav_scenario import (
                 _NavPageScenarioTransaction as transaction_type)
             _NavPageScenarioTransaction = transaction_type
-        transaction = transaction_type(self, canonical_screens)
+        transaction = transaction_type(self)
         self._page_scenario_transaction = transaction
         return transaction
 
@@ -724,7 +975,7 @@ class Nav:
         return self.current.settle_step() or 0
 
     def prepare_memory_intensive_operation(self, active_screen):
-        self._release_registered_screens(active_screen)
+        self._release_owned_screens(active_screen)
         self.memory.release_plot_workspace()
         self.memory.collect()
         self._collect_pending = False
@@ -741,13 +992,26 @@ class Nav:
         # its derived state.  This fixed sequence leaves no page holding a
         # stale cache or input focus when root becomes visible again.
         self._deactivate_stack()
-        self._release_registered_screens()
+        self.renderer.invalidate()
+        while len(self.stack) > 1:
+            screen = self.stack.pop()
+            page_id = self._page_ids.pop()
+            self._release_screen(screen)
+            self._retire_page(page_id, screen)
+        self._release_screen(root)
+        if self._pending_screen is not None:
+            screen = self._pending_screen
+            page_id = self._pending_id
+            self._pending_screen = None
+            self._pending_id = PAGE_ROOT
+            self._release_screen(screen)
+            self._retire_page(page_id, screen)
         self.memory.release_plot_workspace()
         self._collect_pending = False
-        self.renderer.invalidate()
         self._input_locked = True
         self.memory.collect()
         self.stack[:] = [root]
+        self._page_ids[:] = [PAGE_ROOT]
         self._active_screen = None
         self._activate_screen(root)
 
@@ -845,79 +1109,37 @@ def main(run_loop=True, runtime_mode="resident", publish_runtime=True):
         metrics.release_boot_samples()
     gc.collect()
 
+    # These namespaces are frozen in firmware and cost hundreds of
+    # milliseconds to recreate on ESP32. Page instances and their derived
+    # state remain Nav-owned and are still built only when opened.
+    __import__("screens.calculator")
+    __import__("screens.plot")
+    __import__("screens.function_panel")
+    __import__("screens.stopwatch")
+    __import__("screens.settings")
+    __import__("screens.about")
+    __import__("screens.letter_panel")
+    __import__("screens.function_picker")
+    __import__("screens.variable_panel")
+    gc.collect()
+
     from utils.power import AWAKE, WOKE, DisplayPower
 
     nav = Nav(display, font_small, registry)
 
-    # Screens (import + build — skip broken ones)
+    # Only the root exists at boot. Nav constructs destinations after a
+    # concrete page id is opened.
     try:
         from screens.main_menu import MainMenu
-        # About, Calculator, FunctionPanel and Plot need their fixed class
-        # tables before later imports split the remaining runs.  This remains
-        # a synchronous resident-page startup; no import reaches input paths.
-        from screens.about import AboutScreen
-        gc.collect()
-        from screens.calculator import CalculatorScreen
-        gc.collect()
-        from screens.function_panel import FunctionPanel
-        gc.collect()
-        from screens.plot import PlotScreen
-        gc.collect()
-        # LetterPanel must precede FunctionPicker and the remaining class
-        # tables: otherwise no 136-byte run remains for its class table.
-        from screens.letter_panel import LetterPanel
-        gc.collect()
-        from screens.function_picker import FunctionPicker
-        gc.collect()
-        from screens.stopwatch import StopwatchScreen, STOPWATCH_FRAME_MS
-        gc.collect()
-        from screens.settings import SettingsScreen
-        gc.collect()
-        from screens.variable_panel import VariablePanel
-        gc.collect()
-        # Plot owns the largest remaining child-object construction.  Reserve
-        # it only after every resident module import frame has been reclaimed.
-        plot_screen = PlotScreen(
-            None, None, registry, memory=nav.memory)
-        gc.collect()
-        # Calculator gets coalesced import-frame space while the already
-        # reserved Plot object remains resident.
-        calc_screen = CalculatorScreen(
-            font_main, font_small, registry, vars_dict,
-            display_digits=settings.get("display_digits", 4))
-        # Reserve the shared Cursor and both fixed Menu blocks before compact
-        # overlays and root rows split the remaining runs.
-        from ui.cursor import Cursor
-        shared_menu_cursor = Cursor(2, 15, mode=0)
-        from ui.menu import Menu
-        settings_menu = Menu(
-            0, 13, 210, 4, 10, shared_menu_cursor, ())
-        function_panel_menu = Menu(
-            0, 13, 210, 4, 10, shared_menu_cursor, ())
-        # These three compact overlays depend only on Calculator.  Reserve
-        # their fixed state lists before root rows and menu objects fragment
-        # the remaining runs.
-        letter_panel = LetterPanel(None, calc_screen.input_box)
-        func_picker = FunctionPicker(None, calc_screen)
-        var_panel = VariablePanel(None, calc_screen)
         main_menu = MainMenu()
-        stopwatch = StopwatchScreen(font_small)
-        gc.collect()
-        func_panel = FunctionPanel(
-            persistence.request_settings, settings,
-            registry.plugin_dependencies, registry.plugin_files)
-        settings_screen = SettingsScreen(
-            None, display, settings, None,
-            request_save=persistence.request_settings,
-            on_display_digits_change=calc_screen.set_display_digits,
-            build_rows=False, menu=settings_menu)
-        func_panel._menu = function_panel_menu
-        # Settings rows are still unbuilt, so bind About after all three fixed
-        # Menu/Settings blocks have secured their contiguous heap runs.
-        # Auxiliary pages use the display's built-in 8x8 font to avoid SD
-        # glyph reads and cache growth on the input path.
-        about = AboutScreen(None, VERSION)
-        settings_screen._state[1] = about
+        nav.configure_pages(
+            font_main, font_small, registry, vars_dict, settings,
+            persistence, VERSION)
+        main_menu.add_screen("Calculator", PAGE_CALCULATOR)
+        main_menu.add_screen("Plot", PAGE_PLOT)
+        main_menu.add_screen("Function Panel", PAGE_FUNCTION_PANEL)
+        main_menu.add_screen("Stopwatch", PAGE_STOPWATCH)
+        main_menu.add_screen("Settings", PAGE_SETTINGS)
     except MemoryError:
         # A boot-time page OOM can leave too little contiguous heap for the
         # recovery UI's framebuffer.  Quiesce the already-initialized panel
@@ -931,25 +1153,15 @@ def main(run_loop=True, runtime_mode="resident", publish_runtime=True):
         _draw_crash(display, e)
         raise
     metrics.mark_boot("screen_imports")
-    # Imports leave reclaimable loader objects interleaved with resident code.
-    # Coalesce them before constructing the remaining screens.
     gc.collect()
 
-    # Bind the fixed resident topology before root labels split the remaining
-    # runs into small tuples. Acceptance retains these exact existing pages;
-    # it never constructs a parallel screen graph.
-    resident_screens = (
-        main_menu, calc_screen, plot_screen, func_panel, stopwatch,
-        settings_screen, about, letter_panel, func_picker, var_panel)
-    nav.register_screens(resident_screens)
-    gc.collect()
     application_binding = ApplicationBinding(
-        resident_screens, registry, settings, persistence, nav=nav)
+        nav, main_menu, registry, settings, persistence)
     from ui.memory import plot_curve_buffer_size
     runtime = application_binding if run_loop else RuntimeHandle(
         nav,
         main_menu,
-        resident_screens,
+        (),
         mode=runtime_mode,
         version=VERSION,
         optional_buffer_size=plot_curve_buffer_size(display.height),
@@ -957,26 +1169,6 @@ def main(run_loop=True, runtime_mode="resident", publish_runtime=True):
         application_binding=application_binding,
     )
 
-    try:
-        # All resident page objects now exist. Keep inactive, rebuildable rows
-        # empty until their page is activated after this construction frame has
-        # returned; only the visible root menu needs labels during boot.
-        func_panel.set_load_errors(registry.plugin_errors)
-        main_menu.add_screen("Calculator", calc_screen)
-        main_menu.add_screen("Plot", plot_screen)
-        main_menu.add_screen("Function Panel", func_panel)
-        main_menu.add_screen("Stopwatch", stopwatch)
-        main_menu.add_screen("Settings", settings_screen)
-        gc.collect()
-    except MemoryError:
-        try:
-            display.sleep()
-        except Exception:
-            pass
-        raise
-    except Exception as e:
-        _draw_crash(display, e)
-        raise
     metrics.mark_boot("ui_ready")
     # ============================================================
     # Phase 3: Main loop
@@ -1032,7 +1224,7 @@ def main(run_loop=True, runtime_mode="resident", publish_runtime=True):
                       + " shift=" + str(int(event[2]))
                       + " key=" + get_key_label(
                           event[0], event[1], event[2]))
-            if _open_context_letter_panel(cur, event, letter_panel, nav):
+            if _open_context_letter_panel(cur, event, nav):
                 _input_visual_changed = True
                 return True
         elif not _page_update_requested(kb, None):
@@ -1045,16 +1237,16 @@ def main(run_loop=True, runtime_mode="resident", publish_runtime=True):
 
         if _global_angle_allowed(event, page_was_modal, result):
             _toggle_angle_mode(
-                registry, settings, persistence, nav.renderer, plot_screen)
+                registry, settings, persistence, nav.renderer, nav)
             _input_visual_changed = True
             return True
 
         if result == "BACK":
-            nav.go_back(event)
+            nav.back(event)
         elif result == "FUNC_PANEL_DONE":
             _function_scan_pending = False
-            func_panel.set_plugin_scan_active(False)
-            nav.go_back(event)
+            cur.set_plugin_scan_active(False)
+            nav.defer_back(event)
             _function_reload_pending = True
         elif result == "FUNC_PANEL_RESCAN":
             # Actual bounded directory enumeration begins only in quiet work.
@@ -1064,7 +1256,7 @@ def main(run_loop=True, runtime_mode="resident", publish_runtime=True):
             # grace), but once the fixed "Scanning..." footer is already
             # visible it changes no pixels.  Do not turn it into a phantom
             # input frame merely because the semantic request is non-null.
-            if func_panel.set_plugin_scan_active(True):
+            if cur.set_plugin_scan_active(True):
                 _input_visual_changed = True
             return _input_visual_changed
         elif result in (
@@ -1072,12 +1264,12 @@ def main(run_loop=True, runtime_mode="resident", publish_runtime=True):
                 "FUNC_PANEL_CANCEL"):
             if result == "FUNC_PANEL_CANCEL":
                 _function_scan_pending = False
-                func_panel.set_plugin_scan_active(False)
-            nav.go_back(event)
+                cur.set_plugin_scan_active(False)
+            nav.back(event)
         elif result == "FUNC_PICKER":
-            nav.go_to(func_picker, event)
+            nav.open(PAGE_FUNCTION_PICKER, event)
         elif result == "VARIABLE_PANEL":
-            nav.go_to(var_panel, event)
+            nav.open(PAGE_VARIABLE_PANEL, event)
         elif _navigate_registered_page(nav, cur, result, event):
             pass
         changed = result is not None
@@ -1130,10 +1322,11 @@ def main(run_loop=True, runtime_mode="resident", publish_runtime=True):
             if (scheduler.sidebar_poll_due(now, quiet)
                     and nav.renderer.poll_sidebar()):
                 scheduler.request_render()
-            stopwatch_running = cur is stopwatch and stopwatch._clock[1]
+            stopwatch_running = (
+                nav.current_page_id == PAGE_STOPWATCH and cur._clock[1])
             continuous = stopwatch_running
             continuous_frame_ms = (
-                STOPWATCH_FRAME_MS if stopwatch_running else 0)
+                50 if stopwatch_running else 0)
             needs_render = scheduler.should_present(
                 now, continuous, input_changed, continuous_frame_ms)
 
@@ -1170,8 +1363,11 @@ def main(run_loop=True, runtime_mode="resident", publish_runtime=True):
                 _diag_present_us = 0
                 _diag_frames = 0
 
-            if calc_screen.context.dirty and calc_screen.context.consume_dirty():
-                persistence.request_vars(calc_screen.vars)
+            calculator_context = nav.calculator_context()
+            if (calculator_context is not None
+                    and calculator_context.dirty
+                    and calculator_context.consume_dirty()):
+                persistence.request_vars(calculator_context.variables)
 
             settle_flags = nav.settle_current() if quiet else 0
             if settle_flags & SETTLE_COLLECT:
@@ -1192,6 +1388,9 @@ def main(run_loop=True, runtime_mode="resident", publish_runtime=True):
                     # transaction.  A MemoryError must not retry the same SD
                     # reload every quiet interval after the root recovery.
                     _function_reload_pending = False
+                    func_panel = nav.find_page(PAGE_FUNCTION_PANEL)
+                    if func_panel is None:
+                        raise RuntimeError("Function panel reload state is unavailable")
                     reloaded = _reload_functions_after_reclaim(
                         nav, nav.current, settings, registry)
                     if reloaded is None:
@@ -1201,9 +1400,13 @@ def main(run_loop=True, runtime_mode="resident", publish_runtime=True):
                     func_panel.set_plugin_catalog(
                         registry.plugin_dependencies)
                     func_panel.set_load_errors(registry.plugin_errors)
+                    nav.release_pending(PAGE_FUNCTION_PANEL)
                     scheduler.request_render()
                 elif _function_scan_pending:
                     _function_scan_pending = False
+                    func_panel = nav.find_page(PAGE_FUNCTION_PANEL)
+                    if func_panel is None:
+                        raise RuntimeError("Function panel scan state is unavailable")
                     files = _scan_function_files_after_reclaim(
                         nav, func_panel)
                     func_panel.adopt_plugin_files(files)
@@ -1231,7 +1434,8 @@ def main(run_loop=True, runtime_mode="resident", publish_runtime=True):
                         if consume_visual is not None and consume_visual():
                             scheduler.request_render()
                     if persisted is not None and not persisted[1]:
-                        calc_screen.set_storage_error("Not saved - check SD")
+                        nav.set_calculator_storage_error(
+                            "Not saved - check SD")
                         scheduler.request_render()
 
             time.sleep_ms(IDLE_LOOP_SLEEP_MS)
@@ -1240,8 +1444,11 @@ def main(run_loop=True, runtime_mode="resident", publish_runtime=True):
             # Memory pressure returns to a usable root and forgets snapshots.
             _function_reload_pending = False
             _function_scan_pending = False
-            func_panel.set_plugin_scan_active(False)
-            func_panel.rollback_plugin_reload()
+            func_panel = nav.find_page(PAGE_FUNCTION_PANEL)
+            if func_panel is not None:
+                func_panel.set_plugin_scan_active(False)
+                func_panel.rollback_plugin_reload()
+                nav.release_pending(PAGE_FUNCTION_PANEL)
             if diagnostics:
                 # Never stringify an exception while the heap is exhausted.
                 print("MEMORY_RECOVER")

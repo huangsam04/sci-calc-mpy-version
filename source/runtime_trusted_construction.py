@@ -75,8 +75,8 @@ class TrustedResidentScenarioConstruction:
 
         if runtime.require_application_binding() is not binding:
             raise RuntimeError("Trusted runtime binding is foreign")
-        if binding.require_canonical_screens(runtime.root) is not binding:
-            raise RuntimeError("Canonical resident screens are unavailable")
+        if binding.require_page_owner(runtime.root) is not binding:
+            raise RuntimeError("Resident page owner is unavailable")
         if getattr(adapter, "_construction_sealed", None) is not False:
             raise RuntimeError("Trusted runtime adapter is already sealed")
         if _require_marked_resident_application_adapter(binding, adapter) is not adapter:
@@ -111,8 +111,8 @@ def _require_trusted_construction_binding(binding):
         raise TypeError("Trusted construction requires ApplicationBinding")
     if getattr(binding, "_sealed", None) is not True:
         raise RuntimeError("Application binding is not immutable")
-    if binding.require_canonical_screens() is not binding:
-        raise RuntimeError("Canonical resident screens are unavailable")
+    if binding.require_page_owner() is not binding:
+        raise RuntimeError("Resident page owner is unavailable")
     if binding._nav is None:
         raise RuntimeError("Canonical resident navigation is unavailable")
     return binding

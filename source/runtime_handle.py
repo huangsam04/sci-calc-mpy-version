@@ -4,87 +4,61 @@
 _resident_runtime = None
 
 
-_CANONICAL_SCREEN_COUNT = 10
-
-
 class ApplicationBinding:
-    """Immutable references to the one already-constructed application state."""
+    """Immutable binding to Nav-owned pages and shared application state."""
 
     __slots__ = ("_binding_state",)
     _sealed = True
 
-    def __init__(self, screens, registry, settings, persistence, nav=None):
-        if not isinstance(screens, tuple):
-            raise TypeError("Resident screens must be an existing tuple")
-        if (registry is None or settings is None or persistence is None):
+    def __init__(self, nav, root, registry, settings, persistence):
+        if (nav is None or root is None or registry is None
+                or settings is None or persistence is None):
             raise ValueError("Application binding requires resident state")
-        # One immutable tuple is both smaller and stronger than duplicating ten
-        # writable page slots. Public names are absent from __slots__, so an
-        # external assignment remains structurally impossible.
         self._binding_state = (
-            screens, registry, settings, persistence, nav)
+            nav, root, registry, settings, persistence)
 
     def __getattr__(self, name):
         state = self._binding_state
-        if name == "screens":
-            return state[0]
-        if name == "registry":
-            return state[1]
-        if name == "settings":
-            return state[2]
-        if name == "persistence":
-            return state[3]
         if name == "_nav":
-            return state[4]
-        screens = state[0]
-        canonical = len(screens) == _CANONICAL_SCREEN_COUNT
+            return state[0]
         if name == "root":
-            return screens[0] if canonical else None
-        if name == "calculator":
-            return screens[1] if canonical else None
-        if name == "plot":
-            return screens[2] if canonical else None
-        if name == "function_panel":
-            return screens[3] if canonical else None
-        if name == "stopwatch":
-            return screens[4] if canonical else None
-        if name == "settings_screen":
-            return screens[5] if canonical else None
-        if name == "about":
-            return screens[6] if canonical else None
-        if name == "letters":
-            return screens[7] if canonical else None
-        if name == "function_picker":
-            return screens[8] if canonical else None
-        if name == "variables":
-            return screens[9] if canonical else None
+            return state[1]
+        if name == "registry":
+            return state[2]
+        if name == "settings":
+            return state[3]
+        if name == "persistence":
+            return state[4]
         raise AttributeError("Application binding attribute is unavailable")
 
-    def require_canonical_screens(self, expected_root=None):
-        """Return this binding only for the one canonical resident topology."""
-        screens = self._binding_state[0]
-        if (not isinstance(screens, tuple)
-                or len(screens) != _CANONICAL_SCREEN_COUNT):
-            raise RuntimeError("Canonical resident screens are unavailable")
-        if expected_root is not None and screens[0] is not expected_root:
-            raise RuntimeError("Canonical resident screens are unavailable")
-        for index in range(_CANONICAL_SCREEN_COUNT):
-            screen = screens[index]
-            if screen is None:
-                raise RuntimeError("Canonical resident screens are unavailable")
-            for earlier in range(index):
-                if screen is screens[earlier]:
-                    raise RuntimeError("Canonical resident screens are unavailable")
+    def require_page_owner(self, expected_root=None):
+        """Return this binding only for its exact Nav/root identity."""
+        nav, root = self._binding_state[0:2]
+        if (expected_root is not None and root is not expected_root):
+            raise RuntimeError("Resident page owner is unavailable")
+        stack = getattr(nav, "stack", None)
+        if not isinstance(stack, list):
+            raise RuntimeError("Resident page owner is unavailable")
+        if stack and stack[0] is not root:
+            raise RuntimeError("Resident page owner is unavailable")
         return self
 
     def open_page_scenario_transaction(self):
-        """Open Nav's canonical page transaction without exposing Nav."""
-        self.require_canonical_screens()
+        """Open Nav's bounded page transaction without exposing Nav."""
+        self.require_page_owner()
         opener = getattr(
-            self._binding_state[4], "open_page_scenario_transaction", None)
+            self._binding_state[0], "open_page_scenario_transaction", None)
         if not callable(opener):
-            raise RuntimeError("Canonical page transaction is unavailable")
-        return opener(self.screens)
+            raise RuntimeError("Page transaction is unavailable")
+        return opener()
+
+    def acquire_page(self, page_id):
+        self.require_page_owner()
+        return self._binding_state[0].acquire_scenario_page(page_id)
+
+    def release_page(self, page_id, screen):
+        self.require_page_owner()
+        return self._binding_state[0].release_scenario_page(page_id, screen)
 
 
 def set_resident_runtime(runtime):

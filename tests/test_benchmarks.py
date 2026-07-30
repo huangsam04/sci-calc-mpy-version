@@ -42,14 +42,12 @@ class FakeNav:
 
 def test_navigation_scenario_selects_only_the_five_canonical_pages():
     root = object()
-    pages = tuple(type(
-        "Page" + str(index), (), {"transition_title": "page" + str(index)})()
-                  for index in range(1, 10))
-    screens = (root,) + pages
+    nav = FakeNav(root)
+    nav.stack = [root]
     binding = ApplicationBinding(
-        screens, object(), object(), object())
+        nav, root, object(), object(), object())
     runtime = RuntimeHandle(
-        FakeNav(root), root, screens, mode="resident",
+        nav, root, (), mode="resident",
         application_binding=binding)
 
     scenario = benchmarks.navigation_scenario(runtime, 1)

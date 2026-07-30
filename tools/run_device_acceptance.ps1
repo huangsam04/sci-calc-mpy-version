@@ -19,24 +19,11 @@ $MpyCross = Join-Path `
 $RemoteArtifact = "/sd/_sci_accept_stage.mpy"
 $ScenarioRunArtifact = (
     "import gc,os,sys;gc.collect();" +
-    "import calc,screens,functions;slot=sys.path[1];" +
+    "import calc,screens,functions,calc.plugin_reload;slot=sys.path[1];" +
     "assert slot.startswith('/sd/.slots/');" +
-    "calc_path=calc.__path__;" +
-    "screens_path=screens.__path__;" +
-    "functions_path=functions.__path__;" +
     "calc.__path__=slot+'/calc';" +
     "screens.__path__=slot+'/screens';" +
     "functions.__path__=slot+'/functions';" +
-    "import calc.plugin_fixture,calc.scenario_variables;" +
-    "import screens.about_scenario,screens.calculator_scenario;" +
-    "import screens.function_panel_scenario;" +
-    "import screens.function_picker_scenario;" +
-    "import screens.letter_panel_scenario,screens.plot_scenario;" +
-    "import screens.settings_scenario,screens.stopwatch_scenario;" +
-    "import screens.variable_panel_scenario;" +
-    "calc.__path__=calc_path;" +
-    "screens.__path__=screens_path;" +
-    "functions.__path__=functions_path;" +
     "sys.path.append('/sd');" +
     "import _sci_accept_stage;" +
     "os.remove('/sd/_sci_accept_stage.mpy');" +
@@ -52,12 +39,12 @@ $DirectRunArtifact = (
 $PrepareResident = (
     "import gc,runtime_handle as h;gc.collect();" +
     "r=h.get_resident_runtime();assert r is not None;" +
-    "r._binding_state[4].renderer.display.sleep();" +
+    "r._nav.renderer.display.sleep();" +
     "print('ACCEPTANCE_RESIDENT_READY')"
 )
 $SleepResident = (
     "import runtime_handle as h;r=h.get_resident_runtime();" +
-    "assert r is not None;r._binding_state[4].renderer.display.sleep();" +
+    "assert r is not None;r._nav.renderer.display.sleep();" +
     "print('ACCEPTANCE_OLED_SLEEP')"
 )
 

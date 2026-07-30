@@ -93,7 +93,7 @@ def _free():
 
 
 def _exercise_round(
-        nav, root, calculator, keyboard, dispatch, handler, drain, stats,
+        nav, root, keyboard, dispatch, handler, drain, stats,
         round_index, saved_input):
     menu = root.menu
     cursor_before = menu.cursor_pos
@@ -110,8 +110,8 @@ def _exercise_round(
     _settle(nav, stats, 2)
 
     started = time.ticks_us()
+    calculator = nav.open(1)
     calculator.input_box.clear_str()
-    nav.go_to(calculator)
     nav.present_current()
     _record(stats, started, False, 3)
 
@@ -128,12 +128,13 @@ def _exercise_round(
 
     started = time.ticks_us()
     calculator.input_box.set_str(saved_input, immediate=True)
-    nav.go_back()
+    nav.back()
     nav.present_current()
     _record(stats, started, False, 6)
     collector = getattr(nav, "collect_pending", None)
     if collector is not None:
         collector()
+    dispatch.screen = root
     stats[2] = round_index + 1
 
 
@@ -142,33 +143,35 @@ def run(runtime=None, emit=print):
     from main import _drain_input_batch
 
     if runtime is None:
-        from runtime_handle import get_resident_runtime
+        from runtime_materialize import get_resident_runtime
 
         runtime = get_resident_runtime()
-    if runtime is None:
+    if runtime is None or getattr(runtime, "mode", None) != "resident":
         raise RuntimeError("Release mode requires a resident runtime")
-    screens = runtime.screens
-    if len(screens) != 10:
-        raise RuntimeError("Canonical resident screens are unavailable")
-    nav = runtime._nav
-    root = screens[0]
-    calculator = screens[1]
+    nav = runtime.nav
+    root = runtime.root
     menu = root.menu
-    if (not menu._state[5]
-            or getattr(calculator, "mode", None) != 0):
+    if not menu._state[5]:
         raise RuntimeError("Resident interaction state is unavailable")
 
+    if nav.current is not root:
+        nav.reset(root)
+    calculator = nav.open(1)
+    if getattr(calculator, "mode", None) != 0:
+        nav.back()
+        raise RuntimeError("Resident interaction state is unavailable")
     saved_cursor = menu.cursor_pos
     saved_offset = menu.view_offset
     saved_input = calculator.input_box.get_str()
+    nav.back()
+    nav.collect_pending()
+    calculator = None
     keyboard = QueuedKeyboard()
     dispatch = _Dispatch(keyboard)
     handler = dispatch.update
     # Memory errors, other errors, rounds, steps, blocking max, edge max,
     # blocking phase, edge phase, and five Calculator edge samples.
     stats = [0] * 13
-    if nav.current is not root:
-        nav.reset(root)
     gc.collect()
     heap_before = _free()
     emit("INTERACTION_SCREEN_TRACER_START mode=resident rounds=5"
@@ -183,7 +186,7 @@ def run(runtime=None, emit=print):
     try:
         for round_index in range(TOTAL_ROUNDS):
             _exercise_round(
-                nav, root, calculator, keyboard, dispatch, handler,
+                nav, root, keyboard, dispatch, handler,
                 _drain_input_batch, stats, round_index, saved_input)
     except MemoryError:
         stats[0] += 1
@@ -191,12 +194,16 @@ def run(runtime=None, emit=print):
         stats[1] += 1
     finally:
         try:
-            calculator.input_box.set_str(saved_input, immediate=True)
+            current = dispatch.screen
+            if current is not None and current is not root:
+                input_box = getattr(current, "input_box", None)
+                if input_box is not None:
+                    input_box.set_str(saved_input, immediate=True)
             menu.cursor_pos = saved_cursor
             menu.view_offset = saved_offset
-            root.activate()
             if nav.current is not root:
                 nav.reset(root)
+            root.activate()
             nav.present_current()
         except MemoryError:
             stats[0] += 1

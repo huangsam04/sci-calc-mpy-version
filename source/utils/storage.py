@@ -439,7 +439,9 @@ def _atomic_write_json(path, data, maximum_bytes=MAX_VARIABLES_FILE_BYTES):
     try:
         with open(temporary, "w") as raw_target:
             target = _BoundedJsonWriter(raw_target, maximum_bytes)
-            json.dump(data, target)
+            # MicroPython's json.dump requires stream operations that the SD
+            # text stream does not provide.  Settings are strictly bounded.
+            target.write(json.dumps(data))
             target.flush()
         if _exists(path):
             if _is_valid_object(path, maximum_bytes):

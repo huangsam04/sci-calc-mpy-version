@@ -199,13 +199,11 @@ def run(runtime=None, frames=DEFAULT_FRAMES, emit=print):
             _unavailable(emit, "gc_mem_alloc")
 
         nav = getattr(runtime, "nav", None)
-        if (nav is None or not callable(getattr(nav, "go_to", None))
+        if (nav is None or not callable(getattr(nav, "open", None))
                 or not callable(getattr(nav, "present_current", None))):
             _unavailable(emit, "nav_present")
-        if not callable(getattr(runtime, "find_target", None)):
-            _unavailable(emit, "runtime_targets")
 
-        stopwatch = runtime.find_target("Stopwatch")
+        stopwatch = nav.open(4)
         _validate_stopwatch(emit, stopwatch)
         state = _StopwatchState(stopwatch)
 
@@ -220,7 +218,6 @@ def run(runtime=None, frames=DEFAULT_FRAMES, emit=print):
         deltas = [0] * frames
         presented = [False] * frames
 
-        nav.go_to(stopwatch)
         stopwatch._start()
         if not stopwatch._clock[1]:
             _unavailable(emit, "stopwatch_not_running")

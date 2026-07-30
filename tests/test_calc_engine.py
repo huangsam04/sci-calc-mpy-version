@@ -22,6 +22,27 @@ def test_compiled_expression_obeys_precedence(registry):
     assert evaluate("2 + 3 * 4", context) == 14
 
 
+def test_bare_numeric_literal_skips_the_allocating_general_parser(
+        registry, monkeypatch):
+    expression = "0e+" + "0" * 41 + "19"
+
+    def general_parser_forbidden(*_args):
+        raise AssertionError("bare numeric literal entered general parser")
+
+    def number_parse_forbidden(_cls, _text):
+        raise AssertionError("zero literal allocated a temporary Number")
+
+    monkeypatch.setattr(parser_module, "_Compiler", general_parser_forbidden)
+    monkeypatch.setattr(
+        parser_module.Number, "parse", classmethod(number_parse_forbidden))
+
+    assert len(expression) == 46
+    program = compile_expression(expression, registry)
+    assert program[0] == "literal"
+    assert program[1] == 0
+    assert evaluate(expression, EvalContext({}, registry)) is parser_module.numeric.ZERO
+    with pytest.raises(parser_module.ParseError, match="Invalid number"):
+        evaluate("0e1000000000", EvalContext({}, registry))
 @pytest.mark.parametrize(
     ("expression", "expected"),
     (("2^3^2", 512), ("-2^2", -4), ("(-2)^2", 4), ("2^-2", 0.25)),

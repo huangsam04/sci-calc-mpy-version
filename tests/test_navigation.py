@@ -1,8 +1,14 @@
+import sys
+
+import pytest
 import ui.renderer
 import ui.sidebar
 
 from calc.functions import build_registry
-from main import (Nav, _drain_input_batch, _navigate_registered_page,
+from main import (PAGE_ABOUT, PAGE_CALCULATOR, PAGE_FUNCTION_PANEL,
+                  PAGE_FUNCTION_PICKER, PAGE_LETTERS, PAGE_PLOT,
+                  PAGE_SETTINGS, PAGE_STOPWATCH, PAGE_VARIABLE_PANEL, Nav,
+                  _drain_input_batch, _navigate_registered_page,
                   _present_first_ui_frame)
 from screens.calculator import CalculatorScreen
 from screens.function_panel import FunctionPanel
@@ -115,10 +121,12 @@ class LifecycleScreen:
         return True
 
 
-def _nav(monkeypatch, memory=None, display=None):
+def _nav(monkeypatch, memory=None, display=None, page_builder=None):
     monkeypatch.setattr(ui.renderer, "Renderer", RendererStub)
     monkeypatch.setattr(ui.sidebar, "Sidebar", lambda font, registry: object())
-    return Nav(display, None, object(), memory=memory)
+    return Nav(
+        display, None, object(), memory=memory,
+        page_builder=page_builder)
 
 
 def test_navigation_exposes_followup_input_immediately_without_page_motion(
@@ -137,43 +145,185 @@ def test_navigation_exposes_followup_input_immediately_without_page_motion(
     assert not hasattr(nav, "is_transitioning")
 
 
-def test_main_menu_routes_calculator_and_function_panel_registered_pages(
+def test_main_menu_routes_page_ids_through_nav_owned_lazy_construction(
         monkeypatch):
-    nav = _nav(monkeypatch)
+    built = []
+    pages = {
+        PAGE_CALCULATOR: ScreenStub(),
+        PAGE_FUNCTION_PANEL: ScreenStub(),
+    }
+
+    def build(page_id, _parent):
+        built.append(page_id)
+        return pages[page_id]
+
+    nav = _nav(monkeypatch, page_builder=build)
     root = MainMenu()
-    calculator = CalculatorScreen(
-        None, registry=build_registry(), variables={})
-    plot = ScreenStub()
-    function_panel = FunctionPanel(
-        None, {"enabled_functions": ["basic"]})
-    root.add_screen("Calculator", calculator)
-    root.add_screen("Plot", plot)
-    root.add_screen("Function Panel", function_panel)
-    nav.register_screens((root, calculator, plot, function_panel))
+    root.add_screen("Calculator", PAGE_CALCULATOR)
+    root.add_screen("Function Panel", PAGE_FUNCTION_PANEL)
     nav.boot(root)
 
     result = root.update(None, (3, 3, False))
     assert _navigate_registered_page(
         nav, root, result, (3, 3, False)) is True
-    assert nav.current is calculator
+    assert result == PAGE_CALCULATOR
+    assert nav.current is pages[PAGE_CALCULATOR]
+    assert built == [PAGE_CALCULATOR]
 
-    nav.go_back()
+    nav.back()
 
-    assert root.update(None, (3, 1, False)) == "REDRAW"
     assert root.update(None, (3, 1, False)) == "REDRAW"
     result = root.update(None, (3, 3, False))
     assert _navigate_registered_page(
         nav, root, result, (3, 3, False)) is True
-    assert nav.current is function_panel
+    assert result == PAGE_FUNCTION_PANEL
+    assert nav.current is pages[PAGE_FUNCTION_PANEL]
+    assert built == [PAGE_CALCULATOR, PAGE_FUNCTION_PANEL]
+    assert not hasattr(nav, "_managed")
 
-    nav.go_back()
 
-    assert root.update(None, (1, 1, False)) == "REDRAW"
-    assert root.update(None, (1, 1, False)) == "REDRAW"
-    result = root.update(None, (3, 3, False))
-    assert _navigate_registered_page(
-        nav, root, result, (3, 3, False)) is True
-    assert nav.current is calculator
+def test_lazy_page_construction_oom_keeps_active_root(monkeypatch):
+    def exhaust(_page_id, _parent):
+        raise MemoryError("page")
+
+    nav = _nav(monkeypatch, page_builder=exhaust)
+    root = ScreenStub()
+    nav.boot(root)
+
+    try:
+        nav.open(PAGE_CALCULATOR)
+    except MemoryError as error:
+        assert str(error) == "page"
+    else:
+        raise AssertionError("page construction should fail")
+
+    assert nav.current is root
+    assert nav.stack == [root]
+    assert root.calls == ["activate"]
+
+
+def test_lazy_page_activation_oom_releases_candidate_and_restores_root(
+        monkeypatch):
+    primary = MemoryError("activate")
+
+    class FailingScreen(ScreenStub):
+        def activate(self):
+            self.calls.append("activate")
+            raise primary
+
+    candidate = FailingScreen(releases=True)
+    nav = _nav(
+        monkeypatch,
+        page_builder=lambda _page_id, _parent: candidate)
+    root = ScreenStub()
+    nav.boot(root)
+
+    with pytest.raises(MemoryError) as caught:
+        nav.open(PAGE_CALCULATOR)
+
+    assert caught.value is primary
+    assert nav.current is root
+    assert nav.stack == [root]
+    assert root.calls == [
+        "activate", "deactivate", "release_memory", "activate"]
+    assert candidate.calls == ["activate", "release_memory"]
+
+
+def test_nav_rebuilds_calculator_and_keeps_only_its_lossless_state(
+        monkeypatch):
+    class Persistence:
+        def request_settings(self, *_args):
+            pass
+
+        def detach_callbacks(self, _owner):
+            pass
+
+    registry = build_registry()
+    nav = _nav(monkeypatch)
+    nav.configure_pages(
+        None, None, registry, {},
+        {"display_digits": 6, "enabled_functions": ["basic"]},
+        Persistence(), "1.4.0")
+    root = MainMenu()
+    nav.boot(root)
+
+    first = nav.open(PAGE_CALCULATOR)
+    first.input_box.set_str("2+3")
+    history = first._state[0]
+    history.append(("2+3", "5"))
+    input_box = first.input_box
+    nav.back()
+
+    assert nav.current is root
+    assert first not in nav.stack
+    assert nav.find_page(PAGE_CALCULATOR) is None
+    assert "screens.calculator" in sys.modules
+    assert "calc.parser" in sys.modules
+    assert "ui.error_popup" in sys.modules
+
+    second = nav.open(PAGE_CALCULATOR)
+
+    assert second is not first
+    assert second.input_box is input_box
+    assert second._state[0] is history
+    assert second.input_box.get_str() == "2+3"
+
+
+def test_nav_first_and_repeat_entry_covers_every_supported_page(monkeypatch):
+    class Persistence:
+        def request_settings(self, *_args):
+            pass
+
+        def detach_callbacks(self, _owner):
+            pass
+
+    nav = _nav(monkeypatch)
+    nav.configure_pages(
+        None, None, build_registry(), {},
+        {"display_digits": 4, "enabled_functions": ["basic"]},
+        Persistence(), "1.4.0")
+    root = MainMenu()
+    nav.boot(root)
+    main_pages = (
+        (PAGE_CALCULATOR, "screens.calculator"),
+        (PAGE_PLOT, "screens.plot"),
+        (PAGE_FUNCTION_PANEL, "screens.function_panel"),
+        (PAGE_STOPWATCH, "screens.stopwatch"),
+        (PAGE_SETTINGS, "screens.settings"),
+    )
+
+    for page_id, module_name in main_pages:
+        first = nav.open(page_id)
+        assert nav.current is first
+        nav.back()
+        assert nav.current is root
+        assert nav.find_page(page_id) is None
+        assert module_name in sys.modules
+        second = nav.open(page_id)
+        assert second is not first
+        nav.back()
+
+    calculator = nav.open(PAGE_CALCULATOR)
+    for page_id, module_name in (
+            (PAGE_LETTERS, "screens.letter_panel"),
+            (PAGE_FUNCTION_PICKER, "screens.function_picker"),
+            (PAGE_VARIABLE_PANEL, "screens.variable_panel")):
+        child = nav.open(page_id)
+        assert nav.current is child
+        nav.back()
+        assert nav.current is calculator
+        assert nav.find_page(page_id) is None
+        assert module_name in sys.modules
+    nav.back()
+
+    settings = nav.open(PAGE_SETTINGS)
+    about = nav.open(PAGE_ABOUT)
+    assert nav.current is about
+    nav.back()
+    assert nav.current is settings
+    assert nav.find_page(PAGE_ABOUT) is None
+    assert "screens.about" in sys.modules
+    nav.back()
 
 
 def test_navigation_commits_target_without_hardware_brightness_fade(
@@ -240,20 +390,20 @@ def test_navigation_releases_rebuildable_state_on_every_ordinary_leave(
     assert child.calls == ["activate", "deactivate", "release_memory"]
 
 
-def test_memory_reset_releases_managed_caches_and_locks_input(monkeypatch):
+def test_memory_reset_releases_owned_path_and_locks_input(monkeypatch):
     memory = MemoryStub()
-    nav = _nav(monkeypatch, memory)
     root = ScreenStub()
-    managed = (ScreenStub(releases=True), ScreenStub(releases=True))
-    nav.register_screens(managed)
+    child = ScreenStub(releases=True)
+    nav = _nav(
+        monkeypatch, memory,
+        page_builder=lambda _page_id, _parent: child)
     nav.boot(root)
-    nav.go_to(managed[0])
+    nav.open(PAGE_CALCULATOR)
 
     nav.reset(root)
 
     assert nav.current is root
-    assert [screen.calls.count("release_memory")
-            for screen in managed] == [1, 1]
+    assert child.calls.count("release_memory") == 1
     assert memory.collections == 1
     keyboard = KeyboardStub([(3, 0, False)], pressed=True)
     assert nav.poll_event(keyboard) is None
@@ -261,18 +411,22 @@ def test_memory_reset_releases_managed_caches_and_locks_input(monkeypatch):
     assert nav.poll_event(keyboard) == (3, 0, False)
 
 
-def test_reset_deactivates_the_stack_then_releases_every_registered_page(
+def test_reset_deactivates_then_releases_only_the_owned_page_path(
         monkeypatch):
     events = []
     memory = LifecycleMemory(events)
-    nav = _nav(monkeypatch, memory)
     get_nav = lambda: nav
     root = LifecycleScreen("root", events, get_nav)
     settings = LifecycleScreen("settings", events, get_nav)
     about = LifecycleScreen("about", events, get_nav)
-    dormant = LifecycleScreen("dormant", events, get_nav)
-    nav.register_screens((root, settings, about, dormant))
-    nav.stack[:] = [root, settings, about]
+    pages = {PAGE_SETTINGS: settings, PAGE_ABOUT: about}
+    nav = _nav(
+        monkeypatch, memory,
+        page_builder=lambda page_id, _parent: pages[page_id])
+    nav.boot(root)
+    nav.open(PAGE_SETTINGS)
+    nav.open(PAGE_ABOUT)
+    events.clear()
 
     nav.reset(root)
 
@@ -280,10 +434,9 @@ def test_reset_deactivates_the_stack_then_releases_every_registered_page(
         "about.deactivate",
         "settings.deactivate",
         "root.deactivate",
-        "root.release_memory",
-        "settings.release_memory",
         "about.release_memory",
-        "dormant.release_memory",
+        "settings.release_memory",
+        "root.release_memory",
         "workspace",
         "collect",
         "root.activate:locked=True",
@@ -294,10 +447,15 @@ def test_reset_deactivates_the_stack_then_releases_every_registered_page(
 def test_memory_intensive_operation_keeps_the_active_page_but_releases_others(
         monkeypatch):
     memory = MemoryStub()
-    nav = _nav(monkeypatch, memory)
     active = ScreenStub(releases=True)
     inactive = ScreenStub(releases=True)
-    nav.register_screens((active, inactive))
+    nav = _nav(
+        monkeypatch, memory,
+        page_builder=lambda _page_id, _parent: active)
+    nav.boot(inactive)
+    nav.open(PAGE_CALCULATOR)
+    active.calls.clear()
+    inactive.calls.clear()
 
     nav.prepare_memory_intensive_operation(active)
 

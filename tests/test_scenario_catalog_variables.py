@@ -93,11 +93,12 @@ def _assert_two_name_steps(screen):
     return transaction
 
 
-def test_function_picker_transaction_consumes_one_name_or_one_comparison():
+def test_function_picker_transaction_batches_the_same_in_place_sort():
     picker = FunctionPicker(None, _PickerCalculator(_Registry(("b", "a"))))
 
-    transaction = _assert_two_name_steps(picker)
+    transaction = picker.open_scenario_transaction()
 
+    assert transaction.step() is True
     assert transaction.close() is True
     assert picker._state[1] == ["a", "b"]
 
@@ -124,7 +125,8 @@ def test_page_transactions_do_not_call_sorted_while_incrementally_rebuilding(
     monkeypatch.setattr(
         variable_panel_module, "sorted", reject_sorted, raising=False)
 
-    picker_transaction = _assert_two_name_steps(picker)
+    picker_transaction = picker.open_scenario_transaction()
+    assert picker_transaction.step() is True
     assert picker_transaction.close() is True
 
     panel_transaction = _assert_two_name_steps(panel)
@@ -176,7 +178,9 @@ def test_page_transactions_reject_concurrent_open_calls():
 
 
 def test_function_picker_source_change_fails_closed_and_close_restores_scalars():
-    registry = _Registry(("b", "a"))
+    registry = _Registry(
+        "function_" + str(index)
+        for index in range(MAX_SCENARIO_FUNCTION_NAMES - 1, -1, -1))
     picker = FunctionPicker(None, _PickerCalculator(registry))
     picker._state[2] = 5
     picker._state[3] = 8
@@ -184,7 +188,7 @@ def test_function_picker_source_change_fails_closed_and_close_restores_scalars()
     transaction = picker.open_scenario_transaction()
 
     assert transaction.step() is False
-    registry["c"] = (None, None, "prefix")
+    registry["function_0"] = (None, 1, "prefix")
     registry.revision += 1
 
     with pytest.raises(RuntimeError, match="registry changed"):

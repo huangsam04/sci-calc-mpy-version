@@ -12,22 +12,22 @@ from runtime_trusted_construction import (
 
 
 class _Nav:
-    __slots__ = ()
+    __slots__ = ("root", "stack", "memory")
 
-    def open_page_scenario_transaction(self, _screens):
+    def __init__(self):
+        self.root = object()
+        self.stack = [self.root]
+        self.memory = object()
+
+    def open_page_scenario_transaction(self):
         raise AssertionError("construction must not open a page transaction")
 
 
-def _canonical_screens():
-    return tuple(object() for _ in range(10))
-
-
 def _binding():
-    screens = _canonical_screens()
     nav = _Nav()
     binding = ApplicationBinding(
-        screens, object(), object(), object(), nav=nav)
-    return binding, nav, screens[0]
+        nav, nav.root, object(), object(), object())
+    return binding, nav, nav.root
 
 
 def _runtime(binding, nav, root, adapter):
@@ -148,14 +148,10 @@ def test_trusted_construction_rejects_runtime_with_foreign_nav_or_root():
         construction.seal_runtime(wrong_root_runtime)
 
 
-def test_trusted_construction_rejects_noncanonical_or_unowned_bindings():
+def test_trusted_construction_rejects_an_unowned_root():
     nav = _Nav()
-    noncanonical = ApplicationBinding(
-        (object(),), object(), object(), object(), nav=nav)
-    canonical_without_nav = ApplicationBinding(
-        _canonical_screens(), object(), object(), object())
+    binding = ApplicationBinding(
+        nav, object(), object(), object(), object())
 
-    with pytest.raises(RuntimeError, match="Canonical resident screens"):
-        prepare_trusted_resident_scenario_adapter(noncanonical)
-    with pytest.raises(RuntimeError, match="resident navigation"):
-        prepare_trusted_resident_scenario_adapter(canonical_without_nav)
+    with pytest.raises(RuntimeError, match="page owner"):
+        prepare_trusted_resident_scenario_adapter(binding)

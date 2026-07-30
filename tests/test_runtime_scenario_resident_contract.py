@@ -21,7 +21,12 @@ SOURCE = Path(__file__).parents[1] / "source"
 class _PoisonedNav:
     """Fail if a bounded scenario reaches into Nav's lifecycle registry."""
 
-    __slots__ = ()
+    __slots__ = ("root", "stack", "memory")
+
+    def __init__(self, root):
+        self.root = root
+        self.stack = [root]
+        self.memory = object()
 
     @property
     def _managed(self):
@@ -98,16 +103,18 @@ class _BindingOnlyController:
 
 
 def test_published_resident_binding_is_the_only_state_for_bounded_matrix():
-    screens = (object(), object(), object())
+    root = object()
+    nav = _PoisonedNav(root)
     registry = object()
     settings = object()
     persistence = object()
-    binding = ApplicationBinding(screens, registry, settings, persistence)
+    binding = ApplicationBinding(
+        nav, root, registry, settings, persistence)
     controller = _BindingOnlyController()
     adapter = ResidentApplicationScenarioAdapter(controller)
     runtime = _PoisonedResidentRuntime(
-        _PoisonedNav(),
-        object(),
+        nav,
+        root,
         (_RepeatedDisplayTitle(), _RepeatedDisplayTitle()),
         mode="resident",
         scenario_adapter=adapter,
@@ -140,7 +147,9 @@ def test_published_resident_binding_is_the_only_state_for_bounded_matrix():
         assert controller.opened_runtime is runtime
         assert controller.opened_binding is binding
         assert controller.session.closed
-        assert binding.screens is screens
+        assert binding._nav is nav
+        assert binding.root is root
+        assert not hasattr(binding, "screens")
         assert binding.registry is registry
         assert binding.settings is settings
         assert binding.persistence is persistence

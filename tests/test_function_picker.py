@@ -85,6 +85,21 @@ def test_target_lazily_imports_function_picker_scenario_transaction(
     assert transaction.picker is picker
 
 
+def test_maximum_function_picker_scenario_finishes_within_thirteen_steps():
+    picker = FunctionPicker(None, CalculatorStub(count=192))
+    transaction = picker.open_scenario_transaction()
+
+    complete = False
+    for _ in range(13):
+        complete = transaction.step()
+        if complete:
+            break
+
+    assert complete is True
+    assert picker._state[1] == sorted(picker._state[1])
+    assert transaction.close() is True
+
+
 def test_distinct_rapid_right_edges_are_never_throttled():
     picker = FunctionPicker(FontStub(), CalculatorStub())
     picker.activate()
@@ -164,7 +179,9 @@ def test_picker_ignores_repeated_full_insert_after_the_notice_is_visible():
     ids=("ent", "del", "esc"),
 )
 def test_picker_active_lease_ignores_input_and_navigation_events(event):
-    calc = CalculatorStub(count=1)
+    calc = CalculatorStub(names=[
+        "function_" + str(index) for index in range(191, -1, -1)
+    ])
     picker = FunctionPicker(FontStub(), calc)
     transaction = picker.open_scenario_transaction()
     assert transaction.step() is False

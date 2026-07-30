@@ -229,9 +229,54 @@ class _Compiler:
         return token[2] if token is not None else len(self.expr)
 
 
+def _parse_bare_number(expr):
+    length = len(expr)
+    if length:
+        char = expr[0]
+        if char.isdigit() or (
+                char == "." and length > 1 and expr[1].isdigit()):
+            index = 0
+            dots = 0
+            nonzero = False
+            while index < length and (
+                    expr[index].isdigit() or expr[index] == "."):
+                if expr[index] == ".":
+                    dots += 1
+                    if dots > 1:
+                        break
+                elif expr[index] != "0":
+                    nonzero = True
+                index += 1
+            exponent_digits = 0
+            if index < length and expr[index] in ("e", "E"):
+                index += 1
+                if index < length and expr[index] in ("+", "-"):
+                    index += 1
+                exponent_start = index
+                while index < length and expr[index].isdigit():
+                    if expr[index] != "0" or exponent_digits:
+                        exponent_digits += 1
+                    index += 1
+                if exponent_start == index:
+                    index = -1
+            if index == length:
+                if exponent_digits > 9:
+                    raise ParseError("Invalid number", 0, expr)
+                if not nonzero:
+                    return numeric.ZERO
+                try:
+                    return Number.parse(expr)
+                except (TypeError, ValueError):
+                    raise ParseError("Invalid number", 0, expr)
+    return None
+
+
 def compile_expression(expr, registry):
     if not isinstance(expr, str):
         raise TypeError("Expression must be a string")
+    value = _parse_bare_number(expr)
+    if value is not None:
+        return ("literal", value, 0)
     return _Compiler(expr, registry).compile()
 
 
@@ -298,7 +343,12 @@ def evaluate_program(program, context):
 
 
 def evaluate(expr, context):
-    program = compile_expression(expr, context.registry)
+    if not isinstance(expr, str):
+        raise TypeError("Expression must be a string")
+    value = _parse_bare_number(expr)
+    if value is not None:
+        return numeric.ZERO if value.is_zero else value
+    program = _Compiler(expr, context.registry).compile()
     try:
         return evaluate_program(program, context)
     except ParseError as error:

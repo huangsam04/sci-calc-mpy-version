@@ -363,11 +363,11 @@ def test_main_defers_filename_scan_and_reloads_plugins_once():
     helper_start = source.index("def _reload_functions_after_reclaim(")
     helper_end = source.index("def _draw_crash", helper_start)
     helper = source[helper_start:helper_end]
-    panel_start = source.index("func_panel = FunctionPanel(")
-    panel_end = source.index("func_panel.set_load_errors", panel_start)
+    panel_start = source.index("screen = FunctionPanel(")
+    panel_end = source.index("screen.set_load_errors", panel_start)
     panel_init = source[panel_start:panel_end]
 
-    assert "nav.go_back(event)" in handler
+    assert "nav.defer_back(event)" in handler
     assert "_function_reload_pending = True" in handler
     assert 'result == "FUNC_PANEL_RESCAN"' in handler
     assert "FunctionEnvironment" not in handler
@@ -386,7 +386,7 @@ def test_main_defers_filename_scan_and_reloads_plugins_once():
     assert "func_panel.adopt_plugin_files(files)" in background
     assert "return _reload_functions(settings, registry)" in helper
     assert "registry.plugin_dependencies, registry.plugin_files" in panel_init
-    assert "persistence.request_settings, settings" in panel_init
+    assert "context[5].request_settings, context[4]" in panel_init
     assert "registry.plugin_functions" not in panel_init
     assert "func_panel.set_plugin_catalog(" in background
     assert "load_settings()" not in handler
@@ -423,9 +423,9 @@ def test_main_rescan_marks_visual_change_only_when_scan_status_changes():
     # visible scanning footer is not a new frame.
     assert "_function_environment" not in rescan
     assert "_function_scan_pending = True" in rescan
-    assert "if func_panel.set_plugin_scan_active(True):" in rescan
+    assert "if cur.set_plugin_scan_active(True):" in rescan
     assert rescan.count("_input_visual_changed = True") == 1
-    assert (rescan.index("if func_panel.set_plugin_scan_active(True):")
+    assert (rescan.index("if cur.set_plugin_scan_active(True):")
             < rescan.index("_input_visual_changed = True")
             < rescan.index("return _input_visual_changed"))
 

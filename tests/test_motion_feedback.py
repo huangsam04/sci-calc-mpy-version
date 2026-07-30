@@ -468,3 +468,18 @@ def test_stopwatch_extended_hours_are_bounded_fixed_width_and_positioned():
     assert display.direct[-1][0] == stopwatch_module._EXTENDED_TIME_X
     assert display.direct[-1][2] is stopwatch._render[0][2]
     assert bytes(stopwatch._render[0][2]) == b"999:59:59:99"
+
+
+def test_stopwatch_detach_and_rebuild_preserves_clock_and_laps():
+    stopwatch = StopwatchScreen(FontStub())
+    stopwatch._clock[1] = True
+    stopwatch._clock[2][1] = 1234
+    stopwatch._clock[2][3].append((1, 500))
+    clock = stopwatch._clock
+
+    retained = stopwatch.detach_state()
+    restored = StopwatchScreen(FontStub(), retained_state=retained)
+
+    assert restored._clock is clock
+    assert restored._clock[1] is True
+    assert restored._clock[2][3] == [(1, 500)]

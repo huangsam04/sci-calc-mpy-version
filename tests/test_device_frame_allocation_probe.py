@@ -76,6 +76,11 @@ class FakeNav:
         self.go_to_calls.append(target)
         self.current = target
 
+    def open(self, page_id):
+        assert page_id == 4
+        self.go_to(self.stopwatch)
+        return self.stopwatch
+
     def present_current(self):
         self.present_count += 1
         if self.present_count == self.memory_error_at:
@@ -308,6 +313,7 @@ def test_stopwatch_probe_fails_closed_without_heap_counter_or_target(
     module = _load_probe()
     runtime, _stopwatch, _nav = _runtime()
     runtime.stopwatch = None
+    runtime.nav.stopwatch = None
     monkeypatch.setitem(module, "gc", FakeGC(()))
     lines = []
 

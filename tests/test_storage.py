@@ -24,6 +24,20 @@ def test_settings_are_merged_with_defaults_and_recovered_from_backup(tmp_path):
     assert "version" not in settings
 
 
+def test_settings_save_does_not_require_json_dump_stream_protocol(
+        tmp_path, monkeypatch):
+    storage.configure_storage(str(tmp_path))
+
+    def unsupported_stream(*_args, **_kwargs):
+        raise OSError("stream operation not supported")
+
+    monkeypatch.setattr(storage.json, "dump", unsupported_stream)
+
+    assert storage.save_settings({"display_digits": 5}) is True
+    storage.configure_storage(str(tmp_path))
+    assert storage.load_settings()["display_digits"] == 5
+
+
 def test_variable_write_failure_keeps_in_memory_cache(tmp_path, monkeypatch):
     storage.configure_storage(str(tmp_path))
     storage.save_vars({"x": 1})
@@ -453,7 +467,7 @@ def test_settings_writer_promotes_cleanup_oom_over_ordinary_write_error(
     def cleanup_oom(path):
         raise cleanup
 
-    monkeypatch.setattr(storage.json, "dump", fail_write)
+    monkeypatch.setattr(storage.json, "dumps", fail_write)
     monkeypatch.setattr(storage, "_remove_if_exists", cleanup_oom)
 
     with pytest.raises(MemoryError) as raised:

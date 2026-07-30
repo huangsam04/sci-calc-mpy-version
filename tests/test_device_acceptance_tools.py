@@ -17,12 +17,13 @@ import device_runtime_monitor
 import device_interaction_acceptance
 
 
-def test_runtime_monitor_device_path_does_not_load_the_generic_runner():
+def test_runtime_monitor_reuses_the_page_id_acceptance_runner():
     source = (TOOLS / "device_runtime_monitor.py").read_text(encoding="utf-8")
 
-    assert "from runtime_acceptance import" not in source
-    assert "import runtime_acceptance" not in source
-    assert device_runtime_monitor.MIN_HEAP_FREE_BYTES == 4 * 1024
+    assert "from runtime_acceptance import run" in source
+    assert "navigation_scenario" in source
+    assert "_binding_state" not in source
+    assert ".screens" not in source
 
 
 def test_interaction_device_path_does_not_load_the_generic_runner():
@@ -40,9 +41,19 @@ class _Memory:
         self._plot_curve = buffers.get("plot_curve", bytearray(104))
 
 
+class _MonitorDisplay:
+    def __init__(self):
+        self.gs4_buf = bytearray(8192)
+        self.sleep_count = 0
+
+    def sleep(self):
+        self.sleep_count += 1
+
+
 class _Renderer:
     def __init__(self, root):
         self._visible_screen = root
+        self.display = _MonitorDisplay()
 
 
 class _Nav:
@@ -218,9 +229,17 @@ class _InteractionNav(_Nav):
         self.current = target
         self.log.append("go_to:calculator")
 
+    def open(self, page_id):
+        assert page_id == 1
+        self.go_to(self.calculator)
+        return self.calculator
+
     def go_back(self):
         self.current = self._root
         self.log.append("go_back:root")
+
+    def back(self):
+        self.go_back()
 
     def present_current(self):
         self.renderer.present(self.current)
@@ -247,11 +266,10 @@ class _CollectRequestedInteractionNav(_InteractionNav):
 
 class _InteractionBinding:
     def __init__(self, nav, root, calculator):
-        self._nav = nav
-        self.screens = (
-            root, calculator, object(), object(), object(),
-            object(), object(), object(), object(), object(),
-        )
+        self.mode = "resident"
+        self.nav = nav
+        self.root = root
+        nav.calculator = calculator
 
 
 _ROOT = object()
@@ -365,7 +383,7 @@ def test_runtime_monitor_runs_every_target_in_each_of_five_rounds():
 def test_runtime_monitor_returns_to_root_after_unexpected_failure():
     nav = _FailingPresentNav(_ROOT)
 
-    with pytest.raises(RuntimeError, match="injected present failure"):
+    with pytest.raises(RuntimeError, match="acceptance failed"):
         device_runtime_monitor.run(
             runtime=RuntimeHandle(
                 nav, _ROOT, (_Target(),), mode="resident"),
@@ -415,13 +433,13 @@ def test_interaction_presents_captured_edges_before_quiet_settle_work():
     first_calc_update = log.index("update:calculator")
     calc_present = log.index("present:calculator", first_calc_update)
     calc_settle = log.index("settle:calculator", first_calc_update)
-    first_root_collect = log.index("collect:root")
+    first_root_collect = log.index("collect:root", first_root_update)
     assert first_root_update < root_present < root_settle
     assert first_calc_update < calc_present < calc_settle
     assert first_root_collect > calc_present
     assert log.count("update:root") == 5
     assert log.count("update:calculator") == 25
-    assert log.count("collect:root") == 5
+    assert log.count("collect:root") == 6
     assert report[2] == 5
 
 

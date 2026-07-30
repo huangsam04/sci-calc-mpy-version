@@ -2,156 +2,111 @@ from pathlib import Path
 
 import pytest
 
-from runtime_application_controller import (
-    build_resident_application_scenario_adapter)
 from runtime_handle import (
     ApplicationBinding, get_resident_runtime, set_resident_runtime)
 import runtime_handle as runtime_handle_module
 from runtime_materialize import (
     RuntimeHandle, get_resident_runtime as materialize_runtime)
-from runtime_trusted_construction import (
-    prepare_trusted_resident_scenario_adapter)
 
 
 SOURCE = Path(__file__).parents[1] / "source"
 
 
-class _PageTransactionNav:
-    __slots__ = ("calls", "received_screens", "transaction")
+class _PageOwnerNav:
+    __slots__ = (
+        "root", "stack", "memory", "calls", "transaction", "acquired",
+        "released")
 
-    def __init__(self):
+    def __init__(self, root=None):
+        self.root = object() if root is None else root
+        self.stack = [self.root]
+        self.memory = object()
         self.calls = 0
-        self.received_screens = None
         self.transaction = object()
+        self.acquired = []
+        self.released = []
 
-    def open_page_scenario_transaction(self, screens):
+    def open_page_scenario_transaction(self):
         self.calls += 1
-        self.received_screens = screens
         return self.transaction
 
+    def acquire_scenario_page(self, page_id):
+        page = object()
+        self.acquired.append((page_id, page))
+        return page
 
-def _canonical_screens():
-    root = object()
-    calculator = object()
-    plot = object()
-    function_panel = object()
-    stopwatch = object()
-    settings_screen = object()
-    about = object()
-    letters = object()
-    function_picker = object()
-    variables = object()
+    def release_scenario_page(self, page_id, page):
+        self.released.append((page_id, page))
+        return True
+
+
+def _binding(nav=None):
+    nav = _PageOwnerNav() if nav is None else nav
     return (
-        root, calculator, plot, function_panel, stopwatch, settings_screen,
-        about, letters, function_picker, variables)
+        ApplicationBinding(nav, nav.root, object(), object(), object()),
+        nav)
 
 
-def test_application_binding_keeps_existing_resident_identities_without_copy():
-    screens = _canonical_screens()
+def test_application_binding_keeps_only_page_owner_and_shared_state():
+    nav = _PageOwnerNav()
     registry = object()
     settings = object()
     persistence = object()
+    binding = ApplicationBinding(
+        nav, nav.root, registry, settings, persistence)
 
-    binding = ApplicationBinding(screens, registry, settings, persistence)
-
-    assert binding.screens is screens
+    assert binding._nav is nav
+    assert binding.root is nav.root
     assert binding.registry is registry
     assert binding.settings is settings
     assert binding.persistence is persistence
-    assert binding.root is screens[0]
-    assert binding.calculator is screens[1]
-    assert binding.plot is screens[2]
-    assert binding.function_panel is screens[3]
-    assert binding.stopwatch is screens[4]
-    assert binding.settings_screen is screens[5]
-    assert binding.about is screens[6]
-    assert binding.letters is screens[7]
-    assert binding.function_picker is screens[8]
-    assert binding.variables is screens[9]
-    assert binding.require_canonical_screens() is binding
-    assert binding.require_canonical_screens(screens[0]) is binding
+    assert binding.require_page_owner(nav.root) is binding
+    assert not hasattr(binding, "screens")
+    assert not hasattr(binding, "calculator")
     assert not hasattr(binding, "__dict__")
     with pytest.raises(AttributeError):
-        binding.screens = ()
-    with pytest.raises(AttributeError):
-        binding.calculator = object()
-    with pytest.raises(AttributeError):
-        binding.unexpected = object()
+        binding._nav = _PageOwnerNav()
 
 
-def test_binding_opens_page_transaction_only_through_its_owned_nav():
-    screens = _canonical_screens()
-    nav = _PageTransactionNav()
-    binding = ApplicationBinding(
-        screens, object(), object(), object(), nav=nav)
-    runtime = RuntimeHandle(
-        nav, screens[0], (), mode="resident", application_binding=binding)
+def test_binding_opens_and_releases_pages_only_through_owned_nav():
+    binding, nav = _binding()
 
-    transaction = (
-        runtime.require_application_binding().open_page_scenario_transaction())
+    transaction = binding.open_page_scenario_transaction()
+    page = binding.acquire_page(2)
+    assert binding.release_page(2, page) is True
 
     assert transaction is nav.transaction
     assert nav.calls == 1
-    assert nav.received_screens is screens
-    assert not hasattr(binding, "nav")
-    with pytest.raises(AttributeError):
-        binding._nav = _PageTransactionNav()
+    assert nav.acquired == [(2, page)]
+    assert nav.released == [(2, page)]
 
 
-def test_runtime_packs_the_bound_plot_allowance_without_extra_instance_slots():
-    screens = _canonical_screens()
-    binding = ApplicationBinding(
-        screens, object(), object(), object())
-
-    runtime = RuntimeHandle(
-        object(), screens[0], screens[1:6], mode="in_memory",
-        optional_buffer_size=104, application_binding=binding)
-
-    assert "optional_buffers" not in RuntimeHandle.__slots__
-    assert "optional_buffer_target" not in RuntimeHandle.__slots__
-    assert runtime.optional_buffer_target is screens[2]
-    assert runtime.optional_buffer_size == 104
-
-
-def test_application_binding_requires_an_existing_screen_tuple_and_state():
-    registry = object()
-    settings = object()
-    persistence = object()
-
-    with pytest.raises(TypeError, match="existing tuple"):
-        ApplicationBinding([], registry, settings, persistence)
+def test_application_binding_requires_exact_resident_state_and_root():
+    nav = _PageOwnerNav()
     with pytest.raises(ValueError, match="resident state"):
-        ApplicationBinding((), None, settings, persistence)
+        ApplicationBinding(nav, nav.root, None, object(), object())
 
-    host_binding = ApplicationBinding(
-        (object(),), registry, settings, persistence)
-    with pytest.raises(RuntimeError, match="Canonical resident screens"):
-        host_binding.require_canonical_screens()
-
-    unavailable = ApplicationBinding(
-        _canonical_screens(), registry, settings, persistence)
-    with pytest.raises(RuntimeError, match="page transaction"):
-        unavailable.open_page_scenario_transaction()
+    binding = ApplicationBinding(
+        nav, nav.root, object(), object(), object())
+    with pytest.raises(RuntimeError, match="page owner"):
+        binding.require_page_owner(object())
+    nav.stack[0] = object()
+    with pytest.raises(RuntimeError, match="page owner"):
+        binding.require_page_owner()
 
 
 def test_resident_binding_is_registered_without_materializing_a_handle():
-    screens = _canonical_screens()
-    binding = ApplicationBinding(
-        screens, object(), object(), object(), nav=object())
+    binding, _nav = _binding()
     previous = get_resident_runtime()
     try:
         runtime_handle_module._resident_runtime = binding
-
         assert get_resident_runtime() is binding
     finally:
         runtime_handle_module._resident_runtime = previous
 
 
-def test_acceptance_materializes_the_registered_binding_once():
-    screens = _canonical_screens()
-    nav = object()
-    binding = ApplicationBinding(
-        screens, object(), object(), object(), nav=nav)
+def test_acceptance_materializes_the_registered_page_owner_once():
+    binding, nav = _binding()
     previous = get_resident_runtime()
     try:
         runtime_handle_module._resident_runtime = binding
@@ -160,10 +115,11 @@ def test_acceptance_materializes_the_registered_binding_once():
 
         assert isinstance(runtime, RuntimeHandle)
         assert runtime.nav is nav
-        assert runtime.root is screens[0]
-        assert runtime.targets is screens
+        assert runtime.root is nav.root
+        assert runtime.targets == ()
         assert runtime.application_binding is binding
-        assert runtime.optional_buffer_target is screens[2]
+        assert runtime.scenario_adapter is not None
+        assert runtime.optional_buffer_target is nav.memory
         assert runtime.optional_buffer_size == 104
         assert materialize_runtime() is runtime
         assert get_resident_runtime() is runtime
@@ -171,174 +127,45 @@ def test_acceptance_materializes_the_registered_binding_once():
         runtime_handle_module._resident_runtime = previous
 
 
-def test_application_binding_rejects_wrong_or_duplicate_canonical_topology():
-    screens = _canonical_screens()
-    registry = object()
-    settings = object()
-    persistence = object()
-    wrong_root = ApplicationBinding(
-        _canonical_screens(), registry, settings, persistence)
-    duplicate = ApplicationBinding(
-        (
-            screens[0], screens[1], screens[1], screens[3], screens[4],
-            screens[5], screens[6], screens[7], screens[8], screens[9],
-        ),
-        registry,
-        settings,
-        persistence,
-    )
-
-    with pytest.raises(RuntimeError, match="Canonical resident screens"):
-        wrong_root.require_canonical_screens(screens[0])
-    with pytest.raises(RuntimeError, match="Canonical resident screens"):
-        duplicate.require_canonical_screens(screens[0])
-
-
-def test_runtime_handle_exposes_optional_binding_and_fails_closed_when_missing():
-    runtime = RuntimeHandle(object(), object(), (), mode="resident")
-    screens = _canonical_screens()
-    nav = _PageTransactionNav()
-    binding = ApplicationBinding(
-        screens, object(), object(), object(), nav=nav)
+def test_runtime_handle_fails_closed_for_missing_or_foreign_binding():
+    binding, nav = _binding()
+    missing = RuntimeHandle(nav, nav.root, (), mode="resident")
+    foreign_nav = RuntimeHandle(
+        _PageOwnerNav(nav.root), nav.root, (), mode="resident",
+        application_binding=binding)
+    foreign_root = RuntimeHandle(
+        nav, object(), (), mode="resident", application_binding=binding)
     bound = RuntimeHandle(
-        nav, screens[0], (), mode="resident", application_binding=binding)
+        nav, nav.root, (), mode="resident", application_binding=binding)
 
-    assert runtime.application_binding is None
     with pytest.raises(RuntimeError, match="application binding"):
-        runtime.require_application_binding()
-    assert bound.application_binding is binding
+        missing.require_application_binding()
+    with pytest.raises(RuntimeError, match="foreign"):
+        foreign_nav.require_application_binding()
+    with pytest.raises(RuntimeError, match="foreign"):
+        foreign_root.require_application_binding()
     assert bound.require_application_binding() is binding
-    with pytest.raises(AttributeError):
-        bound.application_binding = ApplicationBinding(
-            _canonical_screens(), object(), object(), object())
-    with pytest.raises(AttributeError):
-        runtime.application_binding = binding
 
 
-def test_runtime_handle_seals_the_exact_resident_application_adapter():
-    screens = _canonical_screens()
-    nav = _PageTransactionNav()
-    binding = ApplicationBinding(
-        screens, object(), object(), object(), nav=nav)
-    construction = prepare_trusted_resident_scenario_adapter(binding)
-    adapter = construction.adapter
-    runtime = RuntimeHandle(
-        nav,
-        screens[0],
-        (),
-        mode="resident",
-        scenario_adapter=adapter,
-        application_binding=binding,
-    )
-    construction.seal_runtime(runtime)
-
-    assert runtime.require_resident_application_adapter() is adapter
-    with pytest.raises(AttributeError):
-        runtime.scenario_adapter = object()
-    with pytest.raises(AttributeError, match="controller"):
-        adapter._controller = object()
-
-    other_binding = ApplicationBinding(
-        screens, object(), object(), object(), nav=nav)
-    foreign = RuntimeHandle(
-        nav,
-        screens[0],
-        (),
-        mode="resident",
-        scenario_adapter=adapter,
-        application_binding=other_binding,
-    )
-    with pytest.raises(RuntimeError, match="adapter"):
-        foreign.require_resident_application_adapter()
-
-    with pytest.raises(AttributeError):
-        object.__setattr__(runtime, "scenario_adapter", object())
-    object.__setattr__(
-        runtime, "_runtime_state", (object(), binding, None, 0))
-    with pytest.raises(RuntimeError, match="adapter"):
-        runtime.require_resident_application_adapter()
-
-    compatibility_runtime = RuntimeHandle(
-        nav,
-        screens[0],
-        (),
-        mode="resident",
-        scenario_adapter=build_resident_application_scenario_adapter(binding),
-        application_binding=binding,
-    )
-    with pytest.raises(RuntimeError, match="adapter"):
-        compatibility_runtime.require_resident_application_adapter()
-
-
-def test_runtime_handle_rejects_bindings_for_a_foreign_nav_or_root():
-    screens = _canonical_screens()
-    nav = _PageTransactionNav()
-    binding = ApplicationBinding(
-        screens, object(), object(), object(), nav=nav)
-    foreign_nav_runtime = RuntimeHandle(
-        _PageTransactionNav(),
-        screens[0],
-        (),
-        mode="resident",
-        application_binding=binding,
-    )
-    foreign_root_runtime = RuntimeHandle(
-        nav,
-        object(),
-        (),
-        mode="resident",
-        application_binding=binding,
-    )
-
-    with pytest.raises(RuntimeError, match="foreign"):
-        foreign_nav_runtime.require_application_binding()
-    with pytest.raises(RuntimeError, match="foreign"):
-        foreign_root_runtime.require_application_binding()
-
-
-def test_resident_runtime_rejects_a_canonical_binding_without_its_nav():
-    screens = _canonical_screens()
-    runtime = RuntimeHandle(
-        _PageTransactionNav(),
-        screens[0],
-        (),
-        mode="resident",
-        application_binding=ApplicationBinding(
-            screens, object(), object(), object()),
-    )
-
-    with pytest.raises(RuntimeError, match="foreign"):
-        runtime.require_application_binding()
-
-
-def test_main_constructs_binding_after_resident_screens_and_before_publication():
+def test_main_constructs_binding_without_a_resident_page_tuple():
     main_source = (SOURCE / "main.py").read_text(encoding="utf-8")
     materializer_source = (
         SOURCE / "runtime_materialize.py").read_text(encoding="utf-8")
 
-    resident_screens = main_source.index("resident_screens = (")
-    registered = main_source.index("nav.register_screens(resident_screens)")
+    configured = main_source.index("nav.configure_pages(")
     binding = main_source.index("application_binding = ApplicationBinding(")
     runtime = main_source.index(
         "runtime = application_binding if run_loop else RuntimeHandle(")
     published = main_source.index("set_resident_runtime(runtime)", runtime)
 
-    assert resident_screens < registered < binding < runtime < published
+    assert configured < binding < runtime < published
+    assert "resident_screens" not in main_source
+    assert "nav.register_screens" not in main_source
+    assert "_managed" not in main_source
     binding_block = main_source[binding:runtime]
-    assert "resident_screens, registry, settings, persistence" in binding_block
-    assert "nav=nav" in binding_block
-    assert "_managed" not in binding_block
-    topology = main_source[resident_screens:binding]
-    assert "main_menu, calc_screen, plot_screen, func_panel, stopwatch" in topology
-    assert "settings_screen, about, letter_panel, func_picker, var_panel" in topology
-    assert "prepare_trusted_resident_scenario_adapter" not in binding_block
-    assert "build_resident_application_scenario_adapter" not in binding_block
-    runtime_block = main_source[runtime:published]
-    assert "application_binding=application_binding" in runtime_block
-    assert "scenario_adapter=None" in runtime_block
-    assert "optional_buffer_size=104" in materializer_source
-    assert "application_binding=binding" in materializer_source
+    assert "nav, main_menu, registry, settings, persistence" in binding_block
+    assert "binding.require_page_owner()" in materializer_source
+    assert "nav, binding.root, ()" in materializer_source
     normal_publish = main_source.index(
-        '__import__("runtime_handle")._resident_runtime = runtime',
-        runtime)
+        '__import__("runtime_handle")._resident_runtime = runtime', runtime)
     assert runtime < normal_publish

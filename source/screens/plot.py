@@ -179,28 +179,38 @@ class PlotScreen(UIElement):
 
     __slots__ = ('input_box', 'error_popup', 'expr', '_state')
 
-    def __init__(self, font, small_font=None, registry=None, memory=None):
+    def __init__(self, font, small_font=None, registry=None, memory=None,
+                 retained_state=None):
         # Construct child instance blocks before the four-key Plot map. Fixed
         # tables of at most four references replace the former 34-key
         # MicroPython object without one large contiguous allocation.
         small_font = small_font or font
-        input_box = InputBox(
-            0, 1, 210, 12, MAX_PLOT_EXPRESSION_CHARS, font)
+        if retained_state is None:
+            input_box = InputBox(
+                0, 1, 210, 12, MAX_PLOT_EXPRESSION_CHARS, font)
+            bounds = [-10.0, 10.0, -5.0, 5.0]
+            expression = ''
+            curve = [None, None, False, False]
+        else:
+            input_box = retained_state[0]
+            expression = retained_state[1]
+            bounds = retained_state[2]
+            curve = retained_state
         eval_vars = {'x': 0.0}
         eval_context = EvalContext(eval_vars, registry)
         error_popup = ErrorPopup(font, small_font)
 
         self.input_box = input_box
         self.error_popup = error_popup
-        self.expr = ''
+        self.expr = expression
         self._state = None
         # bounds: x minimum/maximum, then y minimum/maximum
         # presented: frame/footer/lease/mode; curve: pixels/restore flags
         # runtime: reveal/job/GC countdown, then view/program/evaluator tables
         self._state = (
-            [-10.0, 10.0, -5.0, 5.0],
+            bounds,
             [None, None, None, 0],
-            [None, None, False, False],
+            curve,
             [self.width, None, 0, (
                 [font, small_font, '', None],
                 [registry, memory, None, None],
@@ -208,6 +218,11 @@ class PlotScreen(UIElement):
                 _CurveJob(False, 0, 0, 0),
             )],
         )
+        if retained_state is not None:
+            curve[0] = None
+            curve[1] = None
+            curve[2] = False
+            curve[3] = False
         # The editor only ever draws at its visible resting coordinate. The
         # old off-screen negative-y staging made direct packed text unsafe.
         self._clear_presented_editor_state()
@@ -299,6 +314,23 @@ class PlotScreen(UIElement):
             self._state[1][1] = None
             released = True
         return released
+
+    def detach_state(self):
+        'Move expression/view state out and discard Plot-only runtime.'
+        state = self._state
+        if state[1][2] is not None:
+            raise RuntimeError('Plot scenario transaction is active')
+        self.release_memory()
+        retained = state[2]
+        retained[0] = self.input_box
+        retained[1] = self.expr
+        retained[2] = state[0]
+        retained[3] = None
+        self.input_box = None
+        self.error_popup = None
+        self.expr = ''
+        self._state = None
+        return retained
 
     def on_angle_mode_changed(self):
         'Atomically discard every curve derived under the old angle mode.\n\n        Angle conversion is read while sampling, so retaining either a running\n        job or a completed buffer would mix RAD and DEG pixels.  This method\n        only drops references and marks the existing bounded pipeline for a\n        later rebuild; it does not allocate, collect, or synchronously sample\n        on the key-event path.\n        '
@@ -577,7 +609,7 @@ class PlotScreen(UIElement):
             self._compile_program()
         except ParseError as error:
             self.error_popup.release_memory()
-            self._discard_curve_runtime(release_workspace=True, collect=True)
+            self._discard_curve_runtime(release_workspace=True)
             self.error_popup.show(self.expr, error, error.pos)
             self._state[1][3] = 2
             return False

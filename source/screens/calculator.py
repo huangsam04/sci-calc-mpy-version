@@ -28,7 +28,8 @@ class CalculatorScreen:
     __slots__ = ("input_box", "mode", "context", "_state")
 
     def __init__(self, font, small_font=None, registry=None, variables=None,
-                 display_digits=DEFAULT_DISPLAY_DIGITS):
+                 display_digits=DEFAULT_DISPLAY_DIGITS,
+                 retained_state=None):
         # Construct child instance blocks before the four-key Calculator map.
         # MicroPython stores instance attributes in a growing hash table even
         # though CPython honours __slots__; keeping four keys and no retained
@@ -42,17 +43,28 @@ class CalculatorScreen:
         # editor state, footer cache, history cache, and packed result x values
         # share this fixed outer table.
         font = font if font is not None else small_font
-        input_box = InputBox(0, 0, 210, 12,
-                             MAX_EXPRESSION_CHARS, font,
-                             visible_rows=2)
-        context = EvalContext(
-            variables if variables is not None else {}, registry)
+        if retained_state is None:
+            input_box = InputBox(0, 0, 210, 12,
+                                 MAX_EXPRESSION_CHARS, font,
+                                 visible_rows=2)
+            context = EvalContext(
+                variables if variables is not None else {}, registry)
+            history = []
+            status = [0, "", DEFAULT_DISPLAY_DIGITS, ["", 0]]
+            meta = [status, 0, 0, None]
+        else:
+            history = retained_state[0]
+            input_box = retained_state[1]
+            context = retained_state[2]
+            meta = retained_state[3]
         error_popup = ErrorPopup(font, font)
-        history = []
-        status = [0, "", DEFAULT_DISPLAY_DIGITS, ["", 0]]
         render = [None, None, None, 0]
-        meta = [status, 0, 0, None]
-        state = [history, error_popup, render, meta]
+        state = (retained_state if retained_state is not None
+                 else [history, None, None, meta])
+        state[0] = history
+        state[1] = error_popup
+        state[2] = render
+        state[3] = meta
 
         self.input_box = input_box
         self.mode = 0
@@ -60,7 +72,8 @@ class CalculatorScreen:
         self._state = state
         # Derived render tables stay absent until the inactive Calculator is
         # actually shown.
-        self.set_display_digits(display_digits)
+        if retained_state is None:
+            self.set_display_digits(display_digits)
         self._clear_presented_editor_state()
 
     def activate(self):
@@ -129,6 +142,21 @@ class CalculatorScreen:
         if self.input_box.release_memory():
             released = True
         return released
+
+    def detach_state(self):
+        """Move lossless state out while dropping Calculator-only objects."""
+        state = self._state
+        if state[3][3] is not None:
+            raise RuntimeError("Calculator scenario transaction is active")
+        self.deactivate()
+        self.release_memory()
+        state[1] = self.input_box
+        state[2] = self.context
+        self.input_box = None
+        self.context = None
+        self._state = None
+        self.mode = 0
+        return state
 
     def settle_step(self):
         """Expire quiet transient UI state without restoring periodic frames."""

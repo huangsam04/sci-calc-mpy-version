@@ -24,6 +24,7 @@ from runtime_scenarios import APPLICATION_MATRIX_DEVICE_READY
 
 
 SOURCE = Path(__file__).parents[1] / "source"
+_ACTIVE_PAGES = None
 
 
 class _RendererStub:
@@ -227,14 +228,20 @@ class _TrackingNav(Nav):
         self.go_back_calls += 1
         return super().go_back(trigger_event)
 
+    def open_page_scenario_transaction(self, _test_pages=None):
+        return super().open_page_scenario_transaction()
+
 
 def _nav(monkeypatch):
     monkeypatch.setattr(ui.renderer, "Renderer", _RendererStub)
     monkeypatch.setattr(ui.sidebar, "Sidebar", lambda font, registry: object())
-    return _TrackingNav(None, None, object(), memory=_MemoryStub())
+    return _TrackingNav(
+        None, None, object(), memory=_MemoryStub(),
+        page_builder=lambda page_id, _parent: _ACTIVE_PAGES[page_id])
 
 
 def _canonical_pages(events=None):
+    global _ACTIVE_PAGES
     root = _Screen("root", events)
     calculator = _PageScenarioScreen("calculator", events)
     plot = _PageScenarioScreen("plot", events)
@@ -259,6 +266,7 @@ def _canonical_pages(events=None):
         (PAGE_SCENARIO_FUNCTION_PICKER, catalog, "standard"),
         (PAGE_SCENARIO_VARIABLE_PANEL, variables, "standard"),
     )
+    _ACTIVE_PAGES = canonical
     return root, canonical, cases
 
 
@@ -317,9 +325,8 @@ def test_page_action_ids_follow_canonical_binding_order():
 
 def test_target_lazily_imports_page_scenario_transaction(monkeypatch):
     class LazyTransaction:
-        def __init__(self, nav, canonical_screens):
+        def __init__(self, nav):
             self.nav = nav
-            self.canonical_screens = canonical_screens
 
     lazy_module = types.ModuleType("nav_scenario")
     lazy_module._NavPageScenarioTransaction = LazyTransaction
@@ -334,7 +341,7 @@ def test_target_lazily_imports_page_scenario_transaction(monkeypatch):
 
     assert type(transaction) is LazyTransaction
     assert transaction.nav is nav
-    assert transaction.canonical_screens is canonical
+    assert _ACTIVE_PAGES is canonical
     assert nav._page_scenario_transaction is transaction
     assert main_module._NavPageScenarioTransaction is LazyTransaction
 
@@ -360,7 +367,7 @@ def test_every_canonical_page_uses_one_prepared_round_trip(
     assert transaction.close() is True
 
 
-def test_page_scenario_requires_the_canonical_root_and_distinct_pages(
+def test_page_scenario_requires_the_owned_root(
         monkeypatch):
     nav = _nav(monkeypatch)
     root, canonical, cases = _canonical_pages()
@@ -368,20 +375,11 @@ def test_page_scenario_requires_the_canonical_root_and_distinct_pages(
     nav.boot(root)
     nav.go_to(detour)
 
-    with pytest.raises(RuntimeError, match="canonical root"):
+    with pytest.raises(RuntimeError, match="the root"):
         nav.open_page_scenario_transaction(canonical)
 
     assert all(child.open_calls == 0 for _, child, _ in cases)
     assert nav._page_scenario_transaction is None
-
-    nav.go_back()
-    with pytest.raises(RuntimeError, match="Canonical resident screens"):
-        nav.open_page_scenario_transaction(canonical[:-1])
-
-    duplicate = list(canonical)
-    duplicate[2] = duplicate[1]
-    with pytest.raises(RuntimeError, match="Canonical resident screens"):
-        nav.open_page_scenario_transaction(tuple(duplicate))
 
     assert all(child.open_calls == 0 for _, child, _ in cases)
 

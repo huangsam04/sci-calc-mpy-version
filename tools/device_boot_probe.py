@@ -20,13 +20,11 @@ def run(runtime=None, emit=print):
     if runtime is None:
         runtime = _resident_binding()
     state = getattr(runtime, "_binding_state", None)
-    if (not isinstance(state, tuple) or len(state) != 5
-            or not isinstance(state[0], tuple) or len(state[0]) != 10):
+    if not isinstance(state, tuple) or len(state) != 5:
         raise RuntimeError("SCI-CALC resident runtime is unavailable")
 
-    screens = state[0]
-    nav = state[4]
-    root = screens[0]
+    nav = state[0]
+    root = state[1]
     renderer = getattr(nav, "renderer", None)
     if (nav is None or getattr(nav, "current", None) is not root
             or getattr(renderer, "_visible_screen", None) is not root):

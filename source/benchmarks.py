@@ -39,14 +39,22 @@ def _target_name(target):
 def navigation_scenario(runtime, rounds=BENCHMARK_ROUNDS):
     """Build one immutable matrix; every round visits every target."""
     targets = runtime.targets
+    binding = getattr(runtime, "application_binding", None)
+    if binding is not None and not targets:
+        return (
+            SCENARIO_NAME, max(0, int(rounds)),
+            (
+                ("Calculator", VISIT_TARGET, 1),
+                ("Plot", VISIT_TARGET, 2),
+                ("Function Panel", VISIT_TARGET, 3),
+                ("Stopwatch", VISIT_TARGET, 4),
+                ("Settings", VISIT_TARGET, 5),
+            ),
+        )
     if not targets:
         raise RuntimeError("Benchmark runner has no navigation targets")
-    binding = getattr(runtime, "application_binding", None)
-    canonical = binding is not None and targets is binding.screens
-    first = 1 if canonical else 0
-    stop = 6 if canonical else len(targets)
     steps = []
-    for index in range(first, stop):
+    for index in range(len(targets)):
         target = targets[index]
         steps.append((_target_name(target), VISIT_TARGET, index))
     return (SCENARIO_NAME, max(0, int(rounds)), tuple(steps))

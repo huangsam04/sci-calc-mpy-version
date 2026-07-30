@@ -992,7 +992,17 @@ def test_initial_buffer_probe_memory_error_cannot_escape_the_runner():
 def test_bounded_session_opens_once_and_times_each_physical_action(
         monkeypatch):
     root = "root"
-    nav = _InMemoryNav(root)
+
+    class CollectingNav(_InMemoryNav):
+        def __init__(self, selected_root):
+            _InMemoryNav.__init__(self, selected_root)
+            self.collects = 0
+
+        def collect_pending(self):
+            self.collects += 1
+            return True
+
+    nav = CollectingNav(root)
     runtime = RuntimeHandle(nav, root, (), mode="in_memory")
 
     class Session:
@@ -1031,17 +1041,23 @@ def test_bounded_session_opens_once_and_times_each_physical_action(
             return True
 
     session = Session()
-    _bounded_measurement(monkeypatch, physical_steps=6)
+    _bounded_measurement(monkeypatch, physical_steps=8)
+    phases = []
 
     report = run(
         runtime,
         ("bounded", 2, (("bounded_action", RUN_BOUNDED, session),)),
+        lambda event, current: (
+            phases.append(current.phase)
+            if event == acceptance.RUN_STEP else None),
     )
 
     assert session.opens == 1
     assert session.closes == 1
     assert session.rounds == [(0, 0), (0, 0), (1, 0), (1, 0)]
-    assert report.runtime_steps == 6
+    assert nav.collects == 2
+    assert phases.count(acceptance.PHASE_COLLECT) == 2
+    assert report.runtime_steps == 8
     assert report.rounds_completed == 2
     assert report.scenarios_completed == 2
     assert report.accepted

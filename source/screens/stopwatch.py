@@ -41,13 +41,17 @@ class StopwatchScreen(UIElement):
 
     __slots__ = ("_clock", "_render", "_footer", "_runtime")
 
-    def __init__(self, font):
-        self._clock = [
-            font,
-            False,
-            [False, 0, 0, []],  # paused/start/elapsed/laps
-            [0, 0, 1, 0],       # cursor/view/next number/revision
-        ]
+    def __init__(self, font, retained_state=None):
+        if retained_state is None:
+            self._clock = [
+                font,
+                False,
+                [False, 0, 0, []],  # paused/start/elapsed/laps
+                [0, 0, 1, 0],       # cursor/view/next number/revision
+            ]
+        else:
+            self._clock = retained_state
+            self._clock[0] = font
         # The running timer uses one of these fixed ASCII buffers directly;
         # it never constructs an f-string for a steady timer frame.
         self._render = (
@@ -74,6 +78,38 @@ class StopwatchScreen(UIElement):
 
     def activate(self):
         pass
+
+    def release_memory(self):
+        released = False
+        labels = self._runtime[0][0]
+        index = 0
+        while index < len(labels):
+            if labels[index] is not None:
+                labels[index] = None
+                released = True
+            index += 1
+        runtime = self._runtime
+        if (runtime[0][1] is not None or runtime[0][2] is not None
+                or runtime[0][3] is not None or runtime[1][0] is not None):
+            released = True
+        runtime[0][1] = None
+        runtime[0][2] = None
+        runtime[0][3] = None
+        runtime[1][0] = None
+        return released
+
+    def detach_state(self):
+        """Move the running clock/lap state out of the disposable page."""
+        if (self._runtime[1][1] is not None
+                or self._runtime[1][2] is not None):
+            raise RuntimeError("Stopwatch scenario transaction is active")
+        self.release_memory()
+        clock = self._clock
+        self._clock = None
+        self._render = None
+        self._footer = None
+        self._runtime = None
+        return clock
 
     def open_scenario_lease(self):
         """Open a no-copy checkpoint for a future bounded acceptance session."""

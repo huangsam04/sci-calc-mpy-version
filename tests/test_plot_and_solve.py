@@ -459,10 +459,13 @@ def test_plot_parse_failure_releases_all_curve_runtime(monkeypatch):
     plot._state[3][3][1][3] = "previous"
     plot._state[2][2] = True
     plot._state[2][3] = True
+    collections = []
 
     def fail_parse(expr, registry):
         raise plot_module.ParseError("broken expression", 3)
 
+    monkeypatch.setattr(
+        plot_module.gc, "collect", lambda: collections.append("collect"))
     monkeypatch.setattr(plot_module, "compile_expression", fail_parse)
 
     assert plot.settle_step() == SETTLE_REDRAW
@@ -472,6 +475,7 @@ def test_plot_parse_failure_releases_all_curve_runtime(monkeypatch):
     assert plot._state[3][3][1][2] is None
     assert plot._state[3][3][1][3] is None
     assert memory.get_plot_workspace() is workspace
+    assert collections == ["collect"]
 
 
 def test_plot_no_valid_sample_releases_all_curve_runtime(monkeypatch):
@@ -953,3 +957,22 @@ def test_solver_plugin_uses_active_registry():
 
     assert not report.errors
     assert result == pytest.approx(2.0, abs=1e-6)
+
+
+def test_plot_detach_and_rebuild_preserves_expression_and_view():
+    registry = build_registry()
+    plot = PlotScreen(None, registry=registry)
+    plot.input_box.set_str("sin(x)")
+    plot.expr = "sin(x)"
+    bounds = plot._state[0]
+    bounds[:] = [-3.0, 7.0, -2.0, 9.0]
+    input_box = plot.input_box
+
+    retained = plot.detach_state()
+    restored = PlotScreen(
+        None, registry=registry, retained_state=retained)
+
+    assert restored.input_box is input_box
+    assert restored.expr == "sin(x)"
+    assert restored._state[0] is bounds
+    assert restored._state[0] == [-3.0, 7.0, -2.0, 9.0]

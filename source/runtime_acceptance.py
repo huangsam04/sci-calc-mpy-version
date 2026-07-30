@@ -276,7 +276,10 @@ def _execute_phase(
     result = 0
     try:
         if phase == PHASE_ENTER:
-            nav.go_to(target)
+            if isinstance(target, int):
+                nav.open(target)
+            else:
+                nav.go_to(target)
             nav.present_current()
         elif phase == PHASE_SETTLE:
             flags = nav.settle_current()
@@ -288,7 +291,11 @@ def _execute_phase(
                 nav.present_current()
             result = flags
         elif phase == PHASE_BACK:
-            nav.go_back()
+            back = getattr(nav, "back", None)
+            if back is None:
+                nav.go_back()
+            else:
+                back()
             nav.present_current()
         elif phase == PHASE_COLLECT:
             nav.collect_pending()
@@ -444,8 +451,10 @@ def run(runtime, scenario, observer=None):
                 completed = True
                 try:
                     if kind == VISIT_TARGET:
+                        target = (runtime.targets[payload]
+                                  if runtime.targets else payload)
                         completed = _visit_target(
-                            runtime, runtime.targets[payload], report, observer)
+                            runtime, target, report, observer)
                     elif kind == RUN_ACTION:
                         started = time.ticks_us()
                         payload(runtime, round_index)

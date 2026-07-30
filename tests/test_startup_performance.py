@@ -97,23 +97,29 @@ class _BootStorage:
     def request_settings(self, settings):
         pass
 
+    def detach_callbacks(self, owner):
+        pass
+
 
 class _BootNav:
     def __init__(self, display, font_small, registry):
         self.current = None
-        self.registered_screens = ()
-        self.memory = type("Memory", (), {"_buffers": {}})()
+        self.stack = []
+        self.page_context = None
+        self.memory = type(
+            "Memory", (), {"_buffers": {}, "_plot_curve": bytearray(104)})()
         self.renderer = type(
             "Renderer", (), {
                 "display": display,
                 "_visible_screen": None,
             })()
 
-    def register_screens(self, screens):
-        self.registered_screens = tuple(screens)
+    def configure_pages(self, *context):
+        self.page_context = context
 
     def boot(self, root):
         self.current = root
+        self.stack[:] = [root]
         root.activate()
 
     def present_current(self):
@@ -229,35 +235,19 @@ def test_boot_presents_core_frame_before_run_loop_can_return():
     assert "lazy_screen" not in main_source
 
 
-def test_boot_imports_fragmentation_sensitive_pages_in_measured_order():
+def test_boot_preloads_frozen_code_but_leaves_page_instances_to_nav():
     main_source = (SOURCE / "main.py").read_text(encoding="utf-8")
-    screens = main_source.index("from screens.main_menu import MainMenu")
-    about = main_source.index("from screens.about import AboutScreen", screens)
-    calculator = main_source.index(
-        "from screens.calculator import CalculatorScreen", about)
-    panel = main_source.index(
-        "from screens.function_panel import FunctionPanel", calculator)
-    plot = main_source.index("from screens.plot import PlotScreen", panel)
-    letters = main_source.index(
-        "from screens.letter_panel import LetterPanel", plot)
-    picker = main_source.index(
-        "from screens.function_picker import FunctionPicker", letters)
-    stopwatch = main_source.index(
-        "from screens.stopwatch import StopwatchScreen", picker)
-    settings = main_source.index(
-        "from screens.settings import SettingsScreen", stopwatch)
-    variables = main_source.index(
-        "from screens.variable_panel import VariablePanel", settings)
+    main_body = main_source[main_source.index("def main("):]
+    boot = main_body[:main_body.index('metrics.mark_boot("ui_ready")')]
 
-    plot_construct = main_source.index(
-        "plot_screen = PlotScreen", variables)
-    plot_collect = main_source.index("gc.collect()", plot_construct)
-    calc_construct = main_source.index(
-        "calc_screen = CalculatorScreen", plot_collect)
-
-    assert (screens < about < calculator < panel < plot < letters < picker
-            < stopwatch < settings < variables < plot_construct
-            < plot_collect < calc_construct)
+    assert "from screens.main_menu import MainMenu" in boot
+    assert "nav.configure_pages(" in boot
+    for name in (
+            "calculator", "plot", "function_panel", "stopwatch", "settings",
+            "about", "letter_panel", "function_picker", "variable_panel"):
+        assert "from screens." + name + " import" not in boot
+        assert '__import__("screens.' + name + '")' in boot
+    assert "def _build_page" in main_source
 
 
 def test_boot_uses_binding_normally_and_builds_a_diagnostic_handle_on_request():
@@ -341,14 +331,14 @@ def test_page_startup_memory_error_sleeps_oled_before_reraising(monkeypatch):
     display = _BootDisplay()
     failure = MemoryError("injected page startup")
 
-    class FailingVariablePanel:
+    class FailingMainMenu:
         def __init__(self, *args, **kwargs):
             raise failure
 
     monkeypatch.setattr(main, "_init_display", lambda: display)
     monkeypatch.setattr(
-        sys.modules["screens.variable_panel"],
-        "VariablePanel", FailingVariablePanel)
+        sys.modules["screens.main_menu"],
+        "MainMenu", FailingMainMenu)
 
     with pytest.raises(MemoryError) as caught:
         main.main(run_loop=False)
@@ -434,7 +424,7 @@ def test_late_startup_failure_cannot_publish_a_partial_runtime(monkeypatch):
         set_resident_runtime(None)
 
 
-def test_runtime_reuses_the_registered_resident_screen_tuple(
+def test_runtime_keeps_only_root_and_lazy_page_context(
         monkeypatch):
     class Metrics:
         def start_boot(self):
@@ -447,11 +437,11 @@ def test_runtime_reuses_the_registered_resident_screen_tuple(
 
     runtime = main.main(run_loop=False, publish_runtime=False)
 
-    assert runtime.nav.registered_screens[0] is runtime.root
-    assert len(runtime.nav.registered_screens) == 10
-    assert runtime.targets is runtime.application_binding.screens
-    assert runtime.targets == runtime.nav.registered_screens
-    assert runtime.optional_buffer_target is runtime.application_binding.plot
+    assert runtime.nav.stack == [runtime.root]
+    assert runtime.targets == ()
+    assert runtime.application_binding.root is runtime.root
+    assert runtime.nav.page_context is not None
+    assert runtime.optional_buffer_target is runtime.nav.memory
 
 
 def test_power_setup_failure_cannot_publish_a_partial_runtime(monkeypatch):
@@ -500,7 +490,7 @@ def test_boot_progress_shows_the_actual_operation(monkeypatch):
     main._boot_progress(
         display, 3, 8, "Loading settings...", "load_settings()")
 
-    assert any(value == "(load_settings())"
+    assert any(value == "load_settings()"
                for _, _, value in display.text)
     assert delays == []
 
@@ -564,13 +554,22 @@ def test_angle_toggle_immediately_invalidates_sidebar():
         def on_angle_mode_changed(self):
             self.invalidations += 1
 
+    class Nav:
+        def __init__(self, plot):
+            self.plot = plot
+
+        def find_page(self, page_id):
+            assert page_id == main.PAGE_PLOT
+            return self.plot
+
     registry = Registry()
     settings = {}
     persistence = Persistence()
     renderer = Renderer()
     plot = Plot()
 
-    main._toggle_angle_mode(registry, settings, persistence, renderer, plot)
+    main._toggle_angle_mode(
+        registry, settings, persistence, renderer, Nav(plot))
 
     assert registry.angle_mode == 1
     assert settings["angle_mode"] == 1
@@ -591,30 +590,24 @@ def test_context_letter_routing_respects_modal_and_visible_editor_contracts():
         def letter_input_target(self):
             return self.target
 
-    class Letter:
-        def __init__(self):
-            self._state = [None]
-
     class Nav:
         def __init__(self):
             self.calls = []
 
-        def go_to(self, screen, event):
-            self.calls.append((screen, event))
+        def open(self, page_id, event):
+            self.calls.append((page_id, event))
 
     target = object()
-    letter = Letter()
     nav = Nav()
 
     assert main._open_context_letter_panel(
-        Screen(target=target), (3, 5, True), letter, nav) is True
-    assert letter._state[0] is target
-    assert nav.calls == [(letter, (3, 5, True))]
+        Screen(target=target), (3, 5, True), nav) is True
+    assert nav.calls == [(main.PAGE_LETTERS, (3, 5, True))]
 
     assert main._open_context_letter_panel(
-        Screen(modal=True, target=target), (3, 5, True), letter, nav) is False
+        Screen(modal=True, target=target), (3, 5, True), nav) is False
     assert main._open_context_letter_panel(
-        Screen(target=None), (3, 5, True), letter, nav) is False
+        Screen(target=None), (3, 5, True), nav) is False
 
 
 def test_global_angle_waits_for_non_modal_page_context_to_decline_the_event():

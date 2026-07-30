@@ -5,9 +5,11 @@ import time
 from runtime_acceptance import (
     ERROR_EXCEPTION, ERROR_MEMORY, ERROR_NONE, FAIL_INCOMPLETE,
     MAX_BOUNDED_NO_PROGRESS_STEPS, MAX_BOUNDED_STEPS, PHASE_ACTION,
+    PHASE_COLLECT,
     RUN_BOUNDED, RUN_ERROR, RUN_MEMORY_ERROR, RUN_STEP,
     STEP_DONE, STEP_MORE, STEP_WAIT,
-    _finish_failed_phase, _finish_runtime_step, _notify, _record_failure)
+    _execute_phase, _finish_failed_phase, _finish_runtime_step, _notify,
+    _PHASE_FAILED, _record_failure)
 
 
 _CLOSE_FAILED_ERROR = RuntimeError("Bounded session close failed")
@@ -337,6 +339,16 @@ def run_bounded_session(
                             completed_count = reported_count
                             report.scenarios_completed += 1
                             capability_complete = True
+                            collector = getattr(
+                                runtime.nav, "collect_pending", None)
+                            if (collector is not None
+                                    and _execute_phase(
+                                        runtime, report, observer,
+                                        PHASE_COLLECT) is _PHASE_FAILED):
+                                primary_event = (
+                                    RUN_MEMORY_ERROR
+                                    if report.primary_error_code == ERROR_MEMORY
+                                    else RUN_ERROR)
                     elif status == STEP_MORE:
                         no_progress_count = 0
                     elif status == STEP_WAIT:

@@ -13,7 +13,6 @@ class BindingStub:
     def __init__(self, buffer_size=8192, at_root=True, root_visible=True,
                  workspace_size=104):
         root = object()
-        screens = (root,) + tuple(object() for _ in range(9))
         display = type("Display", (), {"gs4_buf": bytearray(buffer_size)})()
         renderer = type("Renderer", (), {})()
         renderer.display = display
@@ -25,7 +24,7 @@ class BindingStub:
             "Memory", (), {
                 "_plot_curve": bytearray(workspace_size)
                 if workspace_size else None})()
-        self._binding_state = (screens, object(), {}, object(), nav)
+        self._binding_state = (nav, root, object(), {}, object())
 
 
 

@@ -14,12 +14,24 @@ from runtime_scenarios import application_scenarios
 
 
 class _Nav:
-    def __init__(self, root):
+    def __init__(self, root, pages):
         self.current = root
+        self.stack = [root]
+        self.memory = object()
+        self.pages = pages
+        self.released = []
         self.present_calls = 0
+
+    def acquire_scenario_page(self, page_id):
+        return self.pages[page_id]
+
+    def release_scenario_page(self, page_id, page):
+        self.released.append((page_id, page))
+        return True
 
     def reset(self, root):
         self.current = root
+        self.stack[:] = [root]
 
     def present_current(self):
         self.present_calls += 1
@@ -86,23 +98,11 @@ class _Plot:
 
 def _runtime(calculator_error=None):
     root = object()
-    nav = _Nav(root)
     calculator = _Calculator(calculator_error)
     plot = _Plot()
-    screens = (
-        root,
-        calculator,
-        plot,
-        object(),
-        object(),
-        object(),
-        object(),
-        object(),
-        object(),
-        object(),
-    )
+    nav = _Nav(root, {1: calculator, 2: plot})
     binding = ApplicationBinding(
-        screens, object(), object(), object(), nav=nav)
+        nav, root, object(), object(), object())
     adapter = build_resident_application_scenario_adapter(binding)
     runtime = RuntimeHandle(
         nav,

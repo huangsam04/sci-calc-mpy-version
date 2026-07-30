@@ -4,6 +4,7 @@
 # room for the resident catalog without turning a corrupted registry into an
 # unbounded scenario allocation.
 MAX_SCENARIO_FUNCTION_NAMES = 192
+_OPERATIONS_PER_STEP = 1280
 
 
 class FunctionPickerScenarioTransaction:
@@ -73,35 +74,36 @@ class FunctionPickerScenarioTransaction:
             raise RuntimeError("Function picker scenario registry changed")
 
     def step(self):
-        """Consume one name or one insertion comparison per physical step."""
+        """Run one fixed batch of the allocation-free insertion sort."""
         screen = self._require_open()
         if self._complete:
             return True
         self._require_unchanged_source(screen)
         names = screen._state[1]
-        pending = self._pending_name
-        if pending is not None:
-            position = self._insert_at
-            if position > 0 and names[position - 1] > pending:
-                names[position] = names[position - 1]
-                self._insert_at = position - 1
-            else:
-                names[position] = pending
-                self._pending_name = None
-            return False
-        try:
-            name = next(self._iterator)
-        except StopIteration:
-            self._complete = True
-            return True
-        if not isinstance(name, str):
-            raise RuntimeError("Function picker scenario name is invalid")
-        if len(names) >= MAX_SCENARIO_FUNCTION_NAMES:
-            raise RuntimeError(
-                "Function picker scenario catalog exceeds its limit")
-        names.append(name)
-        self._pending_name = name
-        self._insert_at = len(names) - 1
+        for _ in range(_OPERATIONS_PER_STEP):
+            pending = self._pending_name
+            if pending is not None:
+                position = self._insert_at
+                if position > 0 and names[position - 1] > pending:
+                    names[position] = names[position - 1]
+                    self._insert_at = position - 1
+                else:
+                    names[position] = pending
+                    self._pending_name = None
+                continue
+            try:
+                name = next(self._iterator)
+            except StopIteration:
+                self._complete = True
+                return True
+            if not isinstance(name, str):
+                raise RuntimeError("Function picker scenario name is invalid")
+            if len(names) >= MAX_SCENARIO_FUNCTION_NAMES:
+                raise RuntimeError(
+                    "Function picker scenario catalog exceeds its limit")
+            names.append(name)
+            self._pending_name = name
+            self._insert_at = len(names) - 1
         return False
 
     def close(self):

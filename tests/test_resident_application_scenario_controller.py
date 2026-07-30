@@ -22,15 +22,26 @@ from screens.plot_scenario import (
 
 
 class _PoisonedNav:
-    def __init__(self):
+    def __init__(self, root, pages):
+        self.stack = [root]
+        self.memory = object()
+        self.pages = pages
+        self.released = []
         self.page_transaction = _PageTransaction()
 
     @property
     def _managed(self):
         raise AssertionError("controller must not inspect nav._managed")
 
-    def open_page_scenario_transaction(self, _screens):
+    def open_page_scenario_transaction(self):
         return self.page_transaction
+
+    def acquire_scenario_page(self, page_id):
+        return self.pages[page_id]
+
+    def release_scenario_page(self, page_id, page):
+        self.released.append((page_id, page))
+        return True
 
 
 class _PoisonedRuntime(RuntimeHandle):
@@ -43,6 +54,7 @@ class _PoisonedRuntime(RuntimeHandle):
 class _CalculatorTransaction:
     def __init__(self):
         self.history_steps = 0
+        self.history_chars = 0
         self.history_reverse_steps = 0
         self.history_forward_steps = 0
         self.history_cursor = None
@@ -54,7 +66,10 @@ class _CalculatorTransaction:
     def step(self, action, argument=None):
         if action == CALCULATOR_SCENARIO_HISTORY:
             assert isinstance(argument, str)
-            assert len(argument) == MAX_CALCULATOR_INPUT
+            assert 0 < len(argument) <= MAX_CALCULATOR_INPUT
+            assert argument.startswith("0e+")
+            assert int(argument[3:]) == self.history_steps
+            self.history_chars += len(argument)
             self.history_steps += 1
             return True
         if action == CALCULATOR_SCENARIO_HISTORY_CURSOR:
@@ -300,16 +315,14 @@ class _FixturePack:
 
 def _binding():
     root = object()
-    nav = _PoisonedNav()
     calculator = _Calculator()
     plot = _Plot()
     function_panel = object()
     stopwatch = _Stopwatch()
-    screens = (
-        root, calculator, plot, function_panel, stopwatch, object(), object(),
-        object(), object(), object())
+    nav = _PoisonedNav(
+        root, {1: calculator, 2: plot, 3: function_panel, 4: stopwatch})
     binding = ApplicationBinding(
-        screens, object(), object(), object(), nav=nav)
+        nav, root, object(), object(), object())
     runtime = _PoisonedRuntime(
         nav, root, (), mode="resident", application_binding=binding)
     return binding, runtime, calculator, plot, stopwatch, nav
@@ -372,7 +385,10 @@ def test_real_resident_controller_runs_one_bounded_matrix_with_public_primitives
 
     assert session.completed_count == len(APPLICATION_CAPABILITIES)
     assert session.completed_operations == sum(APPLICATION_OPERATION_COUNTS)
+    assert len(calculator.transactions) == 2
     assert calculator.transactions[0].closed is True
+    assert calculator.transactions[1].closed is True
+    assert calculator.transactions[0].history_chars == 768
     assert variables[0].canonical_complete is True
     assert variables[0].closed is True
     assert plot.transactions[0].closed is True
@@ -380,7 +396,7 @@ def test_real_resident_controller_runs_one_bounded_matrix_with_public_primitives
     assert plugins[1].closed is True
     assert stopwatch.leases[0].closed is True
     assert nav.page_transaction.actions == list(range(1, 10))
-    assert nav.page_transaction.closed is False
+    assert nav.page_transaction.closed is True
 
     assert session.close() is True
     assert nav.page_transaction.closed is True

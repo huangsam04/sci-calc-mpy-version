@@ -88,8 +88,8 @@ class _ResidentApplicationScenarioController:
         # state through Nav or a screen lookup.  This is its only acquisition.
         binding = runtime.require_application_binding()
         self._require_resident_application_binding(binding)
-        if binding.require_canonical_screens(runtime.root) is not binding:
-            raise RuntimeError("Canonical resident screens are unavailable")
+        if binding.require_page_owner(runtime.root) is not binding:
+            raise RuntimeError("Resident page owner is unavailable")
 
         session = _ResidentApplicationBoundedSession(
             self, binding, capabilities)
@@ -110,7 +110,7 @@ class _ResidentApplicationBoundedSession:
         "no_progress_limits", "_limits_sealed", "completed_capability",
         "completed_count", "completed_operations", "_expected_round",
         "_expected_capability", "_child", "_child_kind", "_phase",
-        "_index", "_fixture_pack", "_closed")
+        "_index", "_fixture_pack", "_page", "_page_id", "_closed")
 
     def __init__(self, controller, binding, capabilities):
         self._limits_sealed = False
@@ -133,6 +133,8 @@ class _ResidentApplicationBoundedSession:
         self._phase = 0
         self._index = 0
         self._fixture_pack = None
+        self._page = None
+        self._page_id = 0
         self._closed = False
 
     def __setattr__(self, name, value):
@@ -145,6 +147,29 @@ class _ResidentApplicationBoundedSession:
         if self._closed or self._binding is None:
             raise RuntimeError("Bounded scenario transaction is closed")
         return self._binding
+
+    def _page_for(self, page_id):
+        page = self._page
+        if page is not None:
+            if self._page_id == page_id:
+                return page
+            if self._child is not None:
+                raise RuntimeError("A different scenario page is active")
+            self._release_page()
+        page = self._require_open().acquire_page(page_id)
+        self._page = page
+        self._page_id = page_id
+        return page
+
+    def _release_page(self):
+        page = self._page
+        if page is None:
+            return False
+        page_id = self._page_id
+        self._require_open().release_page(page_id, page)
+        self._page = None
+        self._page_id = 0
+        return True
 
     def _open_child(self, kind, child):
         if self._child is not None:
@@ -179,6 +204,10 @@ class _ResidentApplicationBoundedSession:
         return True
 
     def _complete(self, capability):
+        kind = self._child_kind
+        if kind != _CHILD_NONE:
+            self._close_child(cancel=(kind == _CHILD_PLUGIN_VALID))
+        self._release_page()
         self.completed_capability = capability
         self.completed_count += 1
         self.completed_operations += _operation_count_for(capability)
@@ -192,9 +221,10 @@ class _ResidentApplicationBoundedSession:
 
     @staticmethod
     def _history_expression(index):
-        prefix = str(index) + ":"
-        expression = prefix + ("9" * (MAX_CALCULATOR_INPUT - len(prefix)))
-        if len(expression) != MAX_CALCULATOR_INPUT:
+        width = 46 if index == MAX_CALCULATOR_HISTORY - 1 else 38
+        index_text = str(index)
+        expression = "0e+" + ("0" * (width - 3 - len(index_text))) + index_text
+        if len(expression) != width or len(expression) > MAX_CALCULATOR_INPUT:
             raise RuntimeError("Calculator history expression is not bounded")
         return expression
 
@@ -206,7 +236,7 @@ class _ResidentApplicationBoundedSession:
         if transaction is None:
             transaction = self._open_child(
                 _CHILD_CALCULATOR,
-                binding.calculator.open_scenario_transaction())
+                self._page_for(1).open_scenario_transaction())
             return STEP_MORE
         if self._child_kind != _CHILD_CALCULATOR:
             raise RuntimeError("Calculator scenario transaction is unavailable")
@@ -240,14 +270,21 @@ class _ResidentApplicationBoundedSession:
         return self._complete(capability)
 
     def _step_error_lifecycle(self, capability):
-        if self._close_previous(preserve_calculator=True):
-            return STEP_MORE
+        transaction = self._child
+        if transaction is not None:
+            if self._child_kind != _CHILD_CALCULATOR:
+                self._close_child(
+                    cancel=(self._child_kind == _CHILD_PLUGIN_VALID))
+                return STEP_MORE
+            if transaction.history_steps:
+                self._close_child()
+                return STEP_MORE
         binding = self._require_open()
         transaction = self._child
         if transaction is None:
             transaction = self._open_child(
                 _CHILD_CALCULATOR,
-                binding.calculator.open_scenario_transaction())
+                self._page_for(1).open_scenario_transaction())
             return STEP_MORE
         if self._child_kind != _CHILD_CALCULATOR:
             raise RuntimeError("Calculator scenario transaction is unavailable")
@@ -288,7 +325,7 @@ class _ResidentApplicationBoundedSession:
 
             transaction = self._open_child(
                 _CHILD_VARIABLES,
-                open_variables_scenario_transaction(binding.calculator))
+                open_variables_scenario_transaction(self._page_for(1)))
             return STEP_MORE
         if self._child_kind != _CHILD_VARIABLES:
             raise RuntimeError("Variables scenario transaction is unavailable")
@@ -313,7 +350,7 @@ class _ResidentApplicationBoundedSession:
         transaction = self._child
         if transaction is None:
             transaction = self._open_child(
-                _CHILD_PLOT, binding.plot.open_scenario_transaction())
+                _CHILD_PLOT, self._page_for(2).open_scenario_transaction())
             return STEP_MORE
         if self._child_kind != _CHILD_PLOT:
             raise RuntimeError("Plot scenario transaction is unavailable")
@@ -367,7 +404,7 @@ class _ResidentApplicationBoundedSession:
             raise RuntimeError("Managed plugin fixture pack is unavailable")
         transaction = open_plugin_reload_transaction(
             binding.registry,
-            binding.function_panel,
+            self._page_for(3),
             settings=binding.settings,
             func_dir=fixture_pack.directory,
             files=fixture_pack.files,
@@ -494,7 +531,8 @@ class _ResidentApplicationBoundedSession:
         lease = self._child
         if lease is None:
             lease = self._open_child(
-                _CHILD_STOPWATCH, binding.stopwatch.open_scenario_lease())
+                _CHILD_STOPWATCH,
+                self._page_for(4).open_scenario_lease())
             return STEP_MORE
         if self._child_kind != _CHILD_STOPWATCH:
             raise RuntimeError("Stopwatch scenario lease is unavailable")
@@ -542,6 +580,7 @@ class _ResidentApplicationBoundedSession:
         binding = self._require_open()
         transaction = self._child
         if transaction is None:
+            self._release_page()
             transaction = self._open_child(
                 _CHILD_PAGES, binding.open_page_scenario_transaction())
             return STEP_MORE
@@ -586,6 +625,7 @@ class _ResidentApplicationBoundedSession:
             return True
         if self._child is not None:
             self._close_child(cancel=(self._child_kind == _CHILD_PLUGIN_VALID))
+        self._release_page()
         self._fixture_pack = None
         controller = self._controller
         if controller is None:

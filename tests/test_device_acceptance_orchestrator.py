@@ -185,6 +185,13 @@ def test_device_acceptance_dry_run_orders_five_existing_tracers():
     assert "application_matrix" in result.stdout
 
 
+def test_device_acceptance_sleeps_through_the_nav_owner_interface():
+    source = ORCHESTRATOR.read_text(encoding="utf-8")
+
+    assert source.count("r._nav.renderer.display.sleep()") == 2
+    assert "_binding_state[" not in source
+
+
 def test_device_acceptance_failure_still_resets_before_stopping(tmp_path):
     powershell = shutil.which("pwsh")
     assert powershell is not None
@@ -355,19 +362,12 @@ def test_compiled_stage_removes_its_artifact_before_running(tmp_path):
             assert "screens.about_scenario" not in code
             continue
         assert "slot=sys.path[1]" in code
-        assert "calc_path=calc.__path__" in code
-        assert "screens_path=screens.__path__" in code
-        assert "functions_path=functions.__path__" in code
         assert "calc.__path__=slot+'/calc'" in code
         assert "screens.__path__=slot+'/screens'" in code
         assert "functions.__path__=slot+'/functions'" in code
-        assert "import calc.plugin_fixture,calc.scenario_variables" in code
-        assert "import screens.about_scenario" in code
-        assert "calc.__path__=calc_path" in code
-        assert "screens.__path__=screens_path" in code
-        assert "functions.__path__=functions_path" in code
-        assert code.index("calc.__path__=calc_path") < code.index(
-            "_sci_accept_stage.run()")
+        assert "plugin_fixture" not in code
+        assert "_scenario" not in code
+        assert "calc_path=" not in code
 
 
 def test_injected_adapter_rejects_ambiguous_pipeline_output(tmp_path):
