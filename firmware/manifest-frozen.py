@@ -11,6 +11,7 @@ include("$(MPY_DIR)/extmod/asyncio")
 _SOURCE = "../source"
 
 freeze(_SOURCE, (
+    "approot.py",
     "calc/__init__.py",
     "calc/bundled_plugins.py",
     "calc/functions.py",
@@ -23,6 +24,8 @@ freeze(_SOURCE, (
     "functions/basic.py",
     "functions/solve.py",
     "functions/trig.py",
+    "performance.py",
+    "runtime_handle.py",
     "screens/__init__.py",
     "screens/about.py",
     "screens/calculator.py",
@@ -34,6 +37,7 @@ freeze(_SOURCE, (
     "screens/settings.py",
     "screens/stopwatch.py",
     "screens/variable_panel.py",
+    "version.py",
 ))
 
 freeze(_SOURCE, "display")

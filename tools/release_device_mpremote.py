@@ -1696,6 +1696,30 @@ class _MpremoteSession:
                 raise ValueError(
                     "stable bootstrap anchor verification failed")
 
+    def _sync_bootstrap(self, plan):
+        assets = tuple(
+            asset for asset in plan.assets
+            if asset.role == "bootstrap_fixed")
+        if not assets:
+            return
+        pairs = tuple(
+            (_device_path(asset.zone, asset.relative_path), asset.sha256)
+            for asset in assets)
+        receipt = self._hash_receipt(pairs)
+        if receipt.fault:
+            raise ValueError("stable bootstrap anchor hash failed")
+        for index, asset in enumerate(assets):
+            if not (receipt.matched_mask & (1 << index)):
+                self._device.write_file(
+                    _device_path(asset.zone, asset.relative_path),
+                    asset.payload)
+        receipt = self._hash_receipt(pairs)
+        expected_mask = (1 << len(pairs)) - 1
+        if (receipt.fault
+                or receipt.missing_mask
+                or receipt.matched_mask != expected_mask):
+            raise ValueError("stable bootstrap anchor sync failed")
+
     def sync_confirmed(self, plan):
         """Update one already-provisioned confirmed slot in place."""
         selector = self._read_selector()
@@ -1732,7 +1756,7 @@ class _MpremoteSession:
         if owner not in (expected_owner, previous_owner):
             raise ValueError("confirmed slot owner marker mismatch")
 
-        self.validate_bootstrap(plan)
+        self._sync_bootstrap(plan)
         current_hashes = {
             record["path"]: record["sha256"]
             for record in manifest["assets"]

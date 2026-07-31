@@ -34,4 +34,13 @@ slot 去重与 frozen 导入证明（2026-07-30）：发布计划从 SD managed 
 - [x] 记录冻结前后实际最低空闲堆、启动时间、最大 step、Flash 占用和固件构建/刷写耗时；只有真机证明的净收益进入下一分支。
 - [x] COM5 数据和用户文件保持不变，验收结束后 OLED 已休眠。
 
+## 12 KiB 续行：剩余常驻生产模块
+
+`launch.py` 仍作为 selected slot 的最小源码入口，并在 supervisor 设置 `sys.path = ['.frozen', slot, '/lib']` 后执行 `import main`。首个候选尝试冻结 `main.py`、`performance.py`、`runtime_handle.py`、`version.py` 和 `approot.py`；动态 Add-ons、用户数据、`launch.py` 和 acceptance/scenario 载荷保持动态。
+
+- [x] 已以 manifest/release plan 测试锁定首个五模块候选；firmware/release/deploy 聚焦集 `291 passed`，启动、路径、运行态与发布交叉集 `123 passed`。真机冷启动随后证明 ESP32 的 `pyexec_file_if_exists("main.py")` 会先无条件执行同名 frozen 模块，早于内部 `/main.py` supervisor 且不受 `sys.path` 控制；现场为 `ImportError: no module named 'ui.motion'`，设备 `/main.py` 哈希和首行均正确。该单一候选已删除，`main.py` 恢复为 selected slot 的 MPY，其余四个根模块保持 frozen；修订后的 firmware/release/boot 聚焦集 `167 passed`，OLED 已用 SSD1322 `0xAE` 硬件命令休眠。
+- [x] 四模块候选增量构建用时 `29.815 s`，镜像 `1822144 B`，factory 余量 `209472 B`，SHA-256 `34fcd5bf283638d5c362cc9e5b028191c54c4b9d02e89cb5b7db968b5e0748f0`；只写 `0x10000` 并校验用时 `25.127 s`，补回 slot `main.mpy` 的快速发布哈希为 `3499d2f0fc4323a1e578dc654e277eb8efca9f599f340453ca78e27b9397ffcc`。启动探针显示 `main=/sd/.slots/B/main.mpy`，`performance=performance.py`、`runtime_handle=runtime_handle.py`、`version=version.py`，`approot` 在根页面阶段尚未加载；resident runtime、根页面和单一 `8192 B` framebuffer 均正常。
+- [x] application matrix 在首轮时测得 `heap_min=15920 B`，相对 `10352 B` 基线净增 `5568 B`，`MemoryError=0`、普通错误 0、framebuffer `8192 B`；动态插件和最大用户状态均已进入同一场景，验收载荷随后删除且 OLED 休眠。该四模块集合保留；最大阻塞 step 为 `calculator_history` 的 `37.761 ms`，相对 `37.657 ms` 基线没有时延收益。
+- [x] 12 KiB 堆门槛已经达到，但 `37.761 ms > 32 ms`，联合门禁仍失败；按主树干进入 Calculator 直接求值，不启动用户状态压缩。
+
 完成后回到 [PLAN](../PLAN.md) 勾选“冻结核心模块”，再读取[页面生命周期分支](page-lifecycle.md)。

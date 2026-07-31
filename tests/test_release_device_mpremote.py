@@ -36,13 +36,14 @@ def test_selector_controls_restore_trusted_root_before_import(
     assert "'/sd'" not in code
 
 
-def _plan(version, legacy=False, mode="source"):
+def _plan(version, legacy=False, mode="source", bootstrap=None):
     files = [
         ("main.py", ("# main " + version + "\n").encode("ascii")),
         ("settings.json", b'{"brightness":20}\n'),
         ("vars.json", b'{"seed":0}\n'),
         ("version.py", ('VERSION = "' + version + '"\n').encode("ascii")),
-        ("boot.py", b"# boot anchor\n"),
+        ("boot.py", (
+            b"# boot anchor\n" if bootstrap is None else bytes(bootstrap))),
     ]
     if legacy:
         files.append(("legacy.py", b"# old managed module\n"))
@@ -1036,10 +1037,38 @@ def test_fast_release_syncs_only_managed_changes_in_the_confirmed_slot(
     assert [path for path in twin.write_paths if path.startswith(root)] == [
         root + "catalog.py",
         root + "main.py",
-        root + "version.py",
         root + bootenv.MANIFEST_NAME,
         root + mpadapter.OWNER_MARKER_NAME,
     ]
+    assert twin.sessions == 1
+    assert twin.resets == 1
+
+
+def test_fast_release_repairs_changed_bootstrap_and_preserves_user_data(
+        tmp_path):
+    old_boot = b"# stable bootstrap v1\n"
+    new_boot = b"# stable bootstrap v2\n"
+    old_plan = _plan("1.3.0", legacy=True, bootstrap=old_boot)
+    new_plan = _plan("1.4.0", bootstrap=new_boot)
+    sentinels = {
+        "/sd/settings.json": b'{"brightness":73,"user":true}\n',
+        "/sd/vars.json": b'{"answer":42}\n',
+        "/sd/Add-ons/user_pack.py": b"# user add-on\n",
+    }
+    adapter, twin = _adapter_and_twin(
+        tmp_path, lambda boot: _smoke_lines("1.4.0"))
+    _seed_confirmed_device(twin, old_plan, sentinels.items())
+
+    result = release_deploy.apply_fast_release(new_plan, adapter)
+
+    assert result == new_plan.release_id
+    assert twin.read_file("/boot.py") == new_boot
+    for location, payload in sentinels.items():
+        assert twin.read_file(location) == payload
+    selector = _read_selector(twin)
+    assert selector.confirmed.name == "A"
+    assert selector.confirmed.release_id == new_plan.release_id
+    assert twin.write_paths.count("/boot.py") == 1
     assert twin.sessions == 1
     assert twin.resets == 1
 

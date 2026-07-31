@@ -10,7 +10,11 @@ from tools.release_plan import is_compiled_in_mpy
 
 @pytest.mark.parametrize(("path", "expected"), (
     ("main.py", True),
-    ("approot.py", True),
+    ("approot.py", False),
+    ("performance.py", False),
+    ("runtime_handle.py", False),
+    ("version.py", False),
+    ("feature.py", True),
     ("calc/parser.py", False),
     ("display/ssd1322.py", False),
     ("boot.py", False),
@@ -47,6 +51,7 @@ def _project(tmp_path):
     (source / "fonts").mkdir()
     (source / "main.py").write_bytes(b"# main\n")
     (source / "version.py").write_bytes(b'VERSION = "1.4.0"\n')
+    (source / "feature.py").write_bytes(b"# dynamic feature\n")
     (source / "calc" / "parser.py").write_bytes(b"# parser\n")
     (source / "functions" / "basic.py").write_bytes(b"# pack\n")
     (source / "settings.json").write_bytes(b"{}\n")
@@ -80,15 +85,21 @@ def test_prepare_builds_fonts_compiles_exactly_the_mpy_set(tmp_path):
     assert not (project / ".mpy-build").exists()
     compiled_names = sorted(
         str(path).replace("\\", "/").split("/")[-1] for path in calls)
-    assert compiled_names == ["main.py", "version.py"]
+    assert compiled_names == ["feature.py", "main.py"]
     source_plan = plans.source
     mpy_plan = plans.mpy
     assert source_plan.mode == "source"
     assert mpy_plan.mode == "mpy"
+    mpy_feature = next(
+        asset for asset in mpy_plan.assets if asset.key == "sd:feature")
+    assert mpy_feature.kind == "mpy"
+    assert mpy_feature.payload.startswith(b"MPY")
+    source_feature = next(
+        asset for asset in source_plan.assets if asset.key == "sd:feature")
+    assert source_feature.kind == "source"
     mpy_main = next(
         asset for asset in mpy_plan.assets if asset.key == "sd:main")
     assert mpy_main.kind == "mpy"
-    assert mpy_main.payload.startswith(b"MPY")
     source_main = next(
         asset for asset in source_plan.assets if asset.key == "sd:main")
     assert source_main.kind == "source"
@@ -111,16 +122,16 @@ def test_prepare_is_deterministic_across_repeated_builds(tmp_path):
 
 def test_prepare_propagates_a_compiler_failure(tmp_path):
     project = _project(tmp_path)
-    main_py = str(project / "source" / "main.py")
+    feature_py = str(project / "source" / "feature.py")
 
     with pytest.raises(RuntimeError, match="compiler exploded"):
         prepare_release_plans(
-            project, _recording_compiler([], fail_at=main_py))
+            project, _recording_compiler([], fail_at=feature_py))
 
 
 def test_prepare_fails_closed_when_the_compiler_skips_an_output(tmp_path):
     project = _project(tmp_path)
-    skip = (str(project / "source" / "main.py"),)
+    skip = (str(project / "source" / "feature.py"),)
 
     with pytest.raises(ValueError, match="compiled"):
         prepare_release_plans(project, _recording_compiler([], skip=skip))

@@ -36,4 +36,15 @@
 - [x] 第二个候选删除后再次回刷正式 frozen 镜像 `6fc4215f03575c692e3d0e69cd6dc8b12fc4a45434ad6e3f5cca84ff28b71acb`，清理 23 个 support 文件及 stage/hotspot，OLED 已休眠；阶段 `check.ps1` 为 `1093 passed in 25.92s`、总耗时 `31.3s`。
 - [x] 本轮三个已测边界到此收口：ErrorPopup 绘制已复用单 framebuffer、宽度内文本和 packed direct-text 路径；剩余垃圾来自通用 tokenizer/AST/异常求值链，继续处理需要重写解析模型或固定 scratch 系统，违反本轮简单优先、1--3 个热点和不扩展方案空间的约束，因此保持两项动效禁用。
 
+## 12 KiB 续行：Calculator 直接求值
+
+本节由 2026-07-31 用户明确授权，只有补充 frozen 常驻模块后完整 matrix 仍未达到联合门禁时才执行。公开接口保持 `evaluate(expr, context)`；Calculator 的一次性表达式改用惰性 token cursor 和直接 Pratt 求值，不同时保留完整 token 列表与 tuple AST。`compile_expression()` / `evaluate_program()` 及 Plot 的可复用编译结果保持现有行为，不建立第二套通用计算引擎。
+
+- [x] 四模块 frozen 候选后的完整 matrix 已将最低堆抬至 `15920 B`，但最大阻塞点变为 `calculator_history` 的 `37.761 ms`；该场景只输入 38/46 字符的 `0e+...` 纯数字。
+- [x] 公开接口回归 `test_bare_numeric_literal_skips_the_allocating_general_parser` 通过，并以禁止 `_Compiler` 和 `Number.parse` 的方式证明这些零值表达式由 `_parse_bare_number()` 直接返回，不构造 token 列表或 tuple AST。因此惰性 cursor/直接 Pratt 对当前最大 step 没有可达调用路径，候选在写代码前即按主动剪枝规则否决。
+- [x] 未创建直接求值实现、兼容层、专属探针或测试；也不为一个不能改善 `calculator_history` 最大 step 的候选重复运行 COM5。现有 `evaluate()`、`compile_expression()`、`evaluate_program()` 和 Plot 编译结果保持不变。
+- [x] 联合门禁仍为 `15920 B / 37.761 ms`，故进入直接命中该场景的无损 Calculator 历史压缩；Stopwatch 圈速仍须等待下一次真机数据。
+- [x] 固定 40 槽 Calculator 历史消除首个 `calculator_history` 阻塞后，matrix 继续到 `error_lifecycle`，新热点为 `10496 B / 61.728 ms`；因此曾以共享惰性 token cursor 和私有直接 Pratt evaluator 处理一次性 `evaluate()`，Plot 的 `compile_expression()` / `evaluate_program()` 保持原接口。禁止 `_Compiler`、20 类 ErrorPopup 位置、深度限制、插件/高精度/Plot 交叉集均通过。
+- [x] 组合固件 `1824272 B`、SHA-256 `6fd20260aed99a5419ecdade329b48aea42583e6f6639410deb64616d7da822a`；COM5 `error_lifecycle` 为 `heap_min=11136 B`、`blocking_max_us=56665`、`MemoryError=0`、普通错误 0。相对固定历史单独候选仅改善 `+640 B / -5.063 ms`，仍同时违反 12 KiB/32 ms，故直接求值、两种 flat 历史实现和全部专属测试均已删除，原 parser、tuple 历史和场景租约已恢复；聚焦回归 `158 passed`。
+
 完成后回到 [PLAN](../PLAN.md) 勾选“两项动效”，再读取[验证分支](verification.md)。

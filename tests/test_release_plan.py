@@ -57,7 +57,7 @@ def _cleanup_plans():
 def test_source_release_plan_is_deterministic_for_unordered_snapshot_input():
     files = (
         ("version.py", b'VERSION = "1.3.0"\n'),
-        ("main.py", b'print("SCI-CALC")\n'),
+        ("feature.py", b'# dynamic feature\n'),
     )
 
     forward = plan_release(
@@ -71,8 +71,7 @@ def test_source_release_plan_is_deterministic_for_unordered_snapshot_input():
 
     assert forward == reverse
     assert tuple(asset.key for asset in forward.assets) == (
-        "sd:main",
-        "sd:version",
+        "sd:feature",
     )
     assert len(forward.release_id) == 64
 
@@ -85,11 +84,12 @@ def test_mpy_plan_keeps_bootstrap_and_launcher_as_source():
             ("launch.py", b"import main\n"),
             ("functions/basic.py", b"# function pack\n"),
             ("main.py", b"# app\n"),
+            ("feature.py", b"# dynamic feature\n"),
             ("version.py", b'VERSION = "1.3.0"\n'),
         ),
         build_files=(
+            ("feature.mpy", b"compiled-feature"),
             ("main.mpy", b"compiled-main"),
-            ("version.mpy", b"compiled-version"),
         ),
     )
 
@@ -101,9 +101,9 @@ def test_mpy_plan_keeps_bootstrap_and_launcher_as_source():
     ) == (
         ("bootstrap:boot", "source", "internal", "boot.py"),
         ("bootstrap:main", "source", "internal", "main.py"),
+        ("sd:feature", "mpy", "sd", "feature.mpy"),
         ("sd:launch", "source", "sd", "launch.py"),
         ("sd:main", "mpy", "sd", "main.mpy"),
-        ("sd:version", "mpy", "sd", "version.mpy"),
     )
 
 
@@ -150,28 +150,30 @@ def test_plan_rejects_non_device_compatible_version_at_generation(version):
 def test_mpy_plan_fails_closed_when_a_selected_output_is_missing():
     snapshot = ReleaseTreeSnapshot.from_files(
         (
-            ("main.py", b"# app\n"),
+            ("feature.py", b"# dynamic feature\n"),
             ("version.py", b'VERSION = "1.3.0"\n'),
         ),
-        build_files=(("main.mpy", b"compiled-main"),),
     )
 
     with pytest.raises(
         ValueError,
-        match=r"missing compiled runtime module: version\.mpy",
+        match=r"missing compiled runtime module: feature\.mpy",
     ):
         plan_release(snapshot, mode="mpy")
 
 
 def test_mpy_plan_fails_closed_when_a_selected_output_is_empty():
     snapshot = ReleaseTreeSnapshot.from_files(
-        (("version.py", b'VERSION = "1.3.0"\n'),),
-        build_files=(("version.mpy", b""),),
+        (
+            ("feature.py", b"# dynamic feature\n"),
+            ("version.py", b'VERSION = "1.3.0"\n'),
+        ),
+        build_files=(("feature.mpy", b""),),
     )
 
     with pytest.raises(
         ValueError,
-        match=r"empty compiled runtime module: version\.mpy",
+        match=r"empty compiled runtime module: feature\.mpy",
     ):
         plan_release(snapshot, mode="mpy")
 
@@ -216,10 +218,40 @@ def test_frozen_and_acceptance_only_modules_are_omitted_from_slots():
     assert "sd:calc/parser" not in keys
     assert "sd:functions/basic" not in keys
     assert "sd:screens/calculator" not in keys
-    assert "sd:version" in keys
+    assert "sd:version" not in keys
     assert "sd:calc/scenario_variables" not in keys
     assert "sd:functions/_acceptance_core" not in keys
     assert "sd:screens/calculator_scenario" not in keys
+
+
+def test_frozen_resident_root_modules_keep_application_main_in_slot():
+    frozen_paths = (
+        "performance.py",
+        "runtime_handle.py",
+        "version.py",
+        "approot.py",
+    )
+    snapshot = ReleaseTreeSnapshot.from_files((
+        ("launch.py", b"import main\n"),
+        ("main.py", b"# resident production module\n"),
+        ("performance.py", b"# resident production module\n"),
+        ("runtime_handle.py", b"# resident production module\n"),
+        ("version.py", b'VERSION = "1.4.0"\n'),
+        ("approot.py", b"# resident production module\n"),
+    ), build_files=(("main.mpy", b"compiled-main"),))
+
+    assert is_frozen_module("launch.py") is False
+    assert is_frozen_module("main.py") is False
+    assert all(is_frozen_module(path) for path in frozen_paths)
+    for mode in ("source", "mpy"):
+        plan = plan_release(snapshot, mode=mode)
+        slot_keys = {
+            asset.key for asset in plan.assets if asset.zone == "sd"
+        }
+        assert "sd:launch" in slot_keys
+        assert "sd:main" in slot_keys
+        for path in frozen_paths:
+            assert "sd:" + path[:-3] not in slot_keys
 
 
 def test_font_sources_remain_host_only_and_generated_fonts_are_deployed():
@@ -386,10 +418,7 @@ def test_recovery_payload_is_a_bootstrap_anchor_in_both_build_modes():
         mode="source",
     )
     mpy_plan = plan_release(
-        ReleaseTreeSnapshot.from_files(
-            files,
-            build_files=(("version.mpy", b"compiled-version"),),
-        ),
+        ReleaseTreeSnapshot.from_files(files),
         mode="mpy",
     )
 
@@ -412,17 +441,18 @@ def test_recovery_payload_is_a_bootstrap_anchor_in_both_build_modes():
 
 
 def test_plan_retains_the_exact_immutable_bytes_selected_for_upload():
-    mutable_main = bytearray(b'print("original")\n')
+    mutable_feature = bytearray(b'print("original")\n')
     snapshot = ReleaseTreeSnapshot.from_files((
-        ("main.py", mutable_main),
+        ("feature.py", mutable_feature),
         ("version.py", b'VERSION = "1.3.0"\n'),
     ))
 
     plan = plan_release(snapshot, mode="source")
-    mutable_main[:] = b'print("changed!")\n'
+    mutable_feature[:] = b'print("changed!")\n'
 
-    main_asset = next(asset for asset in plan.assets if asset.key == "sd:main")
-    assert main_asset.payload == b'print("original")\n'
+    feature_asset = next(
+        asset for asset in plan.assets if asset.key == "sd:feature")
+    assert feature_asset.payload == b'print("original")\n'
 
 
 def test_filesystem_and_in_memory_adapters_produce_the_same_snapshot(tmp_path):
@@ -474,17 +504,17 @@ def test_current_source_tree_has_one_explicit_release_classification(tmp_path):
         mode="source",
     )
 
-    assert len(plan.assets) == 25
+    assert len(plan.assets) == 21
     assert Counter((asset.zone, asset.role) for asset in plan.assets) == {
         ("internal", "bootstrap_fixed"): 10,
-        ("sd", "managed_release"): 9,
+        ("sd", "managed_release"): 5,
         ("sd", "seed_if_absent"): 2,
         ("host", "host_only"): 4,
     }
     assert Counter(
         asset.kind for asset in plan.assets if asset.role != "host_only"
     ) == {
-        "source": 16,
+        "source": 12,
         "font": 3,
         "seed": 2,
     }
@@ -540,7 +570,7 @@ def test_current_mpy_plan_selects_exactly_one_format_per_device_module(
         asset.kind for asset in plan.assets if asset.role != "host_only"
     ) == {
         "source": 11,
-        "mpy": 5,
+        "mpy": 1,
         "font": 3,
         "seed": 2,
     }
@@ -564,7 +594,7 @@ def test_current_mpy_plan_selects_exactly_one_format_per_device_module(
         and asset.kind in ("source", "mpy")
         and asset.role == "managed_release"
     ]
-    assert len(sd_modules) == len(set(sd_modules)) == 6
+    assert len(sd_modules) == len(set(sd_modules)) == 2
 
 
 def test_cleanup_uses_the_previous_owned_manifest_not_a_remote_listing():
@@ -770,7 +800,7 @@ def test_cleanup_rejects_a_malformed_manifest_before_nominating_paths():
 
 def test_mode_switch_cleanup_removes_old_module_extensions_by_path():
     files = (
-        ("main.py", b"# app\n"),
+        ("feature.py", b"# dynamic feature\n"),
         ("version.py", b'VERSION = "1.3.0"\n'),
     )
     source_plan = plan_release(
@@ -781,8 +811,7 @@ def test_mode_switch_cleanup_removes_old_module_extensions_by_path():
         ReleaseTreeSnapshot.from_files(
             files,
             build_files=(
-                ("main.mpy", b"compiled-main"),
-                ("version.mpy", b"compiled-version"),
+                ("feature.mpy", b"compiled-feature"),
             ),
         ),
         mode="mpy",
@@ -793,8 +822,7 @@ def test_mode_switch_cleanup_removes_old_module_extensions_by_path():
         source_plan.manifest_sha256,
         mpy_plan,
     ) == (
-        ("sd", "main.py"),
-        ("sd", "version.py"),
+        ("sd", "feature.py"),
     )
 
 

@@ -1,5 +1,6 @@
 """Minimal resident-binding boot evidence for release acceptance."""
 import micropython
+import sys
 
 
 try:
@@ -14,6 +15,13 @@ except AttributeError:
 def _resident_binding():
     from runtime_handle import get_resident_runtime
     return get_resident_runtime()
+
+
+def _module_origin(name):
+    module = sys.modules.get(name)
+    if module is None:
+        return "<not-loaded>"
+    return getattr(module, "__file__", "") or "<frozen>"
 
 
 def run(runtime=None, emit=print):
@@ -38,8 +46,7 @@ def run(runtime=None, emit=print):
         raise RuntimeError("SCI-CALC boot framebuffer contract is invalid")
 
     from version import VERSION
-    import version as version_module
-    build_file = getattr(version_module, "__file__", "") or ""
+    build_file = _module_origin("main")
     build_mode = "mpy" if build_file.endswith(".mpy") else "source"
     viper_ok = _viper_identity(41) == 41
     emit("BOOT_VERSION " + VERSION)
@@ -49,6 +56,9 @@ def run(runtime=None, emit=print):
     emit("BOOT_WORKSPACE plot:104:" + str(id(workspace)))
     emit("BOOT_MODE " + build_mode)
     emit("BOOT_ABI_VIPER " + ("ok" if viper_ok else "failed"))
+    for name in (
+            "main", "performance", "runtime_handle", "version", "approot"):
+        emit("BOOT_MODULE " + name + ":" + _module_origin(name))
 
 
 if __name__ == "__main__":

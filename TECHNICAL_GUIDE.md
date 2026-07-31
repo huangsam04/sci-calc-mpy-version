@@ -17,9 +17,10 @@ boot.py       挂载 SD                            settings.json / vars.json（�
 sdcard.py     SPI block-device 驱动               .slots/A 或 B/
 main.py       槽选择与恢复入口                      release.manifest / .sci-calc-owner
 bootenv.py / bootsel.py / bootlog.py               launch.py -> main.mpy
-bootsupervisor.py                                  approot/performance/runtime_handle/version
-recovery.py / display/                           functions/*.py / fonts/*.xglcd
-.frozen（稳定应用核心）                            Add-ons 和其他未知用户文件
+bootsupervisor.py                                  fonts/*.xglcd
+recovery.py / display/                            Add-ons 和其他未知用户文件
+.frozen（稳定应用核心及 approot/performance/
+runtime_handle/version）
                                                 .staging/（未激活候选）
 ```
 
@@ -193,8 +194,8 @@ Shift+`^` 为 `sqrt`，Shift+`RPN` 为 `rpn`，Shift+`Tab` 为 `stab`。页面�
 
 当前 `Menu` 没有运动槽，`_update_cursor_target()` 会把光标立即吸附到新行；源码中没有
 `MotionMenu` 或 quadratic ease-out 推进函数。`Nav` 也没有 `_fade_*` 状态或动画堆门禁。
-最新严格 COM5 应用矩阵在 `error_lifecycle` 测得 `heap_min=10352 B`、安静回收 step
-`37.657 ms`，未同时达到 12 KiB/32 ms 门槛，因此两项计划动效均未启用。
+最新严格 COM5 应用矩阵在 `calculator_history` 测得 `heap_min=15920 B`、阻塞 step
+`37.724 ms`；内存达到 12 KiB，但时延未达到 32 ms 门槛，因此两项计划动效均未启用。
 按键和逐帧路径不调用 `gc.collect()` 或 `gc.mem_free()`。
 
 ### 4.2 `Nav` 栈、同步页面切换与输入恢复
@@ -765,14 +766,14 @@ CPython `compileall`、对所有源码使用 `-march=xtensawin` 编译 `.mpy`。
 4. 验收侧缓存同一 application matrix 内不变的 framebuffer 身份快照；该缓存不进入普通 release。
    没有增加像素缓冲、通用动画层、`LazyScreen`、SWAP 或第二 framebuffer。
 
-最终 `check.ps1` 为 `1093 passed in 25.92s`，脚本总耗时 `31.3s`；CPython compileall 和
+最终 `check.ps1` 为 `1098 passed in 25.87s`，脚本总耗时 `31.5s`；CPython compileall 和
 MicroPython 1.29 全源 mpy-cross 均通过。
 
 ### 10.2 COM5 严格门禁（1.4.0）
 
-当前动态 release 为 `f8a6badf6054926605642a5bac6725b57e2ce876c6221a0c7b8381152687b9f9`，
-manifest SHA-256 为 `c9ff490898e7ba209d4d0597321f8abbc751542b6591ec501a15fed9c56b35a7`。
-默认快速增量部署用时 `31.355 s`。统一入口仍为：
+当前 MPY release 为 `3499d2f0fc4323a1e578dc654e277eb8efca9f599f340453ca78e27b9397ffcc`，
+manifest SHA-256 为 `10ea9c1386ec661630690940a1bb30c9aee74195536a32c703b81183fe45a6fd`。
+正式 frozen 镜像为 `1822144 B`，SHA-256 为 `34fcd5bf283638d5c362cc9e5b028191c54c4b9d02e89cb5b7db968b5e0748f0`；构建用时 `31.521 s`，只写 factory 分区并校验用时 `24.402 s`。统一入口仍为：
 
 ```powershell
 .\tools\run_device_acceptance.ps1 -Port PORTNAME
@@ -783,9 +784,10 @@ manifest SHA-256 为 `c9ff490898e7ba209d4d0597321f8abbc751542b6591ec501a15fed9c5
 | 检查 | 真机结果 |
 | --- | --- |
 | 启动与固定缓冲 | resident/root ready；同一个 framebuffer 8192 B；Plot 工作区 104 B；MPY/Viper ABI 通过 |
-| 应用矩阵 | 完成 10 个场景；`MemoryError=0`、普通错误 0；最低空闲堆 10352 B；最大 step 37.657 ms；`failure_mask=12` |
-| 最低堆位置 | `error_lifecycle`，phase 1，round 1 |
-| 结果 | `10352 B < 12288 B` 且 `37.657 ms > 32 ms`；停止后续阶段，不输出 `ACCEPTANCE_COMPLETE` |
+| 模块来源 | `main=/sd/.slots/B/main.mpy`；`performance`、`runtime_handle`、`version` 为 frozen；`approot` 在根页阶段尚未加载 |
+| 应用矩阵 | 首轮完成 5 个场景；`MemoryError=0`、普通错误 0；最低空闲堆 15920 B；最大 step 37.724 ms；`failure_mask=20` |
+| 门禁位置 | `calculator_history`，phase 1，round 0 |
+| 结果 | `15920 B >= 12288 B`，但 `37.724 ms > 32 ms`；停止后续阶段，不输出 `ACCEPTANCE_COMPLETE` |
 | 收尾 | 临时 support/stage 载荷已删除；SSD1322 已发送硬件休眠命令 |
 
 交互数字若执行到该阶段，从已捕获边沿开始并包含页面更新和 OLED 提交；矩阵扫描与去抖合同必须
@@ -795,12 +797,17 @@ manifest SHA-256 为 `c9ff490898e7ba209d4d0597321f8abbc751542b6591ec501a15fed9c5
 
 固定宽度历史表达式格式化曾把一次性微基准峰值从 `4352 B` 降到 `1472 B`，但应用矩阵最低堆仍为
 `9904 B`，因此实现、专属测试和生成 MPY 均已删除。缓存验收 `buffer_snapshot()` 的不变结果后，
-历史五轮通过，完成场景数从 5 增至 10，最低堆升至 10352 B；下一热点稳定落在真实
+历史五轮通过，完成场景数从 5 增至 10，最低堆升至 10352 B；当时的下一热点稳定落在真实
 `error_lifecycle` 安静回收。
 
 自动 GC 阈值 `4096 B` 和 `20000 B` 都把最低堆提高到 `15200 B`，但最大 step 分别为
 `41.810 ms` 和 `40.875 ms`，超过 32 ms；两项实验均已删除。没有继续扩张到计算核心，也没有
 为比较保留第二套实现。
+
+随后冻结 `performance`、`runtime_handle`、`version` 和 `approot`，把正式候选最低堆提高到
+`15920 B`；冻结同名 `main.py` 会抢在内部 supervisor 前执行，故该单项已删除并保留 slot
+`main.mpy`。Calculator flat 历史和直接 Pratt 求值候选都使 32 ms 时延更差，已连同专属测试删除；
+Stopwatch 压缩无法影响更早的 `calculator_history` 门禁，按 YAGNI 未实现。
 
 ### 10.4 动效门禁
 

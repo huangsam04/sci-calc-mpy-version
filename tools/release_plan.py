@@ -42,6 +42,7 @@ _FROZEN_PACKAGE_PREFIXES = (
     "utils/",
 )
 _FROZEN_MODULE_PATHS = frozenset((
+    "approot.py",
     "calc/__init__.py",
     "calc/bundled_plugins.py",
     "calc/functions.py",
@@ -54,6 +55,8 @@ _FROZEN_MODULE_PATHS = frozenset((
     "functions/basic.py",
     "functions/solve.py",
     "functions/trig.py",
+    "performance.py",
+    "runtime_handle.py",
     "screens/__init__.py",
     "screens/about.py",
     "screens/calculator.py",
@@ -65,6 +68,7 @@ _FROZEN_MODULE_PATHS = frozenset((
     "screens/settings.py",
     "screens/stopwatch.py",
     "screens/variable_panel.py",
+    "version.py",
 ))
 _ACCEPTANCE_ONLY_PATHS = frozenset((
     "benchmarks.py",

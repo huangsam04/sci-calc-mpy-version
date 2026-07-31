@@ -290,10 +290,10 @@ def test_first_slot_install_preserves_every_preexisting_shared_file():
     } == sentinels
     assert state.confirmed_release_id == plan.release_id
     assert state.boot_release_id == plan.release_id
-    assert state.active_slot_files()[("sd", "main.py")] == next(
+    assert state.active_slot_files()[("sd", "catalog.py")] == next(
         asset.payload
         for asset in plan.assets
-        if (asset.zone, asset.relative_path) == ("sd", "main.py")
+        if (asset.zone, asset.relative_path) == ("sd", "catalog.py")
     )
     _assert_one_closed_reset_session(state)
 
@@ -377,13 +377,14 @@ def test_mode_switch_finalize_failure_cannot_boot_a_shadow_extension(
 def test_apply_release_rejects_tampered_payload_before_a_device_session():
     old_plan = _plan("1.3.0", legacy=True)
     new_plan = _plan("1.4.0")
-    main_asset = next(
-        asset for asset in new_plan.assets if asset.key == "sd:main")
-    tampered_asset = replace(main_asset, payload=b"# tampered after plan\n")
+    catalog_asset = next(
+        asset for asset in new_plan.assets if asset.key == "sd:catalog")
+    tampered_asset = replace(
+        catalog_asset, payload=b"# tampered after plan\n")
     tampered_plan = replace(
         new_plan,
         assets=tuple(
-            tampered_asset if asset is main_asset else asset
+            tampered_asset if asset is catalog_asset else asset
             for asset in new_plan.assets
         ),
     )
@@ -726,8 +727,7 @@ def test_unconsumed_trial_generation_must_match_selector_generation():
     _assert_one_closed_reset_session(state)
 
 
-@pytest.mark.parametrize("write_index", (1, 2, 3))
-def test_staging_write_failure_keeps_the_old_release_boot_visible(write_index):
+def test_staging_write_failure_keeps_the_old_release_boot_visible():
     old_plan = _plan("1.3.0", legacy=True)
     new_plan = _plan("1.4.0")
     sentinels = {
@@ -739,7 +739,7 @@ def test_staging_write_failure_keeps_the_old_release_boot_visible(write_index):
     injected = OSError("injected staging write failure")
     adapter = InMemoryReleaseAdapter(
         state,
-        failures=(("stage_write", write_index, injected),),
+        failures=(("stage_write", 1, injected),),
     )
 
     with pytest.raises(ReleaseFailure) as caught:
@@ -1727,7 +1727,7 @@ def test_retrying_the_same_plan_replaces_hidden_partial_staging_safely():
             new_plan,
             InMemoryReleaseAdapter(
                 state,
-                failures=(("stage_write", 3, first_error),),
+                failures=(("stage_write", 1, first_error),),
             ),
         )
 

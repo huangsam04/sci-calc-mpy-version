@@ -27,4 +27,16 @@
 - [x] 记录每页首次/再次打开的最大 step、输入到首次可见反馈、打开峰值、关闭后空闲堆和五轮堆漂移。
 - [x] 最大用户状态和连续五轮操作 `MemoryError=0`；一个 framebuffer、0 B 新像素缓冲、稳态逐帧 0 分配保持成立。
 
+## 12 KiB 续行：无损用户状态压缩
+
+只有前两批仍未提供足够稳定堆余量时才执行。Calculator 的 20 条历史改为同一列表中的 `expression, result` 交替槽，逻辑计数、768 字符预算、顺序、召回和跨页面保留行为不变。Stopwatch 圈速列表只保存 elapsed；显示编号按 `next_number - 1 - index` 推导，20 圈上限、最新优先、滚动、重置、离页恢复和验收租约行为不变。不保留旧 tuple 状态兼容层。
+
+- [x] 首个动态 flat 列表候选的产品、缓存、导航和场景事务聚焦集 `237 passed`；固件为 `1822192 B`，SHA-256 `76f44e92102570ec168029319b92df117775ffb0c931b01652f3dc897cdb4957`。COM5 `heap_min` 从 `15920 B` 小幅升至 `16160 B`，但同一 `calculator_history` 阻塞 step 从 `37.761 ms` 恶化至 `59.946 ms`，`MemoryError=0`、普通错误 0；两次头部 `insert()` 与动态扩容实现被否决，不作为最终表示。
+- [x] 第二个候选改为一次性 40 槽表，并用两个既有状态表标量保存逻辑条目数和 768 字符总量；每条历史不再分配 tuple、扩容列表或重扫全部表达式。真实调用方聚焦集 `237 passed`；固件 `1822256 B`、SHA-256 `d858f28f590f31dafa9d71d87ddf32a069d3257b29d6382c61dd17fa4234faae`。COM5 已越过原 `calculator_history` 阻塞并从 5 个场景推进到 10 个场景，随后在 `error_lifecycle` 测得 `heap_min=10496 B`、`blocking_max_us=61728`、`MemoryError=0`、普通错误 0。该候选尚未接受；只允许与新暴露热点对应的 Calculator 直接求值再组合测量一次，仍不过门则两项一起删除。
+
+- [x] Calculator 产品、缓存、导航、detach/rebuild、OOM 回滚和 20 条场景租约均先以行为测试锁定；动态 flat 与固定 40 槽两个实现都未保留。Stopwatch 位于当前失败的 `error_lifecycle` 之后，压缩圈速不可能改变当前最低堆或最大 step，故不创建无收益实现或专属测试。
+- [x] Calculator 动态 flat 单批与固定 flat 单批已分别测量，没有同时维护；动态实现为 `16160 B / 59.946 ms`，固定实现使场景继续前进但在下一热点为 `10496 B / 61.728 ms`，均未达到联合门禁。
+- [x] 两批期间现有 Calculator scenario/acceptance 曾直接适配产品生命周期并覆盖恢复；候选否决后实现、适配断言和内部形状测试已一起删除，原场景租约回归通过。
+- [x] Calculator 固定历史与直接求值组合最终为 `11136 B / 56.665 ms`，`MemoryError=0`、普通错误 0、固定缓冲峰值 `8296 B`；未达到 12 KiB/32 ms，故恢复正式 tuple 历史，不进入 Stopwatch 或动画实现。
+
 完成后回到 [PLAN](../PLAN.md) 勾选“页面按需加载与彻底卸载”，再读取[动效分支](motion.md)。

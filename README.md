@@ -19,7 +19,7 @@ MicroPython 核心。
 ├── main.py             # 读取选择记录并启动活动槽
 ├── bootenv.py / bootsel.py / bootlog.py / bootsupervisor.py
 ├── recovery.py / display/  # SD/应用损坏时的恢复界面
-└── .frozen             # 稳定的显示、输入、计算、UI 和页面模块
+└── .frozen             # 稳定的显示、输入、计算、UI、页面及常驻根模块
 
 SD 卡 /sd
 ├── settings.json
@@ -27,9 +27,8 @@ SD 卡 /sd
 ├── .slots/A/ 或 B/
 │   ├── release.manifest / .sci-calc-owner
 │   ├── launch.py / main.mpy  # 动态产品入口与运行编排
-│   ├── approot.mpy / performance.mpy / runtime_handle.mpy / version.mpy
 │   ├── fonts/*.xglcd   # 随发布保留；当前常驻 UI 使用内置 8x8 字体
-│   └── functions/      # 可开关的发布内插件
+│   └── 其他 manifest 管理的动态产品资产
 └── .staging/           # 发布中使用，成功后原子改名为候选槽
 ```
 
@@ -298,8 +297,8 @@ compile_expression
 `gc.collect()` 或 `gc.mem_free()`。
 
 当前代码没有 `MotionMenu`，普通 `Menu` 会把高亮直接吸附到目标行；`Nav` 也没有 SSD1322
-master-current 页面淡变状态。最新严格 COM5 应用矩阵在 `error_lifecycle` 测得最低空闲堆
-`10352 B`、安静回收 step `37.657 ms`，未同时满足 12 KiB 和 32 ms 门槛。因此两项动效均未启用；
+master-current 页面淡变状态。最新严格 COM5 应用矩阵在 `calculator_history` 测得最低空闲堆
+`15920 B`、阻塞 step `37.724 ms`；内存达到 12 KiB，但时延未达到 32 ms 门槛。因此两项动效均未启用；
 普通界面继续使用吸附式菜单和同步页面切换，不增加像素缓冲，也不恢复 `LazyScreen`、SWAP 或
 双 framebuffer。
 
@@ -358,7 +357,7 @@ UI 会显示保存失败并每两秒重试。
 ..\.venv\python.exe -m mpremote connect PORTNAME reset
 ```
 
-最终主机检查为 `1093 passed in 25.92s`，脚本总耗时 `31.3s`，并通过 CPython 语法检查和
+最终主机检查为 `1098 passed in 25.87s`，脚本总耗时 `31.5s`，并通过 CPython 语法检查和
 MicroPython 1.29 `mpy-cross -march=xtensawin` 全源编译。主机 traced memory 只用于比较逻辑
 工作量，不替代真机堆或 SPI 时延。
 
@@ -373,9 +372,9 @@ MicroPython 1.29 `mpy-cross -march=xtensawin` 全源编译。主机 traced memor
 分配探针；载荷在结束时删除，每阶段后复位设备并让 OLED 休眠。
 
 最新 1.4.0 COM5 候选的启动探针通过：framebuffer 始终为同一个 8192 B 对象，Plot 工作区为
-104 B，frozen/MPY/Viper ABI 正确。应用矩阵完成 10 个场景，`MemoryError=0`、普通错误 0；但
-`error_lifecycle` 的最低空闲堆为 `10352 B < 12288 B`，安静回收 step 为
-`37.657 ms > 32 ms`，因此统一入口按设计停止并报告 `failure_mask=12`，没有输出
+104 B，frozen/MPY/Viper ABI 正确。应用矩阵在首轮 `calculator_history` 完成 5 个场景，
+`MemoryError=0`、普通错误 0，最低空闲堆为 `15920 B >= 12288 B`；但阻塞 step 为
+`37.724 ms > 32 ms`，因此统一入口按设计停止并报告 `failure_mask=20`，没有输出
 `ACCEPTANCE_COMPLETE`。两项动画保持未启用，验收载荷已清理，OLED 已休眠。
 
 ## 实机回归清单
@@ -384,12 +383,12 @@ MicroPython 1.29 `mpy-cross -march=xtensawin` 全源编译。主机 traced memor
 2. 计算、赋值、重启，确认变量持久化；开关插件后再次进入函数选择器。
 3. 快速输入、长按 DEL/ESC、Shift+RPN、Shift+Tab，确认没有重复事件。
 4. 运行 `tools/run_device_acceptance.ps1` 完成统一验收；只有全部硬门槛通过时才应看到
-   `ACCEPTANCE_COMPLETE`。当前 1.4.0 候选的已知正确结果是上述 `failure_mask=12`，不得把它改写为
+   `ACCEPTANCE_COMPLETE`。当前 1.4.0 候选的已知正确结果是上述 `failure_mask=20`，不得把它改写为
    成功或绕过 12 KiB/32 ms 门槛。
 5. 运行秒表 30 分钟，并检查绘图、缩放、求解和错误弹窗。
 
 诊断模式每五秒输出平均渲染耗时、present 耗时和空闲堆。统一验收目标仍是输入到可见像素小于
 20 ms、单个 step 不超过 32 ms、framebuffer 始终只有一个 8192 B 对象、逐帧堆增量为 0、五轮内
-无 `MemoryError` 且堆不持续下降。12 KiB 仍是启用动效的独立硬门槛，未达到时必须删除动效；当前
-还同时存在 `error_lifecycle` 的 32 ms step 门禁失败。交互探针测量的是已捕获边沿到页面更新及提交，
+无 `MemoryError` 且堆不持续下降。12 KiB 内存门槛已经达到，但启用动效还必须同时满足 32 ms；当前
+仍存在 `calculator_history` 的 32 ms step 门禁失败。交互探针测量的是已捕获边沿到页面更新及提交，
 并报告扫描/去抖合同值；它不能单独证明物理按键扫描到像素的完整端到端时延。
