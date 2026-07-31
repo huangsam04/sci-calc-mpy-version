@@ -4,6 +4,7 @@ import types
 import pytest
 
 import benchmarks
+import runtime_acceptance
 from benchmarks import run
 from performance import PerformanceMetrics
 from runtime_acceptance import (
@@ -231,6 +232,24 @@ def test_benchmark_runner_cannot_hide_a_failed_warmup():
 
     with pytest.raises(RuntimeError, match="warmup"):
         run(runtime=runtime, cycles=1, emit=None)
+
+
+def test_benchmark_warmup_absorbs_one_time_lazy_page_state(monkeypatch):
+    root = "root"
+    nav = FakeNav(root)
+    runtime = RuntimeHandle(
+        nav, root, ("plot",), mode="in_memory")
+    monkeypatch.setattr(
+        runtime_acceptance.gc,
+        "mem_free",
+        lambda: 10_000 if not nav.visited else 9_000,
+        raising=False,
+    )
+
+    report = run(runtime=runtime, cycles=1, emit=None)
+
+    assert report.accepted
+    assert report.heap_delta == 0
 
 
 @pytest.mark.parametrize("cycles", (0, -1))

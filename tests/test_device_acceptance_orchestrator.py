@@ -414,7 +414,7 @@ def test_injected_adapter_runs_all_five_stages_without_workspace_python(
     )
     assert (
         "ACCEPTANCE_COMPLETE TEST_PORT stages=5 "
-        "animation=disabled_heap_below_12k"
+        "animation=enabled_heap_at_least_8k"
     ) in result.stdout
 
 

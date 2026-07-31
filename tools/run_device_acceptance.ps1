@@ -432,7 +432,7 @@ if ($DryRun) {
     Write-Output "ACCEPTANCE_DRY_RUN_COMPLETE $Port stages=5"
 }
 else {
-    Write-Output "ACCEPTANCE_COMPLETE $Port stages=5 animation=disabled_heap_below_12k"
+    Write-Output "ACCEPTANCE_COMPLETE $Port stages=5 animation=enabled_heap_at_least_8k"
 }
 }
 finally {

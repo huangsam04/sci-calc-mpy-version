@@ -15,13 +15,19 @@ sys.path.insert(0, str(TOOLS))
 
 import device_runtime_monitor
 import device_interaction_acceptance
+import device_application_acceptance
 
 
-def test_runtime_monitor_reuses_the_page_id_acceptance_runner():
+@pytest.fixture(autouse=True)
+def _avoid_host_animation_waits(monkeypatch):
+    monkeypatch.setattr(
+        device_interaction_acceptance.time, "sleep_ms", lambda _ms: None)
+
+
+def test_runtime_monitor_reuses_the_warmed_navigation_runner():
     source = (TOOLS / "device_runtime_monitor.py").read_text(encoding="utf-8")
 
-    assert "from runtime_acceptance import run" in source
-    assert "navigation_scenario" in source
+    assert "from benchmarks import run as run_navigation" in source
     assert "_binding_state" not in source
     assert ".screens" not in source
 
@@ -33,6 +39,77 @@ def test_interaction_device_path_does_not_load_the_generic_runner():
     assert "from runtime_acceptance import" not in source
     assert "import runtime_acceptance" not in source
     assert "from benchmarks import" not in source
+
+
+def test_page_round_trip_stage_only_loads_its_navigation_transaction():
+    assert device_application_acceptance._SCENARIO_MODULES[-1] == (
+        "nav_scenario",
+    )
+
+
+def test_application_matrix_accepts_recovered_heap(monkeypatch):
+    class WarmNav:
+        def open(self, _page_id):
+            return object()
+
+        def back(self):
+            return None
+
+        def collect_pending(self):
+            return False
+
+    class Runtime:
+        nav = WarmNav()
+
+    import runtime_scenarios
+
+    monkeypatch.setattr(
+        runtime_scenarios, "application_scenarios", lambda rounds=5: ())
+    heap = iter((10_000, 11_552))
+    monkeypatch.setattr(
+        device_application_acceptance.gc,
+        "mem_free",
+        lambda: next(heap),
+        raising=False,
+    )
+
+    report = device_application_acceptance._run_matrix(Runtime())
+
+    assert report.heap_delta == 1_552
+    assert report.accepted
+
+
+def test_application_matrix_rejects_heap_loss_over_512_bytes(monkeypatch):
+    class WarmNav:
+        def open(self, _page_id):
+            return object()
+
+        def back(self):
+            return None
+
+        def collect_pending(self):
+            return False
+
+    class Runtime:
+        nav = WarmNav()
+
+    import runtime_scenarios
+
+    monkeypatch.setattr(
+        runtime_scenarios, "application_scenarios", lambda rounds=5: ())
+    heap = iter((10_000, 9_487))
+    monkeypatch.setattr(
+        device_application_acceptance.gc,
+        "mem_free",
+        lambda: next(heap),
+        raising=False,
+    )
+
+    report = device_application_acceptance._run_matrix(Runtime())
+
+    assert report.heap_delta == -513
+    assert report.failure_mask & runtime_acceptance.FAIL_DRIFT
+    assert not report.accepted
 
 
 class _Memory:
@@ -141,17 +218,30 @@ class _InteractionRoot:
     def __init__(self, log):
         self.log = log
         self.menu = _MenuState()
+        self._motion_steps = 0
 
     def activate(self):
         self.log.append("activate:root")
 
     def update(self, keyboard, event):
         self.log.append("update:root")
+        before = self.menu.cursor_pos
         if event[:2] == (3, 1):
             self.menu.cursor_pos = min(
                 len(self.menu._state[5]) - 1, self.menu.cursor_pos + 1)
         elif event[:2] == (1, 1):
             self.menu.cursor_pos = max(0, self.menu.cursor_pos - 1)
+        if self.menu.cursor_pos != before:
+            self._motion_steps = 2
+
+    @property
+    def motion_active(self):
+        return self._motion_steps > 0
+
+    def advance_motion(self, now):
+        self._motion_steps -= 1
+        self.log.append("motion:root")
+        return True
 
 
 class _NoOpInteractionRoot(_InteractionRoot):
@@ -224,24 +314,36 @@ class _InteractionNav(_Nav):
         super().__init__(root)
         self.log = log
         self.renderer = _InteractionRenderer(root, log)
+        self._motion_steps = 0
 
     def go_to(self, target):
         self.current = target
         self.log.append("go_to:calculator")
 
-    def open(self, page_id):
+    def open(self, page_id, trigger_event=None):
         assert page_id == 1
         self.go_to(self.calculator)
+        if trigger_event is not None:
+            self._motion_steps = 2
         return self.calculator
 
     def go_back(self):
         self.current = self._root
         self.log.append("go_back:root")
 
-    def back(self):
+    def back(self, trigger_event=None):
         self.go_back()
+        if trigger_event is not None:
+            self._motion_steps = 2
 
-    def present_current(self):
+    @property
+    def motion_active(self):
+        return self._motion_steps > 0
+
+    def present_current(self, now=None):
+        if self._motion_steps:
+            self._motion_steps -= 1
+            self.log.append("motion:page")
         self.renderer.present(self.current)
 
     def settle_current(self):
@@ -302,22 +404,22 @@ def test_runtime_monitor_labels_the_resident_run():
 
 
 def test_runtime_monitor_rejects_gc_heap_drift_over_512_bytes(monkeypatch):
-    collections = [0]
-
-    def collect():
-        collections[0] += 1
+    nav = _Nav(_ROOT)
 
     def mem_free():
-        return 16_384 if collections[0] < 2 else 15_784
+        if not nav.visited:
+            return 16_384
+        if len(nav.visited) == 1:
+            return 15_784
+        return 15_184
 
-    monkeypatch.setattr(runtime_acceptance.gc, "collect", collect)
     monkeypatch.setattr(runtime_acceptance.gc, "mem_free", mem_free,
                         raising=False)
 
     with pytest.raises(RuntimeError, match="acceptance failed"):
         device_runtime_monitor.run(
             runtime=RuntimeHandle(
-                _Nav(_ROOT), _ROOT, (_Target(),), mode="resident"),
+                nav, _ROOT, (_Target(),), mode="resident"),
             emit=lambda _line: None,
         )
 
@@ -366,7 +468,7 @@ def test_runtime_monitor_restores_plot_state_after_memory_error():
     assert plot.input_box.get_str() == "cos(x)"
 
 
-def test_runtime_monitor_runs_every_target_in_each_of_five_rounds():
+def test_runtime_monitor_warms_each_target_before_five_measured_rounds():
     nav = _Nav(_ROOT)
     first = _Target()
     second = _Target()
@@ -377,7 +479,7 @@ def test_runtime_monitor_runs_every_target_in_each_of_five_rounds():
         emit=lambda _line: None,
     )
 
-    assert nav.visited == [first, second] * 5
+    assert nav.visited == [first, second] * 6
 
 
 def test_runtime_monitor_returns_to_root_after_unexpected_failure():
@@ -406,13 +508,13 @@ def test_interaction_release_mode_requires_a_resident_runtime():
         set_resident_runtime(previous)
 
 
-def test_interaction_scenario_contains_no_frames_for_removed_animations():
+def test_interaction_scenario_keeps_animation_frames_in_the_existing_tracer():
     source = (TOOLS / "device_interaction_acceptance.py").read_text(
         encoding="utf-8")
 
     assert device_interaction_acceptance.MAX_BLOCKING_STEP_US == 40_000
-    assert "menu_animation_frame" not in source
-    assert "page_fade_frame" not in source
+    assert "animation_frames=" in source
+    assert "animation_alloc_nonzero=" in source
     assert "def _scenario(" not in source
 
 
@@ -550,7 +652,33 @@ def test_interaction_screen_tracer_reports_its_narrow_measurement_scope():
     assert "input_batch_us" not in text
     assert "INTERACTION_ACCEPTANCE" not in text
     assert lines[-1].startswith("INTERACTION_SCREEN_TRACER_RESULT PASS ")
-    assert "animation_frames=" not in text
+    assert "animation_frames=" in text
+    assert "animation_max_us=" in text
+    assert "animation_alloc_nonzero=0" in text
+
+
+def test_interaction_rejects_a_nonzero_animation_frame_heap_delta(
+        monkeypatch):
+    calls = [0]
+
+    def mem_alloc():
+        calls[0] += 1
+        return 100 if calls[0] == 1 else 101
+
+    monkeypatch.setattr(
+        device_interaction_acceptance.gc, "mem_alloc", mem_alloc,
+        raising=False)
+    lines = []
+    root = _InteractionRoot([])
+    calculator = _CalculatorTarget([])
+    runtime = _InteractionBinding(
+        _InteractionNav(root, []), root, calculator)
+
+    with pytest.raises(RuntimeError, match="interaction screen tracer failed"):
+        device_interaction_acceptance.run(runtime=runtime, emit=lines.append)
+
+    assert "animation_alloc_nonzero=1" in lines[-2]
+    assert lines[-1].startswith("INTERACTION_SCREEN_TRACER_RESULT FAIL ")
 
 
 def test_interaction_requires_captured_edge_frames_below_20_ms(monkeypatch):

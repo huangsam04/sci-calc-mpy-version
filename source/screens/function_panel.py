@@ -55,7 +55,7 @@ class FunctionPanel:
         self._menu = None
         self._items = ()       # list of (name, is_on, is_group) while active
         # Bits: dirty=1, pending key missing=2, menu built=4,
-        # plugin scan active=8, persistence visual dirty=16.
+        # plugin scan active=8, persistence visual dirty=16, reload active=32.
         self._flags = 0
         # Fixed tables keep the instance block at four keys. Each retained
         # table is no wider than the allocations already proven at boot.
@@ -98,6 +98,18 @@ class FunctionPanel:
             self._flags |= 8
         else:
             self._flags &= ~8
+        if self._menu is not None:
+            self._menu.invalidate_presented()
+        return True
+
+    def set_plugin_reload_active(self, active):
+        active = bool(active)
+        if active == bool(self._flags & 32):
+            return False
+        if active:
+            self._flags |= 32
+        else:
+            self._flags &= ~32
         if self._menu is not None:
             self._menu.invalidate_presented()
         return True
@@ -171,8 +183,17 @@ class FunctionPanel:
             return
         self._menu.draw_present_rows(display)
 
+    @property
+    def motion_active(self):
+        return self._menu is not None and self._menu.motion_active
+
+    def advance_motion(self, now):
+        return (self._menu is not None
+                and self._menu.advance_motion(now))
+
     def deactivate(self):
         self.set_plugin_scan_active(False)
+        self.set_plugin_reload_active(False)
         if self._flags & 1:
             self._queue_save()
 
@@ -441,7 +462,10 @@ class FunctionPanel:
             display.draw_rectangle(0, 13, self.width, 40, 15)
         else:
             self._menu.draw(display)
-        if self._flags & 8:
+        if self._flags & 32:
+            hint = "Loading add-ons"
+            right = ""
+        elif self._flags & 8:
             hint = "Scanning..."
             right = "ESC cancel"
         elif load_error is not None:
@@ -457,10 +481,15 @@ class FunctionPanel:
             hint = "ENT toggle Sh+E"
             right = "ESC back"
         _theme.draw_footer(display, hint, None, right, raw=True)
+        if self._flags & 32:
+            display.draw_rectangle(130, 57, 76, 5, 9)
+            display.fill_rectangle(132, 59, 24, 1, 15)
 
     def update(self, kb, event=None):
         if self._state[1][3] is not None:
             raise RuntimeError("Function panel scenario transaction is active")
+        if self._flags & 32:
+            return None
         action = self.menu.update(kb, event)
         if action == "MOVE":
             return "REDRAW"

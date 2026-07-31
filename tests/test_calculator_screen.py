@@ -225,6 +225,20 @@ def test_typing_uses_editor_and_footer_rows_but_wrapping_falls_back_to_full_fram
     assert not hasattr(screen, "_footer_hint")
 
 
+def test_activation_prepares_first_present_caches_before_animation_frames():
+    screen = CalculatorScreen(None, registry=build_registry(), variables={})
+
+    screen.activate()
+    presented = screen._state[2][0]
+    footer = screen._state[2][1]
+    screen.mark_presented()
+
+    assert presented is not None
+    assert footer is not None
+    assert screen._state[2][0] is presented
+    assert screen._state[2][1] is footer
+
+
 def test_calculator_propagates_memory_error_without_opening_an_error_popup(
         monkeypatch):
     screen = CalculatorScreen(None, registry=build_registry(), variables={})

@@ -13,15 +13,17 @@ from ui.motion import DAMAGE_PARTIAL, DamageMap
 class DisplayStub:
     def __init__(self):
         self.text = []
+        self.rectangles = []
+        self.fills = []
 
     def draw_text8x8(self, x, y, text, **kwargs):
         self.text.append(text)
 
     def draw_rectangle(self, *args):
-        pass
+        self.rectangles.append(args)
 
     def fill_rectangle(self, *args):
-        pass
+        self.fills.append(args)
 
     def draw_hline(self, *args):
         pass
@@ -53,6 +55,22 @@ def test_function_panel_default_footer_is_prefitted_for_the_hot_draw_path():
     panel.draw(display)
 
     assert "ENT toggle Sh+E" in display.text
+
+
+def test_function_panel_loading_bar_is_visible_and_blocks_more_input():
+    panel = FunctionPanel(None, {"enabled_functions": ["basic"]})
+    panel.activate()
+    display = DisplayStub()
+    cursor_before = panel.menu.cursor_pos
+
+    assert panel.set_plugin_reload_active(True) is True
+    panel.draw(display)
+
+    assert "Loading add-ons" in display.text
+    assert (130, 57, 76, 5, 9) in display.rectangles
+    assert (132, 59, 24, 1, 15) in display.fills
+    assert panel.update(None, (3, 1, False)) is None
+    assert panel.menu.cursor_pos == cursor_before
 
 
 def test_function_panel_reuses_loaded_catalog_without_reexecuting_plugins():
@@ -354,7 +372,7 @@ def test_function_panel_releases_menu_labels_but_keeps_pending_selection(
     assert panel._items
 
 
-def test_main_defers_filename_scan_and_reloads_plugins_once():
+def test_main_defers_work_after_showing_loading_and_reloads_plugins_once():
     source = (Path(__file__).parents[1] / "source" / "main.py").read_text(
         encoding="utf-8")
     start = source.index('elif result == "FUNC_PANEL_DONE":')
@@ -367,7 +385,8 @@ def test_main_defers_filename_scan_and_reloads_plugins_once():
     panel_end = source.index("screen.set_load_errors", panel_start)
     panel_init = source[panel_start:panel_end]
 
-    assert "nav.defer_back(event)" in handler
+    assert "cur.set_plugin_reload_active(True)" in handler
+    assert "nav.defer_back(event)" not in handler
     assert "_function_reload_pending = True" in handler
     assert 'result == "FUNC_PANEL_RESCAN"' in handler
     assert "FunctionEnvironment" not in handler
@@ -408,6 +427,14 @@ def test_main_defers_filename_scan_and_reloads_plugins_once():
             < recovery.index("func_panel.rollback_plugin_reload()")
             < recovery.index("nav.reset(main_menu)"))
 
+    ordinary_start = main_loop.index("        except Exception as e:")
+    ordinary = main_loop[ordinary_start:]
+    assert (ordinary.index("_function_reload_pending = False")
+            < ordinary.index("_function_scan_pending = False")
+            < ordinary.index("func_panel.rollback_plugin_reload()")
+            < ordinary.index("nav.cancel_motion()")
+            < ordinary.index("nav.reset(main_menu)"))
+
 
 def test_main_rescan_marks_visual_change_only_when_scan_status_changes():
     source = (Path(__file__).parents[1] / "source" / "main.py").read_text(
@@ -434,6 +461,26 @@ def test_main_rescan_marks_visual_change_only_when_scan_status_changes():
     assert "changed = result is not None" not in rescan
     assert (handler.index("return _input_visual_changed", rescan_start)
             < handler.index("changed = result is not None", rescan_end))
+
+
+def test_main_keeps_the_loading_panel_visible_until_reload_finishes():
+    source = (Path(__file__).parents[1] / "source" / "main.py").read_text(
+        encoding="utf-8")
+    handler_start = source.index("    def _handle_event(event):")
+    handler_end = source.index("    if publish_runtime:", handler_start)
+    handler = source[handler_start:handler_end]
+    done_start = handler.index('elif result == "FUNC_PANEL_DONE":')
+    done_end = handler.index('elif result == "FUNC_PANEL_RESCAN":', done_start)
+    done = handler[done_start:done_end]
+    reload_start = source.index("                if _function_reload_pending:")
+    reload_end = source.index("                elif _function_scan_pending:", reload_start)
+    reload_block = source[reload_start:reload_end]
+
+    assert "cur.set_plugin_reload_active(True)" in done
+    assert "nav.defer_back" not in done
+    assert "func_panel.set_plugin_reload_active(False)" in reload_block
+    assert "nav.back()" in reload_block
+    assert "nav.release_pending" not in reload_block
 
 
 def test_main_filename_scan_reclaims_and_releases_loader(monkeypatch):

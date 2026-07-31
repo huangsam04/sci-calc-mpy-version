@@ -58,7 +58,12 @@ class CalculatorScreen:
             context = retained_state[2]
             meta = retained_state[3]
         error_popup = ErrorPopup(font, font)
-        render = [None, None, None, 0]
+        render = [
+            [None] * 10,
+            ["", b"", "", b"", 0, None, -1, -1, -1, None, None],
+            None,
+            0,
+        ]
         state = (retained_state if retained_state is not None
                  else [history, None, None, meta])
         state[0] = history
@@ -85,6 +90,7 @@ class CalculatorScreen:
         self.mode = 0
         self._state[3][0][1] = ""
         self._clear_presented_editor_state()
+        self._ensure_footer_cache()
 
     def deactivate(self):
         self._clear_presented_editor_state()

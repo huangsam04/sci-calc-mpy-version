@@ -19,7 +19,7 @@ from runtime_acceptance import (
 
 
 def test_runtime_heap_gate_matches_the_animation_contract():
-    assert acceptance.MIN_HEAP_FREE_BYTES == 12 * 1024
+    assert acceptance.MIN_HEAP_FREE_BYTES == 8 * 1024
     assert acceptance.MAX_BLOCKING_STEP_US == 40_000
 
 
@@ -316,6 +316,69 @@ def test_runner_rejects_a_step_at_the_strict_40_ms_boundary(monkeypatch):
     assert report.blocking_max_us == acceptance.MAX_BLOCKING_STEP_US
     assert report.failure_mask & acceptance.FAIL_BLOCKING
     assert not report.accepted
+
+
+@pytest.mark.parametrize(
+    ("elapsed_us", "accepted"),
+    ((159_999, True), (160_000, False)),
+)
+def test_runner_bounds_the_loading_covered_plugin_reload(
+        monkeypatch, elapsed_us, accepted):
+    root = "root"
+    nav = _InMemoryNav(root)
+    runtime = RuntimeHandle(nav, root, (), mode="in_memory")
+    clock = iter((100, 100 + elapsed_us))
+    heap = iter((9_000, 9_000, 9_000))
+
+    monkeypatch.setattr(
+        acceptance.time, "ticks_us", lambda: next(clock))
+    monkeypatch.setattr(
+        acceptance.time, "ticks_diff", lambda end, start: end - start)
+    monkeypatch.setattr(
+        acceptance.gc, "mem_free", lambda: next(heap), raising=False)
+    monkeypatch.setattr(acceptance.gc, "collect", lambda: None)
+
+    report = run(
+        runtime,
+        ("loading_feedback", 1,
+         (("plugin_reload", RUN_ACTION,
+           lambda handle, round_index: None),)),
+    )
+
+    assert report.blocking_max_us == elapsed_us
+    assert bool(report.failure_mask & acceptance.FAIL_BLOCKING) is not accepted
+    assert report.accepted is accepted
+
+
+@pytest.mark.parametrize(
+    ("heap_min", "accepted"),
+    ((8 * 1024, True), (8 * 1024 - 1, False)),
+)
+def test_runner_enforces_the_strict_8_kib_heap_boundary(
+        monkeypatch, heap_min, accepted):
+    root = "root"
+    nav = _InMemoryNav(root)
+    runtime = RuntimeHandle(nav, root, (), mode="in_memory")
+    clock = iter((100, 200))
+    heap = iter((9_000, heap_min, 9_000))
+
+    monkeypatch.setattr(
+        acceptance.time, "ticks_us", lambda: next(clock))
+    monkeypatch.setattr(
+        acceptance.time, "ticks_diff", lambda end, start: end - start)
+    monkeypatch.setattr(
+        acceptance.gc, "mem_free", lambda: next(heap), raising=False)
+    monkeypatch.setattr(acceptance.gc, "collect", lambda: None)
+
+    report = run(
+        runtime,
+        ("strict_heap_limit", 1,
+         (("step", RUN_ACTION, lambda handle, round_index: None),)),
+    )
+
+    assert report.heap_min == heap_min
+    assert bool(report.failure_mask & acceptance.FAIL_HEAP) is not accepted
+    assert report.accepted is accepted
 
 
 def test_runner_records_memory_error_and_recovers_root(monkeypatch):

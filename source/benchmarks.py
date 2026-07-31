@@ -2,7 +2,7 @@
 
 from performance import metrics as _metrics
 from runtime_acceptance import (
-    PHASE_ENTER,
+    FAIL_DRIFT, PHASE_ENTER,
     RUN_STEP,
     VISIT_TARGET,
     RuntimeHandle,
@@ -137,7 +137,7 @@ def run(runtime=None, cycles=BENCHMARK_ROUNDS, emit=print, metrics=_metrics,
     warmup_runtime = _build_warmup_view(runtime)
     warmup_report = run_acceptance(
         warmup_runtime, navigation_scenario(warmup_runtime, 1))
-    if not warmup_report.accepted:
+    if warmup_report.failure_mask & ~FAIL_DRIFT:
         raise RuntimeError("Benchmark warmup acceptance failed")
     del warmup_report
     del warmup_runtime

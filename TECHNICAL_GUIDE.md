@@ -31,7 +31,7 @@ runtime_handle/version）
 | `source/main.py` | 应用构造、事件循环、导航状态机、崩溃恢复。 |
 | `source/calc/` | 高精度十进制数、函数注册表、依赖感知插件加载、Pratt 表达式解析与求值。 |
 | `source/screens/` | 各业务页面的状态、绘制和按键处理。 |
-| `source/ui/` | 通用控件、固定行损伤、帧调度和状态栏；当前未启用动效。 |
+| `source/ui/` | 通用控件、固定行损伤、菜单短距离动效、帧调度和状态栏。 |
 | `source/display/` | SSD1322 帧缓冲/SPI 驱动、单色调色板、X-GLCD 字体读取。 |
 | `source/input/keyboard.py` | 键盘矩阵扫描、去抖、边沿事件与长按。 |
 | `source/utils/` | 崩溃可恢复 JSON 存储和 OLED 空闲休眠。 |
@@ -185,26 +185,25 @@ Shift+`^` 为 `sqrt`，Shift+`RPN` 为 `rpn`，Shift+`Tab` 为 `stab`。页面�
 
 ## 4. UI 生命周期、导航和帧调度
 
-### 4.1 UIElement、FrameScheduler 与当前吸附式反馈
+### 4.1 UIElement、FrameScheduler 与固定标量动效
 
 `UIElement` 为普通页面/控件提供默认生命周期；Calculator 和 Function Panel 等紧凑页面直接实现
 同一 `activate()`、`deactivate()`、`draw(display)` 和 `update(keyboard, event)` 协议而不继承它。
 `FrameScheduler` 记录输入、普通脏帧、秒表连续帧、侧栏轮询和安静
 工作期限；普通脏帧间隔为 66 ms，循环固定休眠 4 ms。
 
-当前 `Menu` 没有运动槽，`_update_cursor_target()` 会把光标立即吸附到新行；源码中没有
-`MotionMenu` 或 quadratic ease-out 推进函数。`Nav` 也没有 `_fade_*` 状态或动画堆门禁。
-四模块无动画候选先在 `calculator_history` 测得 `15920 B / 37.724 ms`，通过严格 `<40 ms`
-入口门槛；两项动画候选继续到 `error_lifecycle` 后测得 `10736 B / 38.263 ms`，低于 12 KiB，
-故候选实现和专属测试已删除。按键和逐帧路径不调用 `gc.collect()` 或 `gc.mem_free()`。
+`Menu` 在现有 `_state` 中使用起点、目标、开始时间和活动标量，按 96 ms 整数 ease-out 推进；
+输入首帧先移动 2 px，滚屏直接吸附，反向输入从当前像素重新定向。`Nav` 的三个固定标量驱动
+SSD1322 70 ms 淡出和 70 ms 淡入。没有 `MotionMenu`、通用插值框架或像素合成动画；按键和
+逐帧路径不调用 `gc.collect()` 或 `gc.mem_free()`。
 
 ### 4.2 `Nav` 栈、同步页面切换与输入恢复
 
 `Nav` 独占页面栈、固定 `page_id` 和可重建资源生命周期；普通调用方只使用 `open(page_id)`、
 `back()` 与 `current`。启动只构造根菜单，进入页面时才创建实例；离页会分离需要保留的紧凑状态、
-清除页面引用，并把 GC 安排到安静回收点。内部同步切换完成旧页停用、释放和新页激活，再由下一次
-`Renderer.present()` 提交目标页；当前没有 SSD1322 master-current 淡出/淡入或暗点提交逻辑。
-亮度命令只由 Settings 和休眠/唤醒路径使用。
+清除页面引用，并把 GC 安排到安静回收点。真实输入完成旧页停用、释放和新页激活后，先降低
+SSD1322 master-current，在 70 ms 暗点只调用一次 `Renderer.present()`，再恢复用户亮度；
+程序化导航保持同步。新输入中断、异常、复位和休眠均取消过渡并吸附正确终态。
 
 崩溃恢复中的 `reset(root)` 会释放可重建资源、清空导航栈到根页并锁住输入，直到所有物理按键
 释放。页面激活或回滚发生 `MemoryError` 时保留原异常优先级，不用视觉效果延迟恢复。
@@ -229,8 +228,8 @@ Renderer.present(screen):
 ```
 
 `DamageMap.add()` 原地合并相交行带；超过两个独立行带时提升为全帧，不扩容。SSD1322 在启动时
-预建有限的菜单跨度视图，供吸附式高亮只重画旧/新受影响行；当前 4 行菜单从清空 9568 像素、
-重画 4 个标签，降到清空 4992 像素、重画 2 个标签。这是行损伤优化，不是滑动动画。
+预建有限的菜单跨度视图，供滑动高亮只重画旧行、新行和实际经过行；当前 4 行菜单从清空 9568
+像素、重画 4 个标签，降到清空受影响行并只重画相交标签。
 `Display.present_rows()` 对其他不认识的合法行区仍直接退化为全帧传输，避免逐帧切片分配。
 
 侧栏每 5 s 才在安静调度槽检查刷新；输入导致 DEG/RAD 改变时只标记侧栏脏并复用缓存电池样本，
@@ -238,7 +237,7 @@ ADC 读取不进入输入帧。电压文本和固定标签使用预分配字节�
 
 ### 4.4 主循环、渲染门控和崩溃恢复
 
-主循环通过 `_drain_input_batch()` 每轮最多处理 5 个已捕获边沿，并且只有 `Nav.poll_event()`
+主循环通过 `_drain_input_batch()` 每轮最多处理 3 个已捕获边沿，并且只有 `Nav.poll_event()`
 调用 `pop_key_event()`。先处理输入，再执行页面安静期 `settle_step()`，最后由 `FrameScheduler` 决定是否存在
 真实像素提交；无损伤返回不会计作帧。
 
@@ -248,7 +247,7 @@ forever:
         kb.scan()
         now = ticks_ms()
         update OLED sleep state; sleeping path scans every 25 ms
-        drain up to 5 edges through _handle_event()
+        drain up to 3 edges through _handle_event(); keep the rest queued
         if no edge, process one supported held-key update
         scheduler.note_input(now) for any physical activity
         scheduler.request_render() only for visible state changes
@@ -537,7 +536,8 @@ Calculator.update:
 `basic` 与 `plugin:basic`），防止同名冲突。若已启用的 Add-in 缺少已知依赖，激活时递归加入
 依赖闭包、标为待保存，并在页脚显示 `Auto on: name`；用户关闭一个依赖时，已启用的依赖方也会
 关闭。`ENT` 翻转当前会话选择，离开时把 `enabled_functions` 排入异步设置保存，主循环随后原地
-重载 registry。加载失败插件会自动聚焦，用户可关闭它。
+重载 registry。重载开始前 Function Panel 已显示固定 `Loading add-ons` 进度条，完成后才返回根页；
+动态 `execfile()` 保持不可切分，但其最长真机 step 有明确可见反馈。加载失败插件会自动聚焦，用户可关闭它。
 
 `Shift+ENT` 是唯一主动重扫路径：重新执行隔离摘要、保持可用的原选择并夹住光标。这样运行中
 更换活动槽内容可见，同时不会将任意插件代码带回普通页面切换关键路径。
@@ -766,28 +766,30 @@ CPython `compileall`、对所有源码使用 `-march=xtensawin` 编译 `.mpy`。
 4. 验收侧缓存同一 application matrix 内不变的 framebuffer 身份快照；该缓存不进入普通 release。
    没有增加像素缓冲、通用动画层、`LazyScreen`、SWAP 或第二 framebuffer。
 
-删除动画候选后的最终 `check.ps1` 为 `1098 passed in 20.42s`，脚本总耗时 `24.5s`；CPython compileall 和
+当前动画候选的最终 `check.ps1` 为 `1115 passed in 29.03s`，脚本总耗时 `34.2s`；CPython compileall 和
 MicroPython 1.29 全源 mpy-cross 均通过。
 
 ### 10.2 COM5 严格门禁（1.4.0）
 
-当前 MPY release 为 `3499d2f0fc4323a1e578dc654e277eb8efca9f599f340453ca78e27b9397ffcc`，
-manifest SHA-256 为 `10ea9c1386ec661630690940a1bb30c9aee74195536a32c703b81183fe45a6fd`。
-正式 frozen 镜像为 `1822144 B`，SHA-256 为 `34fcd5bf283638d5c362cc9e5b028191c54c4b9d02e89cb5b7db968b5e0748f0`；构建用时 `31.521 s`，只写 factory 分区并校验用时 `24.402 s`。统一入口仍为：
+当前 MPY release 为 `c5894ef16861a51e0c4383985eab17482906f7b02c187d711edb4e91ac09e3f1`，
+manifest SHA-256 为 `3066a43a9eea7adcf3e53ea4837131337cc4af6e1e9cf221555692c5e86c47da`。
+正式 frozen 镜像为 `1823232 B`，SHA-256 为 `993b0a1778d140cd7ac529e1f62df6a3850912536871ef18b04b45c7afa1a6e5`；增量构建用时 `26.120 s`，只写 factory 分区并校验用时 `24.395 s`。统一入口仍为：
 
 ```powershell
 .\tools\run_device_acceptance.ps1 -Port PORTNAME
 ```
 
-最新严格运行在应用矩阵阶段正确拒绝两项动画候选，因此不能宣称完整五阶段通过：
+最新严格运行完整通过五阶段：
 
 | 检查 | 真机结果 |
 | --- | --- |
 | 启动与固定缓冲 | resident/root ready；同一个 framebuffer 8192 B；Plot 工作区 104 B；MPY/Viper ABI 通过 |
 | 模块来源 | `main=/sd/.slots/B/main.mpy`；`performance`、`runtime_handle`、`version` 为 frozen；`approot` 在根页阶段尚未加载 |
-| 应用矩阵 | 越过 `calculator_history` 后继续；`MemoryError=0`、普通错误 0；最低空闲堆 10736 B；最大 step 38.263 ms；`failure_mask=8` |
-| 门禁位置 | `error_lifecycle`，动画交互和完整五轮之前 |
-| 结果 | `38.263 ms < 40 ms`，但 `10736 B < 12288 B`；停止后续阶段，不输出 `ACCEPTANCE_COMPLETE` |
+| 应用矩阵 | 35 场景/五轮；最低空闲堆 10576 B；漂移 +1536 B；`MemoryError=0`、普通错误 0；加载条覆盖的插件重载 140.261 ms |
+| 页面 tracer | 预热后五轮；最低空闲堆 55392 B；漂移 -80 B；普通最大 step 24.817 ms |
+| 交互与动画 | 完整输入 `12345`；输入提交最大 19.011 ms；85 个动画帧最大 17.071 ms；三相净分配均 0 B |
+| 固定帧 | Stopwatch 16 帧全部提交，净分配 0 B |
+| 结果 | `ACCEPTANCE_COMPLETE`；最低堆高于 8 KiB，普通 step/动画帧严格 `<40 ms`，输入严格 `<20 ms` |
 | 收尾 | 临时 support/stage 载荷已删除；SSD1322 已发送硬件休眠命令 |
 
 交互数字若执行到该阶段，从已捕获边沿开始并包含页面更新和 OLED 提交；矩阵扫描与去抖合同必须
@@ -812,11 +814,11 @@ Stopwatch 压缩无法影响更早的 `calculator_history` 门禁，按 YAGNI �
 
 ### 10.4 动效门禁
 
-菜单 ease-out 和页面硬件亮度淡出/淡入候选曾通过主机阶段，合计只使用 7 个标量槽（约 28 B）和
-0 B 新像素缓冲；COM5 扩展矩阵在进入动画阶段前以 `heap_min=10736 B` 失败，距 12 KiB 尚缺
-1552 B，因此两项候选及专属测试均已删除。正式源码中动画状态、新增像素缓冲和逐帧 GC 都为
-`0 B`。若以后重新考虑动效，必须先在最大受支持用户状态和连续五轮操作下同时通过最低 12 KiB、
-严格 `<40 ms` 最大 step/动画帧、`MemoryError=0` 和堆稳定门槛，再重新运行同一统一验收。
+菜单 ease-out 和页面硬件亮度淡出/淡入合计只使用 7 个标量槽（约 28 B）和 0 B 新像素缓冲。
+Calculator 首次呈现缓存会在页面激活期建立，Renderer 在动画启动前解析目标页 hooks；返回根页不再
+把未变化 Sidebar 无效标脏，因此暗点提交没有净堆分配。COM5 最终 `heap_min=10576 B`，高于
+8192 B 硬底线 2384 B；85 个动画帧和 16 个 Stopwatch 帧的净分配均为 0 B。8 KiB 是启用底线，
+12 KiB 仍是优化目标；不得为追求余量删除已经满足错误、漂移和时延门槛的动画。
 
 ## 11. 验证范围与维护准则
 

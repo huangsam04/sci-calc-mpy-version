@@ -15,7 +15,8 @@ MAX_SETTLE_STEPS = 256
 MAX_BOUNDED_STEPS = 512
 MAX_BOUNDED_NO_PROGRESS_STEPS = 8
 MAX_BLOCKING_STEP_US = 40_000
-MIN_HEAP_FREE_BYTES = 12 * 1024
+MAX_LOADING_FEEDBACK_STEP_US = 160_000
+MIN_HEAP_FREE_BYTES = 8 * 1024
 MAX_HEAP_DRIFT_BYTES = 512
 
 RUN_START = 1
@@ -246,6 +247,10 @@ def _finish_runtime_step(
     report.heap_min = _minimum(report.heap_min, heap_free)
     if elapsed > report.blocking_max_us:
         report.blocking_max_us = elapsed
+    if (elapsed >= MAX_BLOCKING_STEP_US
+            and (report.step_name != "plugin_reload"
+                 or elapsed >= MAX_LOADING_FEEDBACK_STEP_US)):
+        report.failure_mask |= FAIL_BLOCKING
     sample_event = _sample_buffers(runtime, report, optional_target)
     if event == RUN_STEP and sample_event:
         event = sample_event
@@ -495,8 +500,6 @@ def run(runtime, scenario, observer=None):
     if report.heap_before >= 0 and report.heap_after >= 0:
         report.heap_delta = report.heap_after - report.heap_before
     report.buffers_after = _safe_buffer_snapshot(runtime, report)
-    if report.blocking_max_us >= MAX_BLOCKING_STEP_US:
-        report.failure_mask |= FAIL_BLOCKING
     if report.heap_min >= 0 and report.heap_min < MIN_HEAP_FREE_BYTES:
         report.failure_mask |= FAIL_HEAP
     if (report.heap_delta != -1

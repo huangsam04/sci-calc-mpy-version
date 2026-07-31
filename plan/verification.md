@@ -18,7 +18,7 @@
 - [x] 删除动画候选后的最终 `check.ps1` 为 `1098 passed in 20.42s`，脚本总耗时 `24.5s`；CPython、全部 pytest 和仓库 MicroPython 1.29 `mpy-cross` 检查通过；设备验收门槛聚焦回归另为 `19 passed`。
 - [x] 自定义固件可重复增量构建：正式四模块 frozen 集合用时 `31.521s`，镜像 `1822144 B`、SHA-256 `34fcd5bf283638d5c362cc9e5b028191c54c4b9d02e89cb5b7db968b5e0748f0`、factory 余量 `209472 B`；只写 COM5 factory 分区并校验用时 `24.402s`，普通应用继续使用独立快速增量部署。
 
-最终边界统计（排除 `.work` 和 `.git`）：201 个文件、1956716 B（1.87 MiB），相对清理前 208 个文件约 2.17 MB 减少 7 个文件和约 0.21 MB；Python/PowerShell 为 183 个文件、52624 个物理行。以页面生命周期 checkpoint `03ac077` 为固定点，本轮有边界剪枝与收口共 `+1328/-7196` 行，净减 5868 行。最终主机检查后 `.work` 为 10598 个当前缓存/产物、509600027 B（485.99 MiB），位置仍符合 `.work/LOCATIONS.md`。
+最终边界统计（排除 `.work` 和 `.git`）：202 个文件、2015946 B（1.92 MiB），相对清理前 208 个文件约 2.17 MB 减少 6 个文件和约 0.15 MB；Python/PowerShell 为 183 个文件、53695 个物理行。以页面生命周期 checkpoint `03ac077` 为固定点，本轮有边界剪枝、动效与收口共 `+2544/-7382` 行，净减 4838 行。最终主机检查和验收后 `.work` 为 10877 个当前缓存/产物、519355953 B（495.30 MiB），位置仍符合 `.work/LOCATIONS.md`。
 
 ## COM5 统一验收
 
@@ -48,3 +48,13 @@
 - [x] 以当前 `HEAD` 为固定点完成单代理 Standards/Spec 差异复核；唯一发现的设备交互 40 ms 合同断言已补入现有测试，复核后无未解决发现，本提交作为本地 checkpoint。
 
 完成后回到 [PLAN](../PLAN.md) 勾选“最终验证与说明”。
+
+## 8 KiB 动画优先续行
+
+- [x] 已把无动画发布基线 `7e4e807` 标记为本地 annotated tag `v1.4.0`，工作树在续行前干净，未 push。
+- [x] 应用矩阵最低堆常量为 `8192 B`；无反馈普通 step 与动画帧严格 `<40000 us`，输入提交 `<20000 us`，`MemoryError=0`、普通错误 0、堆漂移限制不变；只有已显示固定加载条的动态 `plugin_reload` 严格 `<160000 us`，边界测试覆盖；设备交互阶段不在逐帧路径新增 `gc.mem_free()`。
+- [x] 两项最小动画候选通过聚焦测试和一次阶段 `check.ps1`：`1105 passed`，全部 CPython 与 MicroPython 兼容编译通过；维持单 framebuffer、0 B 新像素缓冲、菜单 4 + Nav 3 个固定标量，并由现有五轮 tracer 对动画帧非零堆变化硬失败。
+- [x] COM5 统一入口完整执行五阶段：应用 `heap_min=10576 B`、漂移 `+1536 B`、插件加载 `140261 us`；预热后普通最大 step `24817 us`、漂移 `-80 B`；输入提交 `19011 us`；动画 85 帧/最大 `17071 us`/净分配 `0 B`；Stopwatch 16 帧净分配 `0 B`，全部错误为 0。
+- [x] 同一 COM5 场景复核最新 `error_lifecycle` / `plot_pipeline` 最低点，候选范围 `10224--10736 B`、无持续下降；未恢复已否决实现，最终保留两项动画并以 `10576 B` 提供高于 8 KiB 的 `2384 B` 余量。
+- [x] 正式 frozen 镜像 `1823232 B`（SHA-256 `993b0a1778d140cd7ac529e1f62df6a3850912536871ef18b04b45c7afa1a6e5`）与 MPY release `c5894ef16861a51e0c4383985eab17482906f7b02c187d711edb4e91ac09e3f1` 已部署；manifest SHA-256 为 `3066a43a9eea7adcf3e53ea4837131337cc4af6e1e9cf221555692c5e86c47da`，boot probe 确认 resident/root ready；验收载荷已删除且 SSD1322 硬件休眠，部署未覆盖 Add-ons、设置、变量或未知文件。
+- [x] 同步 README/TECHNICAL_GUIDE 与主树干复选框，完成单代理 review 和本地 checkpoint commit，不 push。

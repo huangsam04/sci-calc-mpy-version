@@ -1,5 +1,7 @@
 """Menu widget: scrollable list with allocation-free cursor feedback."""
 
+import time
+
 from ui.element import UIElement
 from ui.cursor import Cursor
 from input.keyboard import get_key_label
@@ -8,6 +10,7 @@ from ui.motion import DAMAGE_FULL, DAMAGE_NONE, DAMAGE_PARTIAL
 
 MENU_REPEAT_DELAY_MS = 250
 MENU_REPEAT_INTERVAL_MS = 90
+MENU_MOTION_MS = 96
 UP_KEY = (1, 1)
 DOWN_KEY = (3, 1)
 
@@ -25,7 +28,8 @@ class Menu(UIElement):
         self.cursor = cursor
         self._state = [
             x, y, width, visible_rows * row_height, 0,
-            [] if items is None else items, 0, 0, 0]
+            [] if items is None else items, 0, 0, 0,
+            -1, 0, 0, 0]
         # Boot may inject an immutable empty placeholder when a bounded owner
         # replaces it with an exact list before the menu can be activated.
         self.cursor.x = x + 2
@@ -87,15 +91,46 @@ class Menu(UIElement):
         return None
 
     def activate(self):
-        # Snap cursor to correct position instantly — no animation on activation
+        # Activation restores persistent selection before the page is shown.
         row_height = self.cursor.height + 1
         target_y = (self._state[1] + 2
                     + (self.cursor_pos - self.view_offset) * row_height)
         self.cursor.x = self._state[0] + 2
         self.cursor.y = target_y
         self.cursor.width = self._highlight_width(self.cursor_pos)
+        self._state[9] = -1
         self.invalidate_presented()
         self._state[6] = 0
+
+    @property
+    def motion_active(self):
+        return self._state[9] >= 0
+
+    def advance_motion(self, now):
+        """Advance the fixed-scalar ease-out and report visible movement."""
+        state = self._state
+        started = state[9]
+        if started < 0:
+            return False
+        elapsed = time.ticks_diff(now, started)
+        if elapsed < 0:
+            elapsed = 0
+        old_y = int(self.cursor.y)
+        target_y = state[11]
+        if elapsed >= MENU_MOTION_MS:
+            self.cursor.y = target_y
+            self.cursor.width = state[12]
+            state[9] = -1
+            return True
+        distance = target_y - state[10]
+        remaining = MENU_MOTION_MS - elapsed
+        residual = (
+            abs(distance) * remaining * remaining
+            // (MENU_MOTION_MS * MENU_MOTION_MS))
+        self.cursor.y = (
+            target_y - residual if distance >= 0 else target_y + residual)
+        self.cursor.width = state[12]
+        return int(self.cursor.y) != old_y
 
     def collect_present_damage(self, display_height, damage):
         """Report highlight damage without allocating row-range tuples."""
@@ -172,15 +207,17 @@ class Menu(UIElement):
 
     def move_cursor_up(self):
         if self.cursor_pos > 0:
+            previous_offset = self.view_offset
             self.cursor_pos -= 1
             self._clamp_view()
-            self._update_cursor_target()
+            self._update_cursor_target(previous_offset == self.view_offset)
 
     def move_cursor_down(self):
         if self.cursor_pos < len(self._state[5]) - 1:
+            previous_offset = self.view_offset
             self.cursor_pos += 1
             self._clamp_view()
-            self._update_cursor_target()
+            self._update_cursor_target(previous_offset == self.view_offset)
 
     def _clamp_view(self):
         if self.cursor_pos < self.view_offset:
@@ -189,15 +226,32 @@ class Menu(UIElement):
             self.view_offset = self.cursor_pos - self.visible_rows + 1
         self.view_offset = max(0, self.view_offset)
 
-    def _update_cursor_target(self):
-        """Snap ordinary menus directly to their logical selection."""
+    def _update_cursor_target(self, animate=True):
+        """Retarget the marker, snapping when a move scrolls the viewport."""
         target_y = (
             self._state[1] + 2
             + (self.cursor_pos - self.view_offset)
             * (self.cursor.height + 1))
         self.cursor.x = self._state[0] + 2
-        self.cursor.y = target_y
-        self.cursor.width = self._highlight_width(self.cursor_pos)
+        target_width = self._highlight_width(self.cursor_pos)
+        current_y = int(self.cursor.y)
+        if not animate or current_y == target_y:
+            self.cursor.y = target_y
+            self.cursor.width = target_width
+            self._state[9] = -1
+            return
+        step = 2 if target_y > current_y else -2
+        if abs(target_y - current_y) <= 2:
+            self.cursor.y = target_y
+            self.cursor.width = target_width
+            self._state[9] = -1
+            return
+        self.cursor.y = current_y + step
+        self.cursor.width = target_width
+        self._state[9] = time.ticks_ms()
+        self._state[10] = int(self.cursor.y)
+        self._state[11] = target_y
+        self._state[12] = target_width
 
     def _highlight_width(self, item_pos):
         """Measure the compact highlight bar for one visible menu item."""

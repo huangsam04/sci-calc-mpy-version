@@ -576,6 +576,11 @@ class Display(object):
         self._write_cmd1(self.MASTER_CURRENT_CONTROL, current)
         self.brightness = percent
 
+    def set_transition_current(self, level):
+        """Set temporary hardware current without changing user brightness."""
+        level = max(0, min(15, int(level)))
+        self._write_cmd1(self.MASTER_CURRENT_CONTROL, level)
+
     def write_cmd(self, command, *args):
         """Write command to display.
 

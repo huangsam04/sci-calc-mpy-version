@@ -8,6 +8,7 @@ from ui.inputbox import InputBox, UPPER_CONTINUATION_CUE
 from ui.menu import Menu
 from ui.motion import (
     DAMAGE_FULL, DAMAGE_PARTIAL, DamageMap, FrameScheduler)
+from ui import menu as menu_module
 from ui import motion as motion_module
 
 
@@ -88,13 +89,31 @@ class HeldDownKeyboard:
         return self.hold_ms if (row, col) == (3, 1) else 0
 
 
-def test_menu_marker_snaps_to_the_selected_row():
+def test_menu_marker_eases_to_the_selected_row_without_waiting_for_feedback(
+        monkeypatch):
+    clock = [100]
+    monkeypatch.setattr(menu_module.time, "ticks_ms", lambda: clock[0])
+    monkeypatch.setattr(
+        menu_module.time, "ticks_diff", lambda newer, older: newer - older)
     menu = Menu(0, 0, 80, visible_rows=2, row_height=12)
     menu.add_item("A", object())
     menu.add_item("Long", object())
     menu.activate()
 
     menu.move_cursor_down()
+
+    assert menu.cursor.y == 4
+    assert menu.cursor.width == 36
+    assert menu.motion_active is True
+
+    clock[0] = 148
+    assert menu.advance_motion(clock[0]) is True
+    assert 4 < menu.cursor.y < 14
+
+    clock[0] = 196
+    assert menu.advance_motion(clock[0]) is True
+    assert menu.motion_active is False
+
     display = MenuDisplaySpy()
     menu.draw(display)
 
@@ -150,15 +169,20 @@ def test_menu_partial_draw_rebuilds_only_the_affected_rows():
 
     menu.draw_present_rows(display)
 
-    assert display.fills[0] == (1, 14, 208, 24, 0)
-    assert display.fills[1] == (2, 27, 12, 8, 14)
+    assert display.fills[0] == (1, 14, 208, 14, 0)
+    assert display.fills[1] == (2, 17, 12, 8, 14)
     assert display.text == [
-        (4, 15, "A", 15),
-        (4, 27, "B", 0),
+        (4, 15, "A", 0),
+        (4, 27, "B", 15),
     ]
 
 
-def test_main_menu_snaps_highlight_and_reports_one_fixed_two_row_band():
+def test_main_menu_advances_highlight_and_reports_one_fixed_two_row_band(
+        monkeypatch):
+    clock = [100]
+    monkeypatch.setattr(menu_module.time, "ticks_ms", lambda: clock[0])
+    monkeypatch.setattr(
+        menu_module.time, "ticks_diff", lambda newer, older: newer - older)
     screen = MainMenu()
     screen.add_screen("A", object())
     screen.add_screen("B", object())
@@ -167,10 +191,13 @@ def test_main_menu_snaps_highlight_and_reports_one_fixed_two_row_band():
 
     assert screen.update(None, (3, 1, False)) == "REDRAW"
     assert type(screen.menu) is Menu
-    assert screen.menu.cursor.y == 27
+    assert screen.menu.cursor.y == 17
     damage = DamageMap()
     assert screen.collect_present_damage(damage) == DAMAGE_PARTIAL
     assert damage.ranges == [[13, 26], [0, 0]]
+    clock[0] = 196
+    assert screen.advance_motion(clock[0]) is True
+    assert screen.menu.cursor.y == 27
     assert screen.update(None, (3, 1, False)) is None
     assert screen.menu.cursor_pos == 1
 
@@ -189,6 +216,45 @@ def test_menu_repeats_a_held_direction_key():
     menu.update(keyboard, None)
 
     assert menu.cursor_pos == 3
+
+
+def test_menu_motion_retargets_from_its_visible_position(monkeypatch):
+    clock = [100]
+    monkeypatch.setattr(menu_module.time, "ticks_ms", lambda: clock[0])
+    monkeypatch.setattr(
+        menu_module.time, "ticks_diff", lambda newer, older: newer - older)
+    menu = Menu(0, 0, 80, visible_rows=2, row_height=12)
+    menu.add_item("A", object())
+    menu.add_item("B", object())
+    menu.activate()
+
+    menu.move_cursor_down()
+    clock[0] = 148
+    menu.advance_motion(clock[0])
+    reversing_y = menu.cursor.y
+    menu.move_cursor_up()
+
+    assert menu.cursor.y == reversing_y - 2
+    clock[0] = 244
+    assert menu.advance_motion(clock[0]) is True
+    assert menu.cursor.y == 2
+    assert menu.motion_active is False
+
+
+def test_menu_motion_snaps_when_selection_scrolls_the_viewport(monkeypatch):
+    clock = [100]
+    monkeypatch.setattr(menu_module.time, "ticks_ms", lambda: clock[0])
+    menu = Menu(0, 0, 80, visible_rows=2, row_height=12)
+    for label in ("A", "B", "C"):
+        menu.add_item(label, object())
+    menu.cursor_pos = 1
+    menu.activate()
+
+    menu.move_cursor_down()
+
+    assert menu.view_offset == 1
+    assert menu.cursor.y == 14
+    assert menu.motion_active is False
 
 
 def test_input_editor_uses_packed_bytes_and_ascii_continuation():
@@ -314,7 +380,11 @@ def test_frame_scheduler_owns_immediate_idle_quiet_and_background_deadlines(
     assert scheduler.should_present(900) is True
 
 
-def test_failed_animation_paths_leave_zero_resident_animation_state():
+def test_menu_motion_reuses_exactly_four_scalar_state_slots():
+    menu = Menu()
+
+    assert len(menu._state[9:]) == 4
+    assert all(isinstance(value, int) for value in menu._state[9:])
     assert not any(name.startswith("_motion_") for name in Menu.__slots__)
     assert not hasattr(motion_module, "animations_enabled")
     assert not hasattr(motion_module, "note_animation_heap")

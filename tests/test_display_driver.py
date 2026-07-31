@@ -163,6 +163,23 @@ def test_brightness_and_addressing_use_fixed_command_helpers():
     ]
 
 
+def test_transition_current_uses_fixed_command_without_changing_user_setting():
+    display = Display.__new__(Display)
+    display.brightness = 80
+    calls = []
+    display._write_cmd1 = lambda command, value: calls.append(
+        (command, value))
+
+    display.set_transition_current(0)
+    display.set_transition_current(15)
+
+    assert calls == [
+        (display.MASTER_CURRENT_CONTROL, 0),
+        (display.MASTER_CURRENT_CONTROL, 15),
+    ]
+    assert display.brightness == 80
+
+
 def test_present_rows_merges_each_contiguous_full_width_range_into_one_write():
     display = Display.__new__(Display)
     display.width = 256

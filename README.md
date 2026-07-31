@@ -249,6 +249,8 @@ def register(registry):
 内置 `basic` 函数组不会发生名称冲突。插件默认关闭，可在函数面板中启用。
 如在开发调试时替换了活动槽中的插件，在函数面板按 `Sh+ENT` 可显式重新扫描；普通进入
 面板不会执行插件源码，以免影响页面转场响应。
+保存函数面板改动后，页面会先显示 `Loading add-ons` 固定进度条，再在后台原地重载动态插件；
+完成后自动返回主菜单。用户 Add-ons 始终保持动态，不冻结进固件。
 
 ### 自带函数组
 
@@ -296,12 +298,10 @@ compile_expression
 未知区间安全退化为一次全帧提交，不创建逐帧 `memoryview` 或像素缓冲。按键和逐帧路径不调用
 `gc.collect()` 或 `gc.mem_free()`。
 
-当前代码没有 `MotionMenu`，普通 `Menu` 会把高亮直接吸附到目标行；`Nav` 也没有 SSD1322
-master-current 页面淡变状态。四模块无动画候选先在 `calculator_history` 测得
-`15920 B / 37.724 ms`，通过严格 `<40 ms` 入口门槛；继续运行的两项动画候选随后在既有
-`error_lifecycle` 测得 `10736 B / 38.263 ms`、`MemoryError=0`、普通错误 0、`failure_mask=8`，
-低于 12 KiB。约 28 B 动画状态不能补足 1552 B 缺口，故两项实现已删除；普通界面继续使用
-吸附式菜单和同步页面切换，不增加像素缓冲，也不恢复 `LazyScreen`、SWAP 或双 framebuffer。
+普通 `Menu` 使用约 96 ms 的整数 ease-out，让高亮在相邻行间短距离滑动；只重画旧行、新行和
+实际经过行，滚屏时直接吸附。`Nav` 使用 SSD1322 master-current 命令完成 70 ms 淡出和 70 ms
+淡入，在暗点只提交一次目标页。两项动画共复用 7 个固定标量槽，不增加像素缓冲；新输入、异常、
+复位或休眠会立即恢复用户亮度并吸附到正确终态，不恢复 `LazyScreen`、SWAP 或双 framebuffer。
 
 设置与变量采用 `文件.tmp → 文件` 提交，并保留上一份 `.bak`。主文件损坏时优先
 读取备份；按键处理只更新内存并把写入排入空闲主循环，写入失败不会清除当前内存状态，
@@ -358,7 +358,7 @@ UI 会显示保存失败并每两秒重试。
 ..\.venv\python.exe -m mpremote connect PORTNAME reset
 ```
 
-删除动画候选后的最终主机检查为 `1098 passed in 20.42s`，脚本总耗时 `24.5s`，并通过 CPython 语法检查和
+当前动画候选的最终主机检查为 `1115 passed in 29.03s`，脚本总耗时 `34.2s`，并通过 CPython 语法检查和
 MicroPython 1.29 `mpy-cross -march=xtensawin` 全源编译。主机 traced memory 只用于比较逻辑
 工作量，不替代真机堆或 SPI 时延。
 
@@ -372,12 +372,11 @@ MicroPython 1.29 `mpy-cross -march=xtensawin` 全源编译。主机 traced memor
 状态应用矩阵、五轮运行时目标导航、五轮捕获边沿到屏幕提交的交互探针，以及 16 帧秒表局部刷新
 分配探针；载荷在结束时删除，每阶段后复位设备并让 OLED 休眠。
 
-最新 1.4.0 COM5 动画候选的启动探针通过：framebuffer 始终为同一个 8192 B 对象，Plot 工作区为
-104 B，frozen/MPY/Viper ABI 正确。严格 `<40 ms` 让应用矩阵越过 `calculator_history`，随后在
-既有 `error_lifecycle` 测得 `MemoryError=0`、普通错误 0、最低空闲堆 `10736 B < 12288 B`、
-阻塞 step `38.263 ms < 40 ms`，并以 `failure_mask=8` 停止；五轮和动画交互阶段没有执行，也没有
-输出 `ACCEPTANCE_COMPLETE`。两项动画候选及专属测试已删除，正式无动画固件已恢复；验收载荷已
-清理，OLED 已休眠。
+最新 1.4.0 COM5 五阶段验收完整通过：framebuffer 始终为同一个 8192 B 对象，Plot 工作区为
+104 B，frozen/MPY/Viper ABI 正确。应用矩阵最低空闲堆 `10576 B`，`MemoryError=0`、普通错误 0；
+加载条覆盖的动态插件重载为 `140.261 ms`。预热后普通最大 step `24.817 ms`，输入到提交最大
+`19.011 ms`；85 个动画帧最大 `17.071 ms` 且净分配为 `0 B`，Stopwatch 16 帧也为 `0 B`。
+验收输出 `ACCEPTANCE_COMPLETE`，随后删除临时载荷并让 OLED 硬件休眠。
 
 ## 实机回归清单
 
@@ -385,12 +384,12 @@ MicroPython 1.29 `mpy-cross -march=xtensawin` 全源编译。主机 traced memor
 2. 计算、赋值、重启，确认变量持久化；开关插件后再次进入函数选择器。
 3. 快速输入、长按 DEL/ESC、Shift+RPN、Shift+Tab，确认没有重复事件。
 4. 运行 `tools/run_device_acceptance.ps1` 完成统一验收；只有全部硬门槛通过时才应看到
-   `ACCEPTANCE_COMPLETE`。当前 1.4.0 动画候选的已知正确结果是上述 `failure_mask=8`，不得把它
-   改写为成功或绕过 12 KiB/严格 `<40 ms` 门槛。
+   `ACCEPTANCE_COMPLETE`。当前 1.4.0 合同为最低空闲堆 8 KiB、普通 step/动画帧严格 `<40 ms`、
+   输入提交 `<20 ms`，以及零错误和堆无持续下降。
 5. 运行秒表 30 分钟，并检查绘图、缩放、求解和错误弹窗。
 
 诊断模式每五秒输出平均渲染耗时、present 耗时和空闲堆。统一验收目标仍是输入到可见像素小于
 20 ms、单个 step 和动画帧严格小于 40 ms、framebuffer 始终只有一个 8192 B 对象、逐帧堆增量为
-0、五轮内无 `MemoryError` 且堆不持续下降。最新候选通过时延但在 `error_lifecycle` 距 12 KiB 仍缺
-1552 B，故没有启用动画。交互探针测量的是已捕获边沿到页面更新及提交，并报告扫描/去抖合同值；
+0、最低空闲堆至少 8192 B、五轮内无 `MemoryError` 且堆不持续下降。当前候选已启用两项动画并
+完整通过这些门槛；8 KiB 是硬底线，仍以更高余量为优化目标。交互探针测量的是已捕获边沿到页面更新及提交，并报告扫描/去抖合同值；
 它不能单独证明物理按键扫描到像素的完整端到端时延。

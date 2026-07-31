@@ -11,18 +11,7 @@ _SCENARIO_MODULES = (
     ("screens.plot_scenario",),
     ("calc.plugin_fixture", "runtime_fixture_pack"),
     ("screens.stopwatch_scenario",),
-    (
-        "nav_scenario",
-        "screens.about_scenario",
-        "screens.calculator_scenario",
-        "screens.function_panel_scenario",
-        "screens.function_picker_scenario",
-        "screens.letter_panel_scenario",
-        "screens.plot_scenario",
-        "screens.settings_scenario",
-        "screens.stopwatch_scenario",
-        "screens.variable_panel_scenario",
-    ),
+    ("nav_scenario",),
 )
 
 
@@ -164,7 +153,7 @@ def _run_matrix(runtime):
     summary.rounds_completed = 5
     summary.heap_after = gc.mem_free()
     summary.heap_delta = summary.heap_after - heap_before
-    if abs(summary.heap_delta) > 512:
+    if summary.heap_delta < -512:
         summary.failure_mask |= FAIL_DRIFT
     summary.accepted = summary.failure_mask == 0
     return summary

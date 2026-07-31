@@ -10,10 +10,9 @@ def _resident_runtime():
 
 
 def _run_navigation(runtime):
-    from benchmarks import navigation_scenario
-    from runtime_acceptance import run
+    from benchmarks import run as run_navigation
 
-    return run(runtime, navigation_scenario(runtime, TOTAL_ROUNDS))
+    return run_navigation(runtime=runtime, cycles=TOTAL_ROUNDS, emit=None)
 
 
 def run(runtime=None, emit=print):

@@ -43,6 +43,13 @@ class MainMenu(UIElement):
     def draw_present_rows(self, display):
         self.menu.draw_present_rows(display)
 
+    @property
+    def motion_active(self):
+        return self.menu.motion_active
+
+    def advance_motion(self, now):
+        return self.menu.advance_motion(now)
+
     def activate(self):
         # Selection is persistent navigation state. Returning from a page must
         # restore the item the user entered instead of jumping to the top.

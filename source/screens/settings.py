@@ -175,6 +175,13 @@ class SettingsScreen(UIElement):
         self._state[5].draw_present_rows(display)
         self._draw_footer(display)
 
+    @property
+    def motion_active(self):
+        return self._state[5].motion_active
+
+    def advance_motion(self, now):
+        return self._state[5].advance_motion(now)
+
     def draw(self, display):
         draw_header_fast(display, "Settings", b"", None)
         self._state[5].draw(display)

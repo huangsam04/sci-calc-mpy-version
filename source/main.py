@@ -18,7 +18,7 @@ SPI_DATA = 23
 SPI_CS = 5
 SPI_DC = 16
 SPI_RESET = 17
-INPUT_BATCH_LIMIT = 5
+INPUT_BATCH_LIMIT = 3
 BACKGROUND_IDLE_MS = 750
 SIDEBAR_REFRESH_MS = 5000
 
@@ -95,7 +95,7 @@ def _needs_render(now, last_render, dirty, stopwatch_running, input_changed):
 
 
 def _drain_input_batch(nav, keyboard, handler):
-    """Dispatch at most five queued edges before the next display write."""
+    """Dispatch at most three queued edges before the next display write."""
     count = 0
     while count < INPUT_BATCH_LIMIT:
         event = nav.poll_event(keyboard)
@@ -440,6 +440,7 @@ PAGE_ABOUT = 6
 PAGE_LETTERS = 7
 PAGE_FUNCTION_PICKER = 8
 PAGE_VARIABLE_PANEL = 9
+PAGE_FADE_MS = 70
 
 class Nav:
     """Exclusive owner for root, active pages, and rebuildable resources."""
@@ -448,7 +449,7 @@ class Nav:
         "memory", "renderer", "stack", "_page_ids", "_page_builder",
         "_page_context", "_page_state", "_pending_screen", "_pending_id",
         "_input_locked",
-        "_collect_pending", "last_present_us", "_active_screen")
+        "_collect_pending", "last_present_us", "_active_screen", "_motion")
 
     def __init__(self, display, font_small, registry, memory=None,
                  page_builder=None):
@@ -469,6 +470,7 @@ class Nav:
         self._collect_pending = False
         self.last_present_us = 0
         self._active_screen = None
+        self._motion = [0, 0, 0]
 
     @property
     def current(self):
@@ -611,7 +613,6 @@ class Nav:
         page_id = self.current_page_id
         self._go_back(trigger_event)
         self._page_ids.pop()
-        self.renderer.invalidate()
         self._retire_page(page_id, old)
         return self.current
 
@@ -727,6 +728,8 @@ class Nav:
             screen.deactivate()
 
     def _go_to(self, screen, trigger_event=None):
+        if self.motion_active:
+            self.finish_motion()
         if screen is self.current:
             self._ensure_current_active()
             return
@@ -752,11 +755,14 @@ class Nav:
             self.stack.pop()
             self._restore_active_screen(old, primary_error)
             raise
+        self._start_motion(trigger_event)
 
     def go_to(self, screen, trigger_event=None):
         self._go_to(screen, trigger_event)
 
     def _go_back(self, trigger_event=None):
+        if self.motion_active:
+            self.finish_motion()
         if len(self.stack) <= 1:
             self._ensure_current_active()
             return
@@ -798,6 +804,7 @@ class Nav:
                 raise parent_restore_error
             self._restore_active_screen(old, primary_error)
             raise
+        self._start_motion(trigger_event)
 
     def go_back(self, trigger_event=None):
         self._go_back(trigger_event)
@@ -807,9 +814,101 @@ class Nav:
             if keyboard.any_pressed():
                 return None
             self._input_locked = False
-        return keyboard.pop_key_event()
+        event = keyboard.pop_key_event()
+        if event is not None and self.motion_active:
+            self.finish_motion()
+        return event
+
+    @property
+    def motion_active(self):
+        return bool(self._motion[0])
+
+    def _normal_current(self):
+        percent = getattr(self.renderer.display, "brightness", 100)
+        percent = max(10, min(100, int(percent)))
+        return max(1, min(15, (percent * 15 + 50) // 100))
+
+    def _start_motion(self, trigger_event):
+        display = self.renderer.display
+        if (trigger_event is None
+                or getattr(display, "set_transition_current", None) is None):
+            return
+        cache_screen = getattr(
+            type(self.renderer), "_cache_screen_hooks", None)
+        if cache_screen is not None:
+            cache_screen(self.renderer, self.current)
+        motion = self._motion
+        motion[0] = 1
+        motion[1] = time.ticks_ms()
+        motion[2] = self._normal_current()
+
+    def cancel_motion(self):
+        """Restore current without committing pixels, for sleep and recovery."""
+        motion = self._motion
+        if not motion[0]:
+            return False
+        normal_current = motion[2]
+        motion[0] = 0
+        self.renderer.display.set_transition_current(normal_current)
+        return True
+
+    def finish_motion(self):
+        """Snap an interrupted transition to its correct visible target."""
+        motion = self._motion
+        phase = motion[0]
+        if not phase:
+            return False
+        normal_current = motion[2]
+        motion[0] = 0
+        try:
+            if phase == 1:
+                presented = self.renderer.present(self.current)
+                self.last_present_us = self.renderer.last_present_us
+            else:
+                presented = False
+        finally:
+            self.renderer.display.set_transition_current(normal_current)
+        return presented or True
 
     def present_current(self, now=None):
+        motion = self._motion
+        phase = motion[0]
+        if phase:
+            if now is None:
+                now = time.ticks_ms()
+            elapsed = time.ticks_diff(now, motion[1])
+            if elapsed < 0:
+                elapsed = 0
+            normal_current = motion[2]
+            display = self.renderer.display
+            if phase == 1:
+                if elapsed < PAGE_FADE_MS:
+                    level = normal_current * (PAGE_FADE_MS - elapsed) // PAGE_FADE_MS
+                    level = min(normal_current - 1, level)
+                    display.set_transition_current(max(0, level))
+                    self.last_present_us = 0
+                    return True
+                display.set_transition_current(0)
+                try:
+                    self.renderer.present(self.current)
+                    self.last_present_us = self.renderer.last_present_us
+                except BaseException:
+                    motion[0] = 0
+                    display.set_transition_current(normal_current)
+                    raise
+                motion[0] = 2
+                motion[1] = now
+                display.set_transition_current(1)
+                return True
+            if elapsed >= PAGE_FADE_MS:
+                display.set_transition_current(normal_current)
+                motion[0] = 0
+                self.last_present_us = 0
+                return True
+            level = normal_current * elapsed // PAGE_FADE_MS
+            display.set_transition_current(max(1, min(normal_current, level)))
+            self.last_present_us = 0
+            return True
         presented = self.renderer.present(self.current)
         self.last_present_us = self.renderer.last_present_us
         return presented
@@ -834,6 +933,7 @@ class Nav:
         # Recovery must quiesce the live navigation path before it invalidates
         # its derived state.  This fixed sequence leaves no page holding a
         # stale cache or input focus when root becomes visible again.
+        self.cancel_motion()
         self._deactivate_stack()
         self.renderer.invalidate()
         while len(self.stack) > 1:
@@ -1089,7 +1189,7 @@ def main(run_loop=True, runtime_mode="resident", publish_runtime=True):
         elif result == "FUNC_PANEL_DONE":
             _function_scan_pending = False
             cur.set_plugin_scan_active(False)
-            nav.defer_back(event)
+            cur.set_plugin_reload_active(True)
             _function_reload_pending = True
         elif result == "FUNC_PANEL_RESCAN":
             # Actual bounded directory enumeration begins only in quiet work.
@@ -1128,6 +1228,7 @@ def main(run_loop=True, runtime_mode="resident", publish_runtime=True):
             now = time.ticks_ms()
             power_state = power.update(now, kb.any_pressed())
             if power_state != AWAKE:
+                nav.cancel_motion()
                 kb.discard_pending_events()
                 if power_state == WOKE:
                     scheduler.force_render(now)
@@ -1158,8 +1259,17 @@ def main(run_loop=True, runtime_mode="resident", publish_runtime=True):
                 scheduler.request_render()
 
             cur = nav.current
+            page_motion_active = bool(
+                getattr(cur, "motion_active", False))
+            if page_motion_active:
+                advance_motion = getattr(type(cur), "advance_motion", None)
+                if (advance_motion is not None
+                        and advance_motion(cur, now)):
+                    scheduler.request_render()
+            motion_active = nav.motion_active or page_motion_active
             quiet = (batch_count == 0
                      and not hold_changed
+                     and not motion_active
                      and not kb.has_pending_events()
                      and not kb.any_pressed())
             if (scheduler.sidebar_poll_due(now, quiet)
@@ -1167,8 +1277,10 @@ def main(run_loop=True, runtime_mode="resident", publish_runtime=True):
                 scheduler.request_render()
             stopwatch_running = (
                 nav.current_page_id == PAGE_STOPWATCH and cur._clock[1])
-            continuous = stopwatch_running
+            continuous = stopwatch_running or motion_active
             continuous_frame_ms = (
+                14 if nav.motion_active else
+                16 if page_motion_active else
                 50 if stopwatch_running else 0)
             needs_render = scheduler.should_present(
                 now, continuous, input_changed, continuous_frame_ms)
@@ -1243,7 +1355,8 @@ def main(run_loop=True, runtime_mode="resident", publish_runtime=True):
                     func_panel.set_plugin_catalog(
                         registry.plugin_dependencies)
                     func_panel.set_load_errors(registry.plugin_errors)
-                    nav.release_pending(PAGE_FUNCTION_PANEL)
+                    func_panel.set_plugin_reload_active(False)
+                    nav.back()
                     scheduler.request_render()
                 elif _function_scan_pending:
                     _function_scan_pending = False
@@ -1295,6 +1408,7 @@ def main(run_loop=True, runtime_mode="resident", publish_runtime=True):
             if diagnostics:
                 # Never stringify an exception while the heap is exhausted.
                 print("MEMORY_RECOVER")
+            nav.cancel_motion()
             try:
                 power.reset(time.ticks_ms())
             except Exception:
@@ -1306,6 +1420,14 @@ def main(run_loop=True, runtime_mode="resident", publish_runtime=True):
         except Exception as e:
             # Crash landing: reclaim optional rasters before allocating even
             # the small diagnostic screen, then wait for acknowledgement.
+            _function_reload_pending = False
+            _function_scan_pending = False
+            func_panel = nav.find_page(PAGE_FUNCTION_PANEL)
+            if func_panel is not None:
+                func_panel.set_plugin_scan_active(False)
+                func_panel.rollback_plugin_reload()
+                func_panel.set_plugin_reload_active(False)
+            nav.cancel_motion()
             try:
                 power.reset(time.ticks_ms())
             except Exception:
