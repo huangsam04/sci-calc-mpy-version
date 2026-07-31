@@ -1034,8 +1034,7 @@ def main(run_loop=True, runtime_mode="resident", publish_runtime=True):
     try:
         registry = _reload_functions(settings)
         registry.angle_mode = settings.get("angle_mode", 0)
-        _boot_progress(
-            display, 6, 8, "Loading screens...", "import screens.*")
+        _boot_progress(display, 6, 8, "Loading screens...")
     except MemoryError:
         raise
     except Exception as e:

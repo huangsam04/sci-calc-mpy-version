@@ -495,6 +495,13 @@ def test_boot_progress_shows_the_actual_operation(monkeypatch):
     assert delays == []
 
 
+def test_screen_import_detail_is_not_shown_during_boot():
+    main_source = (SOURCE / "main.py").read_text(encoding="utf-8")
+
+    assert '_boot_progress(display, 6, 8, "Loading screens...")' in main_source
+    assert '"import screens.*"' not in main_source
+
+
 def test_accepted_input_bypasses_idle_render_throttle(monkeypatch):
     monkeypatch.setattr(main.time, "ticks_diff", lambda newer, older: newer - older)
 

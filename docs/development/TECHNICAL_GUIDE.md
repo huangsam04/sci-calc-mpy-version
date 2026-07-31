@@ -1,6 +1,6 @@
 # SCI-CALC MicroPython 技术说明
 
-本文是 `mp_version` 1.4.0 的实现说明和维护入口。它以源码当前行为为准，使用伪代码解释
+本文是 `mp_version` 1.5.0 的实现说明和维护入口。它以源码当前行为为准，使用伪代码解释
 从 ESP32 上电到应用、输入、计算、显示、持久化、部署与诊断的完整逻辑。设备使用仓库
 MicroPython 1.29.0-preview 的自定义 frozen 固件；动态 Add-ons 和用户数据仍留在 SD 卡。
 
@@ -766,14 +766,14 @@ CPython `compileall`、对所有源码使用 `-march=xtensawin` 编译 `.mpy`。
 4. 验收侧缓存同一 application matrix 内不变的 framebuffer 身份快照；该缓存不进入普通 release。
    没有增加像素缓冲、通用动画层、`LazyScreen`、SWAP 或第二 framebuffer。
 
-当前动画候选的最终 `check.ps1` 为 `1115 passed in 29.03s`，脚本总耗时 `34.2s`；CPython compileall 和
+1.5.0 的最终 `check.ps1` 为 `1116 passed in 18.22s`；CPython compileall 和
 MicroPython 1.29 全源 mpy-cross 均通过。
 
-### 10.2 COM5 严格门禁（1.4.0）
+### 10.2 COM5 严格门禁（1.5.0）
 
-当前 MPY release 为 `c5894ef16861a51e0c4383985eab17482906f7b02c187d711edb4e91ac09e3f1`，
-manifest SHA-256 为 `3066a43a9eea7adcf3e53ea4837131337cc4af6e1e9cf221555692c5e86c47da`。
-正式 frozen 镜像为 `1823232 B`，SHA-256 为 `993b0a1778d140cd7ac529e1f62df6a3850912536871ef18b04b45c7afa1a6e5`；增量构建用时 `26.120 s`，只写 factory 分区并校验用时 `24.395 s`。统一入口仍为：
+当前 MPY release 为 `b1a647e7f7453f7e45512838bd833479324f52e63a30e232a5a50f69a58c557d`，
+manifest SHA-256 为 `9c29a337ab462bcc8fc006cbd2069b746beab5879438714edf72d31094430f26`。
+正式 frozen 镜像为 `1823232 B`，SHA-256 为 `a3b20dacd08d7902e84daeb0d2bfcb9af53678c84053281eecaa4d88d25220a5`；增量构建用时 `26.023 s`，只写 factory 分区 `0x10000` 并校验用时 `24.438 s`。同一已验证镜像及摘要保存在 `.work/releases/v1.5.0/`，供 GitHub Release 直接上传。统一入口仍为：
 
 ```powershell
 .\tools\run_device_acceptance.ps1 -Port PORTNAME
@@ -785,9 +785,9 @@ manifest SHA-256 为 `3066a43a9eea7adcf3e53ea4837131337cc4af6e1e9cf221555692c5e8
 | --- | --- |
 | 启动与固定缓冲 | resident/root ready；同一个 framebuffer 8192 B；Plot 工作区 104 B；MPY/Viper ABI 通过 |
 | 模块来源 | `main=/sd/.slots/B/main.mpy`；`performance`、`runtime_handle`、`version` 为 frozen；`approot` 在根页阶段尚未加载 |
-| 应用矩阵 | 35 场景/五轮；最低空闲堆 10576 B；漂移 +1536 B；`MemoryError=0`、普通错误 0；加载条覆盖的插件重载 140.261 ms |
-| 页面 tracer | 预热后五轮；最低空闲堆 55392 B；漂移 -80 B；普通最大 step 24.817 ms |
-| 交互与动画 | 完整输入 `12345`；输入提交最大 19.011 ms；85 个动画帧最大 17.071 ms；三相净分配均 0 B |
+| 应用矩阵 | 35 场景/五轮；最低空闲堆 10080 B；漂移 +1504 B；`MemoryError=0`、普通错误 0；加载条覆盖的插件重载 141.063 ms |
+| 页面 tracer | 预热后五轮；最低空闲堆 55632 B；漂移 -80 B；普通最大 step 23.554 ms |
+| 交互与动画 | 完整输入 `12345`；输入提交最大 19.012 ms；85 个动画帧最大 17.058 ms；三相净分配均 0 B；交互阶段堆漂移 -16 B |
 | 固定帧 | Stopwatch 16 帧全部提交，净分配 0 B |
 | 结果 | `ACCEPTANCE_COMPLETE`；最低堆高于 8 KiB，普通 step/动画帧严格 `<40 ms`，输入严格 `<20 ms` |
 | 收尾 | 临时 support/stage 载荷已删除；SSD1322 已发送硬件休眠命令 |
@@ -816,8 +816,8 @@ Stopwatch 压缩无法影响更早的 `calculator_history` 门禁，按 YAGNI �
 
 菜单 ease-out 和页面硬件亮度淡出/淡入合计只使用 7 个标量槽（约 28 B）和 0 B 新像素缓冲。
 Calculator 首次呈现缓存会在页面激活期建立，Renderer 在动画启动前解析目标页 hooks；返回根页不再
-把未变化 Sidebar 无效标脏，因此暗点提交没有净堆分配。COM5 最终 `heap_min=10576 B`，高于
-8192 B 硬底线 2384 B；85 个动画帧和 16 个 Stopwatch 帧的净分配均为 0 B。8 KiB 是启用底线，
+把未变化 Sidebar 无效标脏，因此暗点提交没有净堆分配。1.5.0 COM5 最终 `heap_min=10080 B`，高于
+8192 B 硬底线 1888 B；85 个动画帧和 16 个 Stopwatch 帧的净分配均为 0 B。8 KiB 是启用底线，
 12 KiB 仍是优化目标；不得为追求余量删除已经满足错误、漂移和时延门槛的动画。
 
 ## 11. 验证范围与维护准则

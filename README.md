@@ -2,11 +2,11 @@
 
 SCI-CALC 的 MicroPython 固件，目标硬件为 ESP32-WROOM-32E、SSD1322 256×64 灰阶 OLED、5×6 矩阵键盘和 FAT32 SD 卡。
 
-当前应用版本为 **1.4.0**。源码和设备固件均由本仓库 `micropython/` 中的
+当前应用版本为 **1.5.0**。源码和设备固件均由本仓库 `micropython/` 中的
 **MicroPython 1.29.0-preview** 构建；SCI-CALC 只增加 frozen manifest/board 配置，不修改
 MicroPython 核心。
 
-只想日常使用计算器时，请先看 [简明使用说明](USER_GUIDE.md)。本文保留部署、插件和维护细节。
+只想日常使用计算器时，请先看 [简明使用说明](docs/USER_GUIDE.md)。本文保留部署、插件和维护细节。
 
 ## 目录与启动方式
 
@@ -39,13 +39,29 @@ MicroPython 按 `_boot.py → /boot.py → /main.py` 启动。无 SD 卡、挂�
 
 ## 刷入解释器
 
-参考 [官方文档[(https://micropython.org/download/ESP32_GENERIC/) 。
+参考 [官方文档](https://micropython.org/download/ESP32_GENERIC/) 。
 
 欲确认 `PORTNAME（COM几）`；运行以下命令确认设备：
 
 ```powershell
 ..\.venv\python.exe -m mpremote devs
 ```
+
+### 安装 Release 预编译固件
+
+GitHub Release 附件 `sci-calc-v1.5.0-esp32-factory.bin` 是已经冻结稳定核心模块的 ESP32 factory
+应用镜像。它只能写入 factory 应用分区 `0x10000`，不要把它写到 `0x0`，也不要擦除整片 Flash：
+
+```powershell
+python -m esptool --chip esp32 --port PORTNAME --baud 921600 `
+  --before default_reset --after hard_reset write_flash `
+  0x10000 .\sci-calc-v1.5.0-esp32-factory.bin
+```
+
+该镜像不会覆盖 SD 卡上的 Add-ons、`settings.json`、`vars.json` 或未知用户文件。现有 SCI-CALC
+设备刷入后仍保留原 SD 应用；安装同一 Release 的 1.5.0 动态应用时，在 Release 源码目录继续运行
+下节的快速 MPY 部署命令。首次安装的空白 SD 卡使用该命令的 `--transactional` 选项。
+本仓库验证后的附件位于 `.work/releases/v1.5.0/`，同目录 `.sha256` 文件用于下载后校验。
 
 ## 正式部署应用
 
@@ -350,7 +366,9 @@ UI 会显示保存失败并每两秒重试。
 它不包含解释器上电、物理按键扫描或正常事件分派的时间：
 
 完整的方案、实机数据、代码审查收口与复现步骤见
-[技术说明](TECHNICAL_GUIDE.md)。
+[技术说明](docs/development/TECHNICAL_GUIDE.md)。开发与发布工作以
+[执行树](docs/development/PLAN.md) 和
+[权限边界](docs/development/PERMISSIONS.md) 为准。
 
 ```powershell
 ..\.venv\python.exe -m mpremote connect PORTNAME exec `
@@ -358,7 +376,7 @@ UI 会显示保存失败并每两秒重试。
 ..\.venv\python.exe -m mpremote connect PORTNAME reset
 ```
 
-当前动画候选的最终主机检查为 `1115 passed in 29.03s`，脚本总耗时 `34.2s`，并通过 CPython 语法检查和
+1.5.0 的最终主机检查为 `1116 passed in 18.22s`，并通过 CPython 语法检查和
 MicroPython 1.29 `mpy-cross -march=xtensawin` 全源编译。主机 traced memory 只用于比较逻辑
 工作量，不替代真机堆或 SPI 时延。
 
@@ -372,10 +390,10 @@ MicroPython 1.29 `mpy-cross -march=xtensawin` 全源编译。主机 traced memor
 状态应用矩阵、五轮运行时目标导航、五轮捕获边沿到屏幕提交的交互探针，以及 16 帧秒表局部刷新
 分配探针；载荷在结束时删除，每阶段后复位设备并让 OLED 休眠。
 
-最新 1.4.0 COM5 五阶段验收完整通过：framebuffer 始终为同一个 8192 B 对象，Plot 工作区为
-104 B，frozen/MPY/Viper ABI 正确。应用矩阵最低空闲堆 `10576 B`，`MemoryError=0`、普通错误 0；
-加载条覆盖的动态插件重载为 `140.261 ms`。预热后普通最大 step `24.817 ms`，输入到提交最大
-`19.011 ms`；85 个动画帧最大 `17.071 ms` 且净分配为 `0 B`，Stopwatch 16 帧也为 `0 B`。
+最新 1.5.0 COM5 五阶段验收完整通过：framebuffer 始终为同一个 8192 B 对象，Plot 工作区为
+104 B，frozen/MPY/Viper ABI 正确。应用矩阵最低空闲堆 `10080 B`，`MemoryError=0`、普通错误 0；
+加载条覆盖的动态插件重载为 `141.063 ms`。预热后普通最大 step `23.554 ms`，输入到提交最大
+`19.012 ms`；85 个动画帧最大 `17.058 ms` 且净分配为 `0 B`，Stopwatch 16 帧也为 `0 B`。
 验收输出 `ACCEPTANCE_COMPLETE`，随后删除临时载荷并让 OLED 硬件休眠。
 
 ## 实机回归清单
@@ -384,7 +402,7 @@ MicroPython 1.29 `mpy-cross -march=xtensawin` 全源编译。主机 traced memor
 2. 计算、赋值、重启，确认变量持久化；开关插件后再次进入函数选择器。
 3. 快速输入、长按 DEL/ESC、Shift+RPN、Shift+Tab，确认没有重复事件。
 4. 运行 `tools/run_device_acceptance.ps1` 完成统一验收；只有全部硬门槛通过时才应看到
-   `ACCEPTANCE_COMPLETE`。当前 1.4.0 合同为最低空闲堆 8 KiB、普通 step/动画帧严格 `<40 ms`、
+   `ACCEPTANCE_COMPLETE`。当前 1.5.0 合同为最低空闲堆 8 KiB、普通 step/动画帧严格 `<40 ms`、
    输入提交 `<20 ms`，以及零错误和堆无持续下降。
 5. 运行秒表 30 分钟，并检查绘图、缩放、求解和错误弹窗。
 

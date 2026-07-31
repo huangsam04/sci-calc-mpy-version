@@ -49,6 +49,13 @@
 
 完成后回到 [PLAN](../PLAN.md) 勾选“最终验证与说明”。
 
+## v1.5.0 文档与发布
+
+- [x] 文档已归入 `docs/`，根目录只保留 `README.md` 作为入口，权限文件改名为 `PERMISSIONS.md`，11 份文档的本地链接检查通过。
+- [x] `Loading screens...` 不再绘制 `import screens.*` 详情行；版本聚焦回归通过，完整 `check.ps1` 为 `1116 passed in 18.22s`，CPython 与 MicroPython 1.29 检查通过。
+- [x] 新 frozen 固件仅写入 COM5 factory 应用分区 `0x10000`，快速 MPY 增量部署及统一验收通过：`heap_min=10080 B`、普通最大 step `23.554 ms`、输入 `19.012 ms`、动画最大 `17.058 ms`、逐帧分配 `0 B`、错误 0；临时载荷已删除，用户数据未受影响，收尾 OLED 休眠。
+- [x] `.work/releases/v1.5.0/` 中保留 `1823232 B` 可上传固件及 SHA-256 摘要；README/技术说明已写入实际结果，单人审查无未解决发现，本批完成本地 release commit 和 annotated tag `v1.5.0`，不 push。
+
 ## 8 KiB 动画优先续行
 
 - [x] 已把无动画发布基线 `7e4e807` 标记为本地 annotated tag `v1.4.0`，工作树在续行前干净，未 push。
