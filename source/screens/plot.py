@@ -619,7 +619,7 @@ class PlotScreen(UIElement):
         if phase == 3:
             # Keep the final sampling slice and the OLED transfer in separate
             # loop iterations. Either operation fits the input deadline on
-            # its own, while combining them can block for more than 32 ms.
+            # its own, while combining them can exceed the strict 40 ms budget.
             job.curve_buf = None
             job.first_error = None
             self._state[3][1] = None

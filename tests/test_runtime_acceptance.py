@@ -20,6 +20,7 @@ from runtime_acceptance import (
 
 def test_runtime_heap_gate_matches_the_animation_contract():
     assert acceptance.MIN_HEAP_FREE_BYTES == 12 * 1024
+    assert acceptance.MAX_BLOCKING_STEP_US == 40_000
 
 
 class _Renderer:
@@ -291,11 +292,11 @@ def test_runner_observes_end_to_end_step_time_and_gc_stable_heap(
     assert report.accepted
 
 
-def test_runner_rejects_a_step_at_the_strict_32_ms_boundary(monkeypatch):
+def test_runner_rejects_a_step_at_the_strict_40_ms_boundary(monkeypatch):
     root = "root"
     nav = _InMemoryNav(root)
     runtime = RuntimeHandle(nav, root, (), mode="in_memory")
-    clock = iter((100, 32_100))
+    clock = iter((100, 40_100))
     heap = iter((16_000, 16_000, 16_000))
 
     monkeypatch.setattr(
@@ -370,7 +371,7 @@ def test_failing_enter_keeps_its_phase_start_and_recovers_root(monkeypatch):
 
     nav = FailingEnterNav(root)
     runtime = RuntimeHandle(nav, root, (target,), mode="in_memory")
-    clock = iter((100, 32_100, 32_150))
+    clock = iter((100, 40_100, 40_150))
     heap = iter((16_000, 16_000, 16_000))
     failures = []
 
@@ -416,7 +417,7 @@ def test_failing_present_is_recorded_once_in_its_enter_phase(monkeypatch):
 
     nav = FailingPresentNav(root)
     runtime = RuntimeHandle(nav, root, (target,), mode="in_memory")
-    clock = iter((100, 32_100))
+    clock = iter((100, 40_100))
     heap = iter((16_000, 16_000, 16_000))
     failures = []
 
@@ -462,7 +463,7 @@ def test_failing_settle_keeps_its_phase_start_and_recovers_root(monkeypatch):
 
     nav = FailingSettleNav(root)
     runtime = RuntimeHandle(nav, root, (target,), mode="in_memory")
-    clock = iter((0, 10, 100, 32_100, 32_150))
+    clock = iter((0, 10, 100, 40_100, 40_150))
     heap = iter((16_000, 16_000, 16_000, 16_000))
     failures = []
 
@@ -507,7 +508,7 @@ def test_failing_back_keeps_its_phase_start_and_recovers_root(monkeypatch):
 
     nav = FailingBackNav(root)
     runtime = RuntimeHandle(nav, root, (target,), mode="in_memory")
-    clock = iter((0, 10, 20, 30, 100, 32_100, 32_150))
+    clock = iter((0, 10, 20, 30, 100, 40_100, 40_150))
     heap = iter((16_000, 16_000, 16_000, 16_000, 16_000))
     failures = []
 
@@ -557,7 +558,7 @@ def test_failing_collect_keeps_its_phase_start_and_recovers_root(monkeypatch):
         20, 30,
         40, 50,
         60, 70,
-        100, 32_100, 32_150,
+        100, 40_100, 40_150,
     ))
     heap = iter((16_000,) * 7)
     failures = []

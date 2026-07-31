@@ -410,6 +410,7 @@ def test_interaction_scenario_contains_no_frames_for_removed_animations():
     source = (TOOLS / "device_interaction_acceptance.py").read_text(
         encoding="utf-8")
 
+    assert device_interaction_acceptance.MAX_BLOCKING_STEP_US == 40_000
     assert "menu_animation_frame" not in source
     assert "page_fade_frame" not in source
     assert "def _scenario(" not in source

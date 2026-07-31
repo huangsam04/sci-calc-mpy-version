@@ -194,9 +194,9 @@ Shift+`^` 为 `sqrt`，Shift+`RPN` 为 `rpn`，Shift+`Tab` 为 `stab`。页面�
 
 当前 `Menu` 没有运动槽，`_update_cursor_target()` 会把光标立即吸附到新行；源码中没有
 `MotionMenu` 或 quadratic ease-out 推进函数。`Nav` 也没有 `_fade_*` 状态或动画堆门禁。
-最新严格 COM5 应用矩阵在 `calculator_history` 测得 `heap_min=15920 B`、阻塞 step
-`37.724 ms`；内存达到 12 KiB，但时延未达到 32 ms 门槛，因此两项计划动效均未启用。
-按键和逐帧路径不调用 `gc.collect()` 或 `gc.mem_free()`。
+四模块无动画候选先在 `calculator_history` 测得 `15920 B / 37.724 ms`，通过严格 `<40 ms`
+入口门槛；两项动画候选继续到 `error_lifecycle` 后测得 `10736 B / 38.263 ms`，低于 12 KiB，
+故候选实现和专属测试已删除。按键和逐帧路径不调用 `gc.collect()` 或 `gc.mem_free()`。
 
 ### 4.2 `Nav` 栈、同步页面切换与输入恢复
 
@@ -628,8 +628,8 @@ set_brightness(percent):
 主要 UI 使用 FrameBuffer 的线、矩形和字体 blit。
 
 `sleep()`/`wake()` 仅发送 `AE`/`AF`。`write_cmd()` 对 0、1、2 参数复用固定 bytearray；
-`set_transition_current()` 也走同一 1 字节参数缓冲，可接受 0..15 而不修改用户亮度设置。
-`present_rows()` 复用启动时预建的热区视图。`MonoPalette` 用两个像素编码背景/前景灰度，供
+亮度设置通过同一 1 字节参数缓冲发送 master-current 命令。`present_rows()` 复用启动时预建的
+热区视图。`MonoPalette` 用两个像素编码背景/前景灰度，供
 `FrameBuffer.blit` 把单色字形和曲线映射到 GS4。
 
 ### 8.2 紧凑字体
@@ -766,7 +766,7 @@ CPython `compileall`、对所有源码使用 `-march=xtensawin` 编译 `.mpy`。
 4. 验收侧缓存同一 application matrix 内不变的 framebuffer 身份快照；该缓存不进入普通 release。
    没有增加像素缓冲、通用动画层、`LazyScreen`、SWAP 或第二 framebuffer。
 
-最终 `check.ps1` 为 `1098 passed in 25.87s`，脚本总耗时 `31.5s`；CPython compileall 和
+删除动画候选后的最终 `check.ps1` 为 `1098 passed in 20.42s`，脚本总耗时 `24.5s`；CPython compileall 和
 MicroPython 1.29 全源 mpy-cross 均通过。
 
 ### 10.2 COM5 严格门禁（1.4.0）
@@ -779,15 +779,15 @@ manifest SHA-256 为 `10ea9c1386ec661630690940a1bb30c9aee74195536a32c703b81183fe
 .\tools\run_device_acceptance.ps1 -Port PORTNAME
 ```
 
-最新严格运行在应用矩阵阶段正确拒绝候选，因此不能宣称完整五阶段通过：
+最新严格运行在应用矩阵阶段正确拒绝两项动画候选，因此不能宣称完整五阶段通过：
 
 | 检查 | 真机结果 |
 | --- | --- |
 | 启动与固定缓冲 | resident/root ready；同一个 framebuffer 8192 B；Plot 工作区 104 B；MPY/Viper ABI 通过 |
 | 模块来源 | `main=/sd/.slots/B/main.mpy`；`performance`、`runtime_handle`、`version` 为 frozen；`approot` 在根页阶段尚未加载 |
-| 应用矩阵 | 首轮完成 5 个场景；`MemoryError=0`、普通错误 0；最低空闲堆 15920 B；最大 step 37.724 ms；`failure_mask=20` |
-| 门禁位置 | `calculator_history`，phase 1，round 0 |
-| 结果 | `15920 B >= 12288 B`，但 `37.724 ms > 32 ms`；停止后续阶段，不输出 `ACCEPTANCE_COMPLETE` |
+| 应用矩阵 | 越过 `calculator_history` 后继续；`MemoryError=0`、普通错误 0；最低空闲堆 10736 B；最大 step 38.263 ms；`failure_mask=8` |
+| 门禁位置 | `error_lifecycle`，动画交互和完整五轮之前 |
+| 结果 | `38.263 ms < 40 ms`，但 `10736 B < 12288 B`；停止后续阶段，不输出 `ACCEPTANCE_COMPLETE` |
 | 收尾 | 临时 support/stage 载荷已删除；SSD1322 已发送硬件休眠命令 |
 
 交互数字若执行到该阶段，从已捕获边沿开始并包含页面更新和 OLED 提交；矩阵扫描与去抖合同必须
@@ -801,20 +801,22 @@ manifest SHA-256 为 `10ea9c1386ec661630690940a1bb30c9aee74195536a32c703b81183fe
 `error_lifecycle` 安静回收。
 
 自动 GC 阈值 `4096 B` 和 `20000 B` 都把最低堆提高到 `15200 B`，但最大 step 分别为
-`41.810 ms` 和 `40.875 ms`，超过 32 ms；两项实验均已删除。没有继续扩张到计算核心，也没有
+`41.810 ms` 和 `40.875 ms`，均未严格小于 40 ms；两项实验均已删除。没有继续扩张到计算核心，也没有
 为比较保留第二套实现。
 
 随后冻结 `performance`、`runtime_handle`、`version` 和 `approot`，把正式候选最低堆提高到
 `15920 B`；冻结同名 `main.py` 会抢在内部 supervisor 前执行，故该单项已删除并保留 slot
-`main.mpy`。Calculator flat 历史和直接 Pratt 求值候选都使 32 ms 时延更差，已连同专属测试删除；
+`main.mpy`。Calculator flat 历史和直接 Pratt 求值候选在 `error_lifecycle` 仍同时违反 12 KiB 和
+严格 `<40 ms` 门槛，已连同专属测试删除；
 Stopwatch 压缩无法影响更早的 `calculator_history` 门禁，按 YAGNI 未实现。
 
 ### 10.4 动效门禁
 
-菜单 ease-out 和页面硬件亮度淡出/淡入均未启用。12 KiB/32 ms 门槛没有降低，源码中没有动画
-状态、新增像素缓冲或逐帧 GC；新增动画状态和像素缓冲均为 `0 B`。若以后重新考虑动效，必须先在
-最大受支持用户状态和连续五轮操作下同时通过最低 12 KiB、最大 step 32 ms、`MemoryError=0` 和
-堆稳定门槛，再重新运行同一统一验收。
+菜单 ease-out 和页面硬件亮度淡出/淡入候选曾通过主机阶段，合计只使用 7 个标量槽（约 28 B）和
+0 B 新像素缓冲；COM5 扩展矩阵在进入动画阶段前以 `heap_min=10736 B` 失败，距 12 KiB 尚缺
+1552 B，因此两项候选及专属测试均已删除。正式源码中动画状态、新增像素缓冲和逐帧 GC 都为
+`0 B`。若以后重新考虑动效，必须先在最大受支持用户状态和连续五轮操作下同时通过最低 12 KiB、
+严格 `<40 ms` 最大 step/动画帧、`MemoryError=0` 和堆稳定门槛，再重新运行同一统一验收。
 
 ## 11. 验证范围与维护准则
 

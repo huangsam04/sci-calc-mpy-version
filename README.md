@@ -297,10 +297,11 @@ compile_expression
 `gc.collect()` 或 `gc.mem_free()`。
 
 当前代码没有 `MotionMenu`，普通 `Menu` 会把高亮直接吸附到目标行；`Nav` 也没有 SSD1322
-master-current 页面淡变状态。最新严格 COM5 应用矩阵在 `calculator_history` 测得最低空闲堆
-`15920 B`、阻塞 step `37.724 ms`；内存达到 12 KiB，但时延未达到 32 ms 门槛。因此两项动效均未启用；
-普通界面继续使用吸附式菜单和同步页面切换，不增加像素缓冲，也不恢复 `LazyScreen`、SWAP 或
-双 framebuffer。
+master-current 页面淡变状态。四模块无动画候选先在 `calculator_history` 测得
+`15920 B / 37.724 ms`，通过严格 `<40 ms` 入口门槛；继续运行的两项动画候选随后在既有
+`error_lifecycle` 测得 `10736 B / 38.263 ms`、`MemoryError=0`、普通错误 0、`failure_mask=8`，
+低于 12 KiB。约 28 B 动画状态不能补足 1552 B 缺口，故两项实现已删除；普通界面继续使用
+吸附式菜单和同步页面切换，不增加像素缓冲，也不恢复 `LazyScreen`、SWAP 或双 framebuffer。
 
 设置与变量采用 `文件.tmp → 文件` 提交，并保留上一份 `.bak`。主文件损坏时优先
 读取备份；按键处理只更新内存并把写入排入空闲主循环，写入失败不会清除当前内存状态，
@@ -357,7 +358,7 @@ UI 会显示保存失败并每两秒重试。
 ..\.venv\python.exe -m mpremote connect PORTNAME reset
 ```
 
-最终主机检查为 `1098 passed in 25.87s`，脚本总耗时 `31.5s`，并通过 CPython 语法检查和
+删除动画候选后的最终主机检查为 `1098 passed in 20.42s`，脚本总耗时 `24.5s`，并通过 CPython 语法检查和
 MicroPython 1.29 `mpy-cross -march=xtensawin` 全源编译。主机 traced memory 只用于比较逻辑
 工作量，不替代真机堆或 SPI 时延。
 
@@ -371,11 +372,12 @@ MicroPython 1.29 `mpy-cross -march=xtensawin` 全源编译。主机 traced memor
 状态应用矩阵、五轮运行时目标导航、五轮捕获边沿到屏幕提交的交互探针，以及 16 帧秒表局部刷新
 分配探针；载荷在结束时删除，每阶段后复位设备并让 OLED 休眠。
 
-最新 1.4.0 COM5 候选的启动探针通过：framebuffer 始终为同一个 8192 B 对象，Plot 工作区为
-104 B，frozen/MPY/Viper ABI 正确。应用矩阵在首轮 `calculator_history` 完成 5 个场景，
-`MemoryError=0`、普通错误 0，最低空闲堆为 `15920 B >= 12288 B`；但阻塞 step 为
-`37.724 ms > 32 ms`，因此统一入口按设计停止并报告 `failure_mask=20`，没有输出
-`ACCEPTANCE_COMPLETE`。两项动画保持未启用，验收载荷已清理，OLED 已休眠。
+最新 1.4.0 COM5 动画候选的启动探针通过：framebuffer 始终为同一个 8192 B 对象，Plot 工作区为
+104 B，frozen/MPY/Viper ABI 正确。严格 `<40 ms` 让应用矩阵越过 `calculator_history`，随后在
+既有 `error_lifecycle` 测得 `MemoryError=0`、普通错误 0、最低空闲堆 `10736 B < 12288 B`、
+阻塞 step `38.263 ms < 40 ms`，并以 `failure_mask=8` 停止；五轮和动画交互阶段没有执行，也没有
+输出 `ACCEPTANCE_COMPLETE`。两项动画候选及专属测试已删除，正式无动画固件已恢复；验收载荷已
+清理，OLED 已休眠。
 
 ## 实机回归清单
 
@@ -383,12 +385,12 @@ MicroPython 1.29 `mpy-cross -march=xtensawin` 全源编译。主机 traced memor
 2. 计算、赋值、重启，确认变量持久化；开关插件后再次进入函数选择器。
 3. 快速输入、长按 DEL/ESC、Shift+RPN、Shift+Tab，确认没有重复事件。
 4. 运行 `tools/run_device_acceptance.ps1` 完成统一验收；只有全部硬门槛通过时才应看到
-   `ACCEPTANCE_COMPLETE`。当前 1.4.0 候选的已知正确结果是上述 `failure_mask=20`，不得把它改写为
-   成功或绕过 12 KiB/32 ms 门槛。
+   `ACCEPTANCE_COMPLETE`。当前 1.4.0 动画候选的已知正确结果是上述 `failure_mask=8`，不得把它
+   改写为成功或绕过 12 KiB/严格 `<40 ms` 门槛。
 5. 运行秒表 30 分钟，并检查绘图、缩放、求解和错误弹窗。
 
 诊断模式每五秒输出平均渲染耗时、present 耗时和空闲堆。统一验收目标仍是输入到可见像素小于
-20 ms、单个 step 不超过 32 ms、framebuffer 始终只有一个 8192 B 对象、逐帧堆增量为 0、五轮内
-无 `MemoryError` 且堆不持续下降。12 KiB 内存门槛已经达到，但启用动效还必须同时满足 32 ms；当前
-仍存在 `calculator_history` 的 32 ms step 门禁失败。交互探针测量的是已捕获边沿到页面更新及提交，
-并报告扫描/去抖合同值；它不能单独证明物理按键扫描到像素的完整端到端时延。
+20 ms、单个 step 和动画帧严格小于 40 ms、framebuffer 始终只有一个 8192 B 对象、逐帧堆增量为
+0、五轮内无 `MemoryError` 且堆不持续下降。最新候选通过时延但在 `error_lifecycle` 距 12 KiB 仍缺
+1552 B，故没有启用动画。交互探针测量的是已捕获边沿到页面更新及提交，并报告扫描/去抖合同值；
+它不能单独证明物理按键扫描到像素的完整端到端时延。
