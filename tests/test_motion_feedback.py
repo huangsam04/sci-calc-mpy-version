@@ -444,6 +444,39 @@ def test_stopwatch_steady_frames_only_damage_the_timer_band_and_reuse_bytes(
     assert stopwatch.collect_present_damage(damage) == DAMAGE_FULL
 
 
+def test_stopwatch_lap_selection_uses_nonlinear_cursor_motion(monkeypatch):
+    clock = [100]
+    monkeypatch.setattr(stopwatch_module.time, "ticks_ms", lambda: clock[0])
+    monkeypatch.setattr(
+        stopwatch_module.time, "ticks_diff",
+        lambda newer, older: newer - older)
+    stopwatch = StopwatchScreen(FontStub())
+    stopwatch._clock[2][3] = [
+        (1, 1000), (2, 2000), (3, 3000), (4, 4000)]
+    stopwatch.activate()
+    stopwatch.mark_presented()
+
+    assert stopwatch.update(None, (3, 1, False)) == "REDRAW"
+    assert stopwatch.motion_active is True
+    display = StopwatchDisplaySpy()
+    stopwatch.draw(display)
+    first_y = [fill[1] for fill in display.fills if fill[2] == 206][-1]
+    assert 14 < first_y < 23
+
+    clock[0] = 148
+    assert stopwatch.advance_motion(clock[0]) is True
+    display = StopwatchDisplaySpy()
+    stopwatch.draw(display)
+    middle_y = [fill[1] for fill in display.fills if fill[2] == 206][-1]
+    assert first_y < middle_y < 23
+
+    clock[0] = 196
+    assert stopwatch.advance_motion(clock[0]) is True
+    assert stopwatch.motion_active is False
+    damage = DamageMap()
+    assert stopwatch.collect_present_damage(damage) == DAMAGE_FULL
+
+
 def test_stopwatch_fontless_steady_frames_use_fixed_segments_without_fmt(
         monkeypatch):
     clock = [0]

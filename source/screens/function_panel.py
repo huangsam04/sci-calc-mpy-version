@@ -4,6 +4,14 @@ from ui.motion import DAMAGE_FULL
 from ui import theme as _theme
 
 
+_BUILTIN_GROUP_DETAILS = {
+    "basic": "Basic (+ - * / ...)",
+    "trig": "Trig (sin cos tan)",
+    "math": "Science (sqrt ln exp)",
+    "list": "Lists (max min ...)",
+}
+
+
 def _update_plugin_dependencies(panel, name, is_on):
     plugin_name = name[7:]
     if not is_on:
@@ -385,7 +393,9 @@ class FunctionPanel:
             # Session toggle overrides saved settings
             is_on = self._is_enabled(group_name)
             prefix = "[x]" if is_on else "[ ]"
-            display_name = FUNCTION_GROUP_LABELS.get(group_name, group_name)
+            display_name = _BUILTIN_GROUP_DETAILS.get(
+                group_name,
+                FUNCTION_GROUP_LABELS.get(group_name, group_name))
             label = f"{prefix} {display_name}"
             menu._state[5][row] = (label, None)
             items[row] = (group_name, is_on, True)

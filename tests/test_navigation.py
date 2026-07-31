@@ -93,6 +93,23 @@ class KeyboardStub:
         return self.pressed
 
 
+class CalculatorDrawDisplay:
+    def draw_rectangle(self, *_args):
+        pass
+
+    def fill_rectangle(self, *_args):
+        pass
+
+    def draw_hline(self, *_args):
+        pass
+
+    def draw_vline(self, *_args):
+        pass
+
+    def draw_text8x8(self, *_args, **_kwargs):
+        pass
+
+
 class LifecycleMemory:
     def __init__(self, events):
         self.events = events
@@ -383,6 +400,31 @@ def test_nav_first_and_repeat_entry_covers_every_supported_page(monkeypatch):
     assert nav.find_page(PAGE_ABOUT) is None
     assert "screens.about" in sys.modules
     nav.back()
+
+
+def test_calculator_rpn_picker_back_can_draw_the_released_parent(monkeypatch):
+    class Persistence:
+        def request_settings(self, *_args):
+            pass
+
+        def detach_callbacks(self, _owner):
+            pass
+
+    nav = _nav(monkeypatch)
+    nav.configure_pages(
+        None, None, build_registry(), {},
+        {"display_digits": 4, "enabled_functions": ["basic"]},
+        Persistence(), "1.6.1")
+    nav.boot(MainMenu())
+    calculator = nav.open(PAGE_CALCULATOR)
+    calculator.input_box.set_str("12")
+
+    picker = nav.open(PAGE_FUNCTION_PICKER)
+    assert picker.update(None, (0, 0, False)) == "FUNC_PICKER_DONE"
+    assert nav.back() is calculator
+
+    calculator.draw(CalculatorDrawDisplay())
+    assert calculator.input_box.get_str() == "12"
 
 
 def test_navigation_uses_quadratic_forward_slide_and_commits_target_at_endpoint(

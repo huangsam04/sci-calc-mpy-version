@@ -92,3 +92,12 @@
 - [x] About 署名改到 `x=101, y=18`，与版本号左对齐且右边界为 `205 px`；不删减姓名或硬缩字体。
 - [x] 页面轨迹改为 210 ms 整数 quadratic ease-out；同一主机节拍模型得到 10 个偶数像素位置，继续复用 Nav 3 个标量、Display 3 个标量和单一 framebuffer。
 - [x] 聚焦回归及完整主机门禁为 `1127 passed in 19.29s`；COM5 交互五轮从原 56 增至 80 个动画帧，最大 `19979 us`、输入 `16630 us`、逐帧分配 0 B、错误 0、堆漂移 `-16 B`。应用矩阵 `heap_min=10544 B`、错误 0；载荷已删除并硬件休眠 OLED。
+
+## v1.6.1 Calculator 与自绘列表动效
+
+- [x] Calculator 历史默认可见区为四个 8 px 内容行：最新记录使用上行左对齐表达式、下行右对齐结果，结果可使用完整 202 px 文字宽度；其下两行分别显示两条紧凑 `expression = result`。两行长输入时安全收缩为展开项加一条旧项，不侵入 footer；20 条历史、滚动、召回和跨页面状态保持且无历史副本。
+- [x] 历史模式复用现有 InputBox 光标的同一组三个打包标量执行 96 ms 整数 ease-out；窗口变化吸附，窗口内相邻移动产生单调中间位置，不创建第二光标、对象列表或像素缓存。
+- [x] `InputBox` 光标在输入和左右移动时使用 96 ms 整数 ease-out，安静期每 500 ms 切换可见位；新输入从当前位置重定向，离页吸附终态。Calculator/InputBox/导航/缓存聚焦集 `42 passed`。
+- [x] Function Picker 保留 2×4 网格和 8 项分页；同页上下左右使用 96 ms 固定标量光标运动，跨页使用 160 ms 横向 ease-out。真实 SSD1322 路径复用 `begin_content_draw()` 的 210 px 平移/裁剪，0 B 页面副本或像素缓存。
+- [x] 已审计 Main Menu、Settings 和 Function Panel，三者继续复用已有 `Menu`；Calculator 历史、Variable Panel 与 Stopwatch 圈速均有 96 ms 光标运动，Letter Panel 是物理键位表而非选择列表。Stopwatch 复用既有固定表中的两个打包标量，活动路径约 48 B；最坏 Calculator + Picker 路径约 60 B，低于 64 B。
+- [x] 主机确定性时钟覆盖首帧、ease-out 中间位置、方向反转、闪烁、翻页、新输入中断和损伤范围；最终主机门禁 `1142 passed in 23.25s`。COM5 定向覆盖 Stopwatch 4 帧、最大 `19.872 ms`、分配 0 B；统一交互 80 帧最大 `17.959 ms`，固定 Stopwatch 16 帧分配 0 B，全部门槛通过。

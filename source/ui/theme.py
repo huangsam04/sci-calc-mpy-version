@@ -116,7 +116,24 @@ def draw_footer_cached(display, hint, hint_bytes, font=None, right="",
 
 def draw_footer_fast(display, hint, hint_bytes, font=None, right=""):
     """Draw a static footer hint without building a string framebuffer."""
-    if not font or not hint_bytes:
+    if not font:
+        # Built-in 8x8 callers can provide strings already fitted to the
+        # fixed 15-character hint and 9-character right regions.  Keep this
+        # path direct so animation frames do not allocate a truncated string.
+        if hint_bytes and len(hint) <= 15 and len(right) <= 9:
+            display.fill_rectangle(
+                0, FOOTER_Y, CONTENT_W, SCREEN_H - FOOTER_Y, 0)
+            display.draw_hline(0, FOOTER_Y, CONTENT_W, GS_LINE)
+            display.draw_text8x8(
+                TEXT_X, FOOTER_Y + 2, hint, gs=GS_MUTED)
+            if right:
+                x = max(130, CONTENT_W - len(right) * 8 - 2)
+                display.draw_text8x8(
+                    x, FOOTER_Y + 2, right, gs=GS_TEXT)
+            return
+        draw_footer(display, hint, font, right)
+        return
+    if not hint_bytes:
         draw_footer(display, hint, font, right)
         return
     display.fill_rectangle(0, FOOTER_Y, CONTENT_W, SCREEN_H - FOOTER_Y, 0)

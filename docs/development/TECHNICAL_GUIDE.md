@@ -1,6 +1,6 @@
 # SCI-CALC MicroPython 技术说明
 
-本文是 `mp_version` 1.6.0 的实现说明和维护入口。它以源码当前行为为准，使用伪代码解释
+本文是 `mp_version` 1.6.1 的实现说明和维护入口。它以源码当前行为为准，使用伪代码解释
 从 ESP32 上电到应用、输入、计算、显示、持久化、部署与诊断的完整逻辑。设备使用仓库
 MicroPython 1.29.0-preview 的自定义 frozen 固件；动态 Add-ons 和用户数据仍留在 SD 卡。
 
@@ -196,6 +196,10 @@ Shift+`^` 为 `sqrt`，Shift+`RPN` 为 `rpn`，Shift+`Tab` 为 `stab`。页面�
 输入首帧先移动 2 px，滚屏直接吸附，反向输入从当前像素重新定向。`Nav` 的三个固定标量保存
 页面方向、开始 ticks 和已呈现位移，按 210 ms 整数 quadratic ease-out 推进。没有 `MotionMenu`、
 通用插值框架、亮度淡变或像素合成动画；按键和逐帧路径不调用 `gc.collect()` 或 `gc.mem_free()`。
+`InputBox` 用三个打包标量完成 96 ms 光标/历史选择运动，并在 Calculator 安静期按 500 ms 相位
+闪烁；Function Picker、Variable Panel 与 Stopwatch 圈速的活动选择/翻页再复用两个打包标量。
+Stopwatch 活动路径约 48 B，最坏的 Calculator + Picker 路径包含 Menu、Nav 和 Display 后为
+15 个动画标量、约 60 B。
 
 ### 4.2 `Nav` 栈、同步页面切换与输入恢复
 
@@ -235,7 +239,7 @@ Renderer.present(screen):
 页面滑动只移动 `CONTENT_W=210` 的 GS4 字节，右侧 Sidebar 不动。`Display` 的 x 平移、左裁剪和
 右裁剪三个标量把目标页限制到新暴露条带；`Renderer.present_slide()` 每帧原地移动旧像素、绘制
 条带并使用既有全帧提交。全系统仍只有一个 8192 B framebuffer，新增像素缓冲为 0 B；Menu 4、
-Nav 3、Display 3 个动效标量合计约 40 B。
+Nav 3、Display 3、InputBox 3 和当前自绘列表 2 个动效标量合计约 60 B。
 
 侧栏每 5 s 才在安静调度槽检查刷新；输入导致 DEG/RAD 改变时只标记侧栏脏并复用缓存电池样本，
 ADC 读取不进入输入帧。电压文本和固定标签使用预分配字节缓冲或紧凑字体直绘。
@@ -495,6 +499,10 @@ Add-in 可在注册期使用 `registry.plugin(name)`，在回调运行期使用 
 函数关闭、求解不收敛等），显示表达式和源位置 `^`，任意按键或 10 秒到期后关闭。到期检查放在
 `draw()` 和相关 `update()` 中，因此即使没有新输入也会消失。
 
+`InputBox` 的现有 Cursor 还承担 Calculator 历史高亮；两者使用同一组三个打包标量做 96 ms
+quadratic ease-out。输入态光标每 500 ms 闪烁，历史态则保持可见；离页、窗口变化或新目标无法
+安全插值时直接吸附终态。
+
 ### 7.2 主菜单与计算器
 
 主菜单有 Calculator、Plot、Function Panel、Stopwatch、Settings 五项；返回根页面保留原选择。
@@ -508,7 +516,8 @@ Add-in 可在注册期使用 `registry.plugin(name)`，在回调运行期使用 
 `settings.display_digits`，只作用于渲染和从历史插入的表达式文本，不改变历史中保留的数值对象。
 
 计算页将高度优先留给编辑：顶部 `InputBox` 默认是 12 px 的单行表达式区，首行放不下时扩展为
-22 px 的双行区。单行时下面显示四条 9 px 高的历史记录；展开后显示三条，页脚始终保留状态和长度
+22 px 的双行区。最新历史使用 18 px：表达式在上行左对齐，结果在下行按完整 202 px 文字宽度
+右对齐；单行输入时其下显示两条 9 px 紧凑旧历史，双行输入时显示一条。页脚始终保留状态和长度
 计数。`InputBox` 的容量为 96 个字符；它不再把“屏幕能显示多少字”当作“允许输入多少字”。控件按
 字体实际像素宽度切分整条表达式，缓存每个视觉行的 `(start, end)` 范围，并让 `view_offset` 始终
 指向包含光标的一到两行窗口。这样比例字体、长函数名和光标位置使用同一套宽度计算，历史行中的公式
@@ -546,13 +555,17 @@ Calculator.update:
 关闭。`ENT` 翻转当前会话选择，离开时把 `enabled_functions` 排入异步设置保存，主循环随后原地
 重载 registry。重载开始前 Function Panel 已显示固定 `Loading add-ons` 进度条，完成后才返回根页；
 动态 `execfile()` 保持不可切分，但其最长真机 step 有明确可见反馈。加载失败插件会自动聚焦，用户可关闭它。
+四个内置标签使用固定摘要 `Basic (+ - * / ...)`、`Trig (sin cos tan)`、
+`Science (sqrt ln exp)` 和 `Lists (max min ...)`；动态 Add-on 标签保持原样。
 
 `Shift+ENT` 是唯一主动重扫路径：重新执行隔离摘要、保持可用的原选择并夹住光标。这样运行中
 更换活动槽内容可见，同时不会将任意插件代码带回普通页面切换关键路径。
 
 函数选择器在激活时对 live registry 名称排序，使用四行两列（每页八项）。上下移动一项，
 物理 4/6 在列间跳四项，`ENT` 插入选择：prefix/list 插入 `name(`，其他插入符号或名称；`ESC`
-也退出而不插入。相同按键 150 ms 冷却。
+也退出而不插入。相同按键 150 ms 冷却。同页四向选择使用 96 ms quadratic ease-out；跨页使用
+160 ms 水平 ease-out，并复用 Display 的内容区平移/裁剪。固定缓存保存旧页和新页各八个可见标签
+及页脚页码，动画帧只消费缓存且不会创建标签、切片或像素副本。
 
 字母面板是 Shift+RPN 覆盖层，原始键位映射 A-Z、`"` 和 `;`；自身 Shift 键切换大小写，
 `Bk` 编辑暂存文本，`OK` 才把暂存文本插入目标 `InputBox`，`ESC` 取消。它限制暂存长度不超过
@@ -560,6 +573,8 @@ Calculator.update:
 
 变量面板在激活时对变量名排序，采用与函数选择器相同的两列分页。`ENT` 插入变量名，`DEL`
 调用 `EvalContext.delete_var()` 并重建列表，`ESC` 返回；同键 150 ms 冷却，物理 4/6 切列。
+同页选择使用 96 ms ease-out；当前八个格式化标签和短页脚使用固定缓存，在变量变化或换页时重建，
+逐帧路径不再格式化值。
 
 ### 7.4 绘图
 
@@ -771,32 +786,36 @@ CPython `compileall`、对所有源码使用 `-march=xtensawin` 编译 `.mpy`。
    `release_memory()` 释放可重建资源；FunctionPicker 的名称表原位重建，不复制排序列表。
 3. 函数重载复用 live registry，固定 bundled 插件不再导入通用源码 loader；loader 临时模块在
    冷操作后移除，插件清理使用 `popitem()`，不创建键列表副本。
-4. 验收侧缓存同一 application matrix 内不变的 framebuffer 身份快照；该缓存不进入普通 release。
+4. Calculator、Function Picker、Variable Panel 和 Stopwatch 在激活、输入或换页边界重建固定大小的可见标签、
+   历史和页脚缓存；动画帧只读取这些缓存，不再格式化或截断字符串。
+5. 验收侧缓存同一 application matrix 内不变的 framebuffer 身份快照；该缓存不进入普通 release。
    没有增加像素缓冲、通用动画层、`LazyScreen`、SWAP 或第二 framebuffer。
 
-1.6.0 的最新 `check.ps1` 为 `1127 passed in 19.29s`；CPython compileall 和
+1.6.1 的最终 `check.ps1` 为 `1142 passed in 23.25s`；CPython compileall 和
 MicroPython 1.29 全源 mpy-cross 均通过。
 
-### 10.2 COM5 严格门禁（1.6.0）
+### 10.2 COM5 严格门禁（1.6.1）
 
-当前 MPY release 为 `6f6f189767a6eddcff204ac1f1deb72325643853f7738e0327bdc3a2f2453da7`，
-manifest SHA-256 为 `d8c30829752c75a1214b2a6e6e760b0b20c078a606c001894083e6b257c81bbd`。
-正式 frozen 镜像为 `1826160 B`，SHA-256 为 `5b96b94d7668a2faac2c2e6eee11918d88fae0425906bb5e71ab4deb1065bb99`；增量构建用时 `25.684 s`，只写 factory 分区 `0x10000` 并校验用时 `24.415 s`。本轮未创建 `v1.6.0` tag 或 GitHub Release 附件。统一入口仍为：
+当前 MPY release 为 `9cebfe0e3d96b147e394ebf36ee8c0a2c2bdbba4edae17db847beb6ec43b569e`，
+manifest SHA-256 为 `49ed5486a49b6d0d2fc41bd1009cfd4d6f0c8dcc6b0acf8bb22b830864c8d9ae`。
+正式 frozen 镜像为 `1832560 B`，SHA-256 为 `ea9f46c2f1037ffe5ba02c215dca99c7ece1acf061dd931b896dc87795c544ed`；
+增量构建用时 `29.126 s`，只写 factory 分区 `0x10000` 并校验用时 `24.635 s`。本轮不创建
+`v1.6.1` tag 或 GitHub Release 附件。统一入口仍为：
 
 ```powershell
 .\tools\run_device_acceptance.ps1 -Port PORTNAME
 ```
 
-应用矩阵与交互/动画行来自本次定向复验；页面 tracer 和固定帧行保留自同一 1.6.0 候选此前
-通过的完整五阶段验收，不把这些结果组合描述为一次新的五阶段运行：
+下列行来自同一 1.6.1 候选的最终五阶段统一验收；定向交互 profile 另行覆盖本轮新增路径：
 
 | 检查 | 真机结果 |
 | --- | --- |
 | 启动与固定缓冲 | resident/root ready；同一个 framebuffer 8192 B；Plot 工作区 104 B；MPY/Viper ABI 通过 |
 | 模块来源 | `main=/sd/.slots/B/main.mpy`；`performance`、`runtime_handle`、`version` 为 frozen；`approot` 在根页阶段尚未加载 |
-| 应用矩阵 | 35 场景/五轮；最低空闲堆 10544 B；漂移 +1552 B；`MemoryError=0`、普通错误 0；加载条覆盖的插件重载 146.166 ms |
-| 页面 tracer | 预热后五轮；最低空闲堆 55536 B；漂移 -80 B；普通最大 step 26.939 ms |
-| 交互与动画 | 完整输入 `12345`；输入提交最大 16.630 ms；80 个动画帧最大 19.979 ms；菜单/前进/返回净分配均 0 B；交互阶段堆漂移 -16 B |
+| 应用矩阵 | 35 场景/五轮；最低空闲堆 10832 B，高于 8 KiB 2640 B；漂移 +1552 B；`MemoryError=0`、普通错误 0；加载条覆盖的插件重载 142.466 ms |
+| 页面 tracer | 预热后五轮；最低空闲堆 54080 B；漂移 -80 B；普通最大 step 24.066 ms |
+| 交互与动画 | 完整输入 `12345`；输入提交最大 18.916 ms；80 个动画帧最大 17.959 ms；菜单/前进/返回净分配均 0 B；交互阶段堆漂移 -16 B |
+| v1.6.1 定向交互 | Calculator 历史/光标/闪烁、RPN 往返、Picker 四向/翻页、Variable Panel 与 Stopwatch 均通过；71 帧最大 19.561 ms，最大 step 23.183 ms，Variable Panel 最大帧 14.151 ms，Stopwatch 4 帧最大 19.872 ms，动画分配 0 B，漂移 -368 B |
 | 固定帧 | Stopwatch 16 帧全部提交，净分配 0 B |
 | 结果 | `ACCEPTANCE_COMPLETE`；最低堆高于 8 KiB，普通 step/动画帧严格 `<40 ms`，输入严格 `<20 ms` |
 | 收尾 | 临时 support/stage 载荷已删除；SSD1322 已发送硬件休眠命令 |
@@ -816,6 +835,12 @@ manifest SHA-256 为 `d8c30829752c75a1214b2a6e6e760b0b20c078a606c001894083e6b257
 `41.810 ms` 和 `40.875 ms`，均未严格小于 40 ms；两项实验均已删除。没有继续扩张到计算核心，也没有
 为比较保留第二套实现。
 
+v1.6.1 最终 Stopwatch 候选的统一验收两次在 100 次连续错误压力中把自动 GC 合并进随机的
+`ErrorPopup` show step，得到 `40.096--40.262 ms`。复原真实常驻差额的定向红灯稳定为
+`42.263/44.764 ms`；验收专用 controller 改在每次 dismiss 状态证明之后回收，使同一红灯连续降到
+`28.785/29.027 ms`，最终完整矩阵通过。该 controller 不进入普通 release，产品按键和逐帧路径
+仍不调用 `gc.collect()` 或 `gc.mem_free()`。
+
 随后冻结 `performance`、`runtime_handle`、`version` 和 `approot`，把正式候选最低堆提高到
 `15920 B`；冻结同名 `main.py` 会抢在内部 supervisor 前执行，故该单项已删除并保留 slot
 `main.mpy`。Calculator flat 历史和直接 Pratt 求值候选在 `error_lifecycle` 仍同时违反 12 KiB 和
@@ -824,10 +849,12 @@ Stopwatch 压缩无法影响更早的 `calculator_history` 门禁，按 YAGNI �
 
 ### 10.4 动效门禁
 
-菜单 ease-out 与页面横向滑动合计使用 10 个标量槽（约 40 B）和 0 B 新像素缓冲。Renderer 在
+菜单、页面横向滑动、InputBox 光标和当前自绘列表合计使用最多 15 个标量槽（约 60 B）和 0 B 新像素
+缓冲。Calculator、Function Picker、Variable Panel、Stopwatch 和固定 footer 的可见文本都在激活、输入或换页
+边界预先装入固定缓存，逐帧只读取缓存。Renderer 在
 动画启动前解析目标页 hooks，每一帧都把目标页严格裁剪到当前新暴露条带，包含首个 2 px 边缘。
-1.6.0 COM5 最新 `heap_min=10544 B`，高于 8192 B 硬底线 2352 B；80 个动画帧和此前完整验收的 16 个 Stopwatch
-帧的净分配均为 0 B。8 KiB 是启用底线，
+1.6.1 COM5 最终 `heap_min=10832 B`，高于 8192 B 硬底线 2640 B；定向 71 帧、统一交互 80 帧
+和 Stopwatch 16 帧的净分配均为 0 B。8 KiB 是启用底线，
 12 KiB 仍是优化目标；不得为追求余量删除已经满足错误、漂移和时延门槛的动画。
 
 ## 11. 验证范围与维护准则

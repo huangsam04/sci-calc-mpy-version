@@ -78,3 +78,11 @@
 - [x] 同一 COM5 场景复核最新 `error_lifecycle` / `plot_pipeline` 最低点，候选范围 `10224--10736 B`、无持续下降；未恢复已否决实现，最终保留两项动画并以 `10576 B` 提供高于 8 KiB 的 `2384 B` 余量。
 - [x] 正式 frozen 镜像 `1823232 B`（SHA-256 `993b0a1778d140cd7ac529e1f62df6a3850912536871ef18b04b45c7afa1a6e5`）与 MPY release `c5894ef16861a51e0c4383985eab17482906f7b02c187d711edb4e91ac09e3f1` 已部署；manifest SHA-256 为 `3066a43a9eea7adcf3e53ea4837131337cc4af6e1e9cf221555692c5e86c47da`，boot probe 确认 resident/root ready；验收载荷已删除且 SSD1322 硬件休眠，部署未覆盖 Add-ons、设置、变量或未知文件。
 - [x] 同步 README/TECHNICAL_GUIDE 与主树干复选框，完成单代理 review 和本地 checkpoint commit，不 push。
+
+## v1.6.1 回归与 COM5 验收
+
+- [x] 确定性红灯集合连续两次得到同一 11 个失败，准确覆盖：最新历史两行加两条旧历史、无固定 78 px 限制、历史选择运动、输入光标 ease-out/闪烁、Calculator→RPN→返回、Function Picker 同页/跨页运动、启动无内部详情、内置函数组摘要、Variable Panel 光标和版本 `1.6.1`；实现后同一 1.6.1 聚焦集合全部通过。
+- [x] 最终 `check.ps1` 为 `1142 passed in 23.25s`，CPython 与 MicroPython 1.29 兼容编译通过；保持单 8192 B framebuffer、0 B 新像素缓冲和最坏活动动画状态约 60 B。
+- [x] 定向 profile 覆盖 Calculator 历史、光标、RPN 往返、Function Picker 翻页、Variable Panel 与 Stopwatch：71 帧最大 `19.561 ms`，Stopwatch 4 帧最大 `19.872 ms`，动画分配 0 B；随后复用 `tools/run_device_acceptance.ps1 -Port COM5` 完成五阶段验收。
+- [x] 最终统一验收为 `heap_min=10832 B`、预热普通最大 step `24.066 ms`、输入 `18.916 ms`、动画最大 `17.959 ms`、逐帧分配 0 B、错误 0；加载条覆盖的插件重载 `142.466 ms`，载荷已清理且 OLED 已硬件休眠。
+- [x] README、USER_GUIDE、TECHNICAL_GUIDE 已同步最终行为和数据；差异审查确认无调试插桩或 `.work` 外生成物，本批建立本地 `v1.6.1` checkpoint commit，不创建 tag、不 push。

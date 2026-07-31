@@ -5,6 +5,8 @@ already provided by the resident screens.  It never constructs a second
 runtime, registry, framebuffer, screen collection, or navigation lookup.
 """
 
+import gc
+
 from runtime_acceptance import STEP_DONE, STEP_MORE
 from runtime_scenarios import (
     APPLICATION_CAPABILITIES, APPLICATION_OPERATION_COUNTS,
@@ -317,6 +319,10 @@ class _ResidentApplicationBoundedSession:
         transaction.step(CALCULATOR_SCENARIO_ERROR_DISMISS)
         if transaction.error_kind is not None:
             raise RuntimeError("Calculator error dismissal proof failed")
+        # The acceptance stress runs 100 error lifecycles without user idle
+        # time.  Keep collection in this dismiss step so it cannot be charged
+        # to the following product error-show step.
+        gc.collect()
         self._index += 1
         self._phase = 0
         if self._index < ERROR_KIND_COUNT:

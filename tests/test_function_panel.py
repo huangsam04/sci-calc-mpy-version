@@ -135,8 +135,11 @@ def test_builtin_groups_and_addons_have_unambiguous_user_labels():
     panel.activate()
 
     labels = [label for label, _ in panel.menu._state[5]]
-    assert any("Arithmetic" in label for label in labels)
-    assert any("Trigonometry" in label for label in labels)
+    assert "[x] Basic (+ - * / ...)" in labels
+    assert "[x] Trig (sin cos tan)" in labels
+    assert "[x] Science (sqrt ln exp)" in labels
+    assert "[x] Lists (max min ...)" in labels
+    assert all(len(label) <= 25 for label in labels[:4])
     assert "[x] Add-on: basic" in labels
     assert "[x] Add-on: trig" in labels
 

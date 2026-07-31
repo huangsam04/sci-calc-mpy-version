@@ -51,11 +51,6 @@ def _boot_progress(display, step, total, label="", operation=""):
     progress = str(step) + "/" + str(total)
     display.draw_text8x8(
         210 - len(progress) * 8, 44, progress, gs=8)
-    if operation:
-        detail = operation
-        if len(detail) > 29:
-            detail = detail[:28] + "~"
-        display.draw_text8x8(12, 54, detail, gs=7)
     display.present()
 
 

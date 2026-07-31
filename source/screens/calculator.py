@@ -89,11 +89,21 @@ class CalculatorScreen:
         """Apply the small visible state change used by normal activation."""
         self.input_box.activate()
         self.mode = 0
+        self.input_box.cursor.mode = 1
+        self.input_box._update_cursor_target(immediate=True)
         self._state[3][0][1] = ""
+        render = self._state[2]
+        if render[0] is None:
+            render[0] = [None] * 10
         self._clear_presented_editor_state()
+        self._refresh_panel_layout()
+        history_visible = 2 if self.input_box.height == 22 else 3
+        self._clamp_view(history_visible)
+        self._ensure_history_cache(history_visible)
         self._ensure_footer_cache()
 
     def deactivate(self):
+        self.input_box.deactivate()
         self._clear_presented_editor_state()
 
     def open_scenario_transaction(self):
@@ -177,7 +187,19 @@ class CalculatorScreen:
                 and time.ticks_diff(now, storage[1]) >= 5000):
             storage[0] = ""
             changed = True
+        if self.mode == 0 and not self.input_box.motion_active:
+            visible = (now // 500) & 1 == 0
+            if self.input_box.cursor.is_visible != visible:
+                self.input_box.cursor.is_visible = visible
+                changed = True
         return SETTLE_REDRAW if changed else 0
+
+    @property
+    def motion_active(self):
+        return self.input_box.motion_active
+
+    def advance_motion(self, now):
+        return self.input_box.advance_motion(now)
 
     def _enter(self):
         expr = self.input_box.get_str().strip()
@@ -325,7 +347,9 @@ class CalculatorScreen:
         if (self.input_box.str == presented[1]
                 and self.input_box.cursor_pos == presented[2]
                 and self.input_box.cursor.x == presented[3]
-                and self.input_box.cursor.y == presented[4]):
+                and self.input_box.cursor.y == presented[4]
+                and self.input_box.cursor.is_visible
+                == bool(presented[0] & 16)):
             return _DAMAGE_FOOTER if presented[0] & 8 else DAMAGE_NONE
         return DAMAGE_PARTIAL
 
@@ -349,7 +373,8 @@ class CalculatorScreen:
             render[0] = presented
         pending = (
             presented[0] & 12 if presented[0] is not None else 0)
-        presented[0] = self.mode | pending
+        presented[0] = (self.mode | pending
+                        | (16 if self.input_box.cursor.is_visible else 0))
         presented[1] = self.input_box.str
         presented[2] = self.input_box.cursor_pos
         presented[3] = self.input_box.cursor.x
@@ -390,8 +415,32 @@ class CalculatorScreen:
         self.mode = 1
         self._state[3][1] = index
         self._state[3][0][1] = ""
-        self._clamp_view(3 if self.input_box.active_rows > 1 else 4)
+        self._clamp_view(2 if self.input_box.active_rows > 1 else 3)
+        self._retarget_history_cursor(False)
         return True
+
+    def _retarget_history_cursor(self, animate):
+        """Reuse the input caret as the fixed-state history highlight."""
+        self._refresh_panel_layout()
+        visible = 2 if self.input_box.height == 22 else 3
+        self._clamp_view(visible)
+        meta = self._state[3]
+        relative = meta[1] - meta[2]
+        y = self.input_box.height + 3
+        if relative > 0:
+            y += 18 + (relative - 1) * 9
+        cursor = self.input_box.cursor
+        cursor.mode = 0
+        cursor.is_visible = True
+        self.input_box.set_cursor_target(
+            2, y, width=206, height=17 if relative == 0 else 8,
+            immediate=not animate)
+
+    def _restore_input_cursor(self):
+        cursor = self.input_box.cursor
+        cursor.mode = 1
+        cursor.is_visible = True
+        self.input_box._update_cursor_target(immediate=True)
 
     def _clear_history_cache(self):
         """Release the fixed rendered window without touching lossless history."""
@@ -439,7 +488,8 @@ class CalculatorScreen:
         return True
 
     def _ensure_history_cache(self, history_visible, encoded=None):
-        """Pre-fit and encode only the current 3–4 rendered history rows."""
+        """Cache one expanded entry and up to two compact older entries."""
+        history_visible = min(3, max(0, history_visible))
         history = self._state[0]
         total = len(history)
         font = self.input_box.font
@@ -460,7 +510,6 @@ class CalculatorScreen:
         if cache is None:
             cache = [None] * 12
             render[2] = cache
-        packed_x = 0
         index = self._state[3][2]
         slot = 0
         while slot < history_visible:
@@ -468,43 +517,58 @@ class CalculatorScreen:
                 entry = history[index]
                 expr = entry[0]
                 result = entry[1]
-                result_text = fit_text("= " + self._fmt(result), 78, font)
-                x = max(108, self.width - text_width(result_text, font) - 4)
-                expr_text = fit_text(expr, max(24, x - 8), font)
+                result_text = self._fmt(result)
+                if slot == 0:
+                    expr_text = fit_text(expr, self.width - 8, font)
+                    result_text = fit_text(
+                        "= " + result_text, self.width - 8, font)
+                else:
+                    expr_text = fit_text(
+                        expr + " = " + result_text,
+                        self.width - 8, font)
+                    result_text = ""
                 cache[slot] = entry
                 if encoded:
                     expr_text = expr_text.encode()
                     result_text = result_text.encode()
                 cache[4 + slot] = expr_text
                 cache[8 + slot] = result_text
-                packed_x |= x << (slot * 8)
             index += 1
             slot += 1
-        render[3] = packed_x
+        render[3] = 0
 
-    def _draw_cached_history_row(self, display, y, slot, selected, direct):
-        if selected:
-            display.fill_rectangle(2, y, 206, 8, 12)
+    def _draw_cached_history_row(self, display, y, slot, direct):
         render = self._state[2]
         cache = render[2]
         font = self.input_box.font
         expr_text = cache[4 + slot]
         result_text = cache[8 + slot]
-        result_x = (render[3] >> (slot * 8)) & 255
+        bar_y = int(self.input_box.cursor.y)
+        selected = (self.mode == 1
+                    and bar_y < y + (17 if slot == 0 else 8)
+                    and bar_y + self.input_box.cursor.height > y)
+        result_x = max(
+            4, self.width - text_width(result_text, font) - 4)
         if font and direct is not None:
             gs = 0 if selected else 15
             direct(display, 4, y, expr_text, font, gs=gs)
-            direct(display, result_x, y, result_text, font, gs=gs)
+            if slot == 0:
+                direct(display, result_x, y + 9, result_text, font, gs=gs)
             return
         draw_text(display, 4, y, expr_text, font,
                   gs=14 if selected else 15, invert=selected, raw=True)
-        draw_text(display, result_x, y, result_text, font,
-                  gs=14 if selected else 15, invert=selected, raw=True)
+        if slot == 0:
+            draw_text(display, result_x, y + 9, result_text, font,
+                      gs=14 if selected else 15, invert=selected, raw=True)
 
     def _draw_editor(self, display):
         self.input_box.y = 0
         self._refresh_panel_layout()
-        self.input_box.cursor.is_visible = (self.mode == 0)
+        cursor = self.input_box.cursor
+        if self.mode == 0 and cursor.mode != 1:
+            self._restore_input_cursor()
+        elif self.mode != 0:
+            cursor.is_visible = False
         self.input_box.draw(display)
         display.draw_hline(0, self.input_box.height + 1, 210, 8)
 
@@ -601,7 +665,7 @@ class CalculatorScreen:
         if self.mode == 2:
             self._state[1].draw(display)
             presented = self._state[2][0]
-            if presented[0] is not None:
+            if presented is not None and presented[0] is not None:
                 presented[0] &= ~12
             return
 
@@ -609,29 +673,35 @@ class CalculatorScreen:
         self._draw_editor(display)
         input_height = self.input_box.height
         hist_start_y = input_height + 3
-        hist_visible = 3 if input_height == 22 else 4
+        hist_visible = 2 if input_height == 22 else 3
 
-        # --- History: four rows with a compact editor, three when expanded ---
+        # --- History: expanded newest item plus two/one compact older items ---
         self._clamp_view(hist_visible)
         meta = self._state[3]
         history = self._state[0]
         direct = (get_direct_text_draw(display)
                   if self.input_box.font else None)
         self._ensure_history_cache(hist_visible, direct is not None)
+        if self.mode == 1:
+            if self.input_box.cursor.mode != 0:
+                self._retarget_history_cursor(False)
+            cursor = self.input_box.cursor
+            cursor.is_visible = True
+            display.fill_rectangle(
+                2, int(cursor.y), 206, cursor.height, 12)
         i = 0
         while i < hist_visible:
             hist_idx = meta[2] + i
             if hist_idx >= len(history):
                 break
-            y = hist_start_y + i * 9
-            is_selected = (self.mode == 1 and hist_idx == meta[1])
-            self._draw_cached_history_row(display, y, i, is_selected, direct)
+            y = hist_start_y if i == 0 else hist_start_y + 9 + i * 9
+            self._draw_cached_history_row(display, y, i, direct)
             i += 1
 
         # --- Status line (y=55..63) ---
         self._draw_footer(display)
         presented = self._state[2][0]
-        if presented[0] is not None:
+        if presented is not None and presented[0] is not None:
             presented[0] &= ~12
 
     def update(self, kb, event=None):
@@ -652,11 +722,14 @@ class CalculatorScreen:
         if self.mode == 0:
             action = self.input_box.update(kb, event)
             if action in ("MOVE", "CHANGE"):
+                self._ensure_footer_cache()
                 return "REDRAW"
             if action == "ENT":
                 if event is not None and event[2]:
-                    return ("REDRAW" if self.input_box.insert_str("=")
-                            else None)
+                    if self.input_box.insert_str("="):
+                        self._ensure_footer_cache()
+                        return "REDRAW"
+                    return None
                 else:
                     if self.input_box.get_str():
                         self._enter()
@@ -667,6 +740,7 @@ class CalculatorScreen:
                     meta[1] = 0
                     meta[2] = 0
                     status[1] = ""
+                    self._retarget_history_cursor(False)
                     return "REDRAW"
             elif action == "stab":
                 return "VARIABLE_PANEL"
@@ -684,6 +758,7 @@ class CalculatorScreen:
                     return "FUNC_PICKER"
             elif action == "DELETE":
                 # Repeated DEL has no new edge event; explicitly request a frame.
+                self._ensure_footer_cache()
                 return "REDRAW"
         else:
             # History nav mode
@@ -693,6 +768,7 @@ class CalculatorScreen:
             r, c, shift = event
             label = get_key_label(r, c, shift)
             changed = False
+            previous_offset = meta[2]
 
             if label in ("2", "down"):
                 if meta[1] < len(history) - 1:
@@ -736,6 +812,16 @@ class CalculatorScreen:
                 status[1] = ""
                 status[0] = time.ticks_ms()
                 changed = True
+
+            if changed:
+                if self.mode == 1:
+                    visible = 2 if self.input_box.active_rows > 1 else 3
+                    self._clamp_view(visible)
+                    self._retarget_history_cursor(
+                        previous_offset == meta[2])
+                else:
+                    self._restore_input_cursor()
+                self._ensure_footer_cache()
 
             return "REDRAW" if changed else None
 

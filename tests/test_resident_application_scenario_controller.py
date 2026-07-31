@@ -1,6 +1,7 @@
 import pytest
 
 from calc import plugin_fixture, plugin_reload, scenario_variables
+import runtime_application_controller as controller_module
 import runtime_fixture_pack
 from runtime_acceptance import STEP_DONE
 from runtime_application_controller import (
@@ -405,6 +406,28 @@ def test_real_resident_controller_runs_one_bounded_matrix_with_public_primitives
 
     assert session.close() is True
     assert controller.open_bounded_session(runtime, ("calculator_history",)).close() is True
+
+
+def test_error_lifecycle_collects_only_after_each_popup_is_dismissed(monkeypatch):
+    binding, runtime, calculator, _plot, _stopwatch, _nav = _binding()
+    controller = _ResidentApplicationScenarioController(binding)
+    collections = []
+
+    def collect():
+        transaction = calculator.transactions[0]
+        assert transaction.error_kind is None
+        collections.append(transaction.error_kind_mask)
+
+    monkeypatch.setattr(controller_module.gc, "collect", collect)
+    session = controller.open_bounded_session(runtime, ("error_lifecycle",))
+    for _ in range(session.step_limits[0]):
+        if session.step(0, 0) == STEP_DONE:
+            break
+    else:
+        raise AssertionError("error lifecycle exceeded its fixed limit")
+
+    assert collections == [(1 << count) - 1 for count in range(1, 21)]
+    assert session.close() is True
 
 
 def test_real_resident_controller_rejects_a_foreign_binding_before_opening_a_lease():

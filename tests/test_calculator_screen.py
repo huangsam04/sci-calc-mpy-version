@@ -180,19 +180,113 @@ def test_expanding_the_input_panel_keeps_selected_history_visible():
     screen._state[3][1] = 3
 
     screen._refresh_panel_layout()
-    compact_history_rows = 4 if screen.input_box.height == 12 else 3
+    compact_history_rows = 3 if screen.input_box.height == 12 else 2
     screen._clamp_view(compact_history_rows)
 
-    assert compact_history_rows == 4
-    assert screen._state[3][2] == 0
+    assert compact_history_rows == 3
+    assert screen._state[3][2] == 1
 
     screen.input_box.set_str("1+" * 47 + "1")
     screen._refresh_panel_layout()
-    expanded_history_rows = 4 if screen.input_box.height == 12 else 3
+    expanded_history_rows = 3 if screen.input_box.height == 12 else 2
     screen._clamp_view(expanded_history_rows)
 
-    assert expanded_history_rows == 3
-    assert screen._state[3][2] == 1
+    assert expanded_history_rows == 2
+    assert screen._state[3][2] == 2
+
+
+def test_history_uses_two_rows_for_newest_and_two_compact_older_entries():
+    screen = CalculatorScreen(
+        FontStub(), registry=build_registry(), variables={})
+    long_result = "123456789012345678901234567890"
+    screen._state[0] = [
+        ("new expression", long_result),
+        ("older one", "2"),
+        ("older two", "3"),
+        ("off screen", "4"),
+    ]
+    screen.mode = 1
+    display = CalculatorDisplay()
+
+    screen.draw(display)
+
+    rows = [item for item in display.direct if 15 <= item[1] < 54]
+    assert [(x, y) for x, y, *_rest in rows] == [
+        (4, 15),
+        (14, 24),
+        (4, 33),
+        (4, 42),
+    ]
+    assert rows[0][2] == b"new expression"
+    assert rows[1][2] == b"= " + long_result.encode()
+    assert rows[2][2] == b"older one = 2"
+    assert rows[3][2] == b"older two = 3"
+    assert len(rows[1][2]) > 13
+
+
+def test_history_selection_uses_nonlinear_cursor_motion(monkeypatch):
+    clock = [100]
+    monkeypatch.setattr(calculator_module.time, "ticks_ms", lambda: clock[0])
+    monkeypatch.setattr("ui.inputbox.time.ticks_ms", lambda: clock[0])
+    monkeypatch.setattr(
+        "ui.inputbox.time.ticks_diff", lambda newer, older: newer - older)
+    screen = _history_screen(FontStub(), total=5)
+    screen.draw(CalculatorDisplay())
+    start_y = screen.input_box.cursor.y
+
+    assert screen.update(KeyboardStub(), (3, 1, False)) == "REDRAW"
+    first_y = screen.input_box.cursor.y
+    assert screen.motion_active is True
+    assert start_y < first_y < 33
+
+    clock[0] = 148
+    assert screen.advance_motion(clock[0]) is True
+    assert first_y < screen.input_box.cursor.y < 33
+    clock[0] = 196
+    assert screen.advance_motion(clock[0]) is True
+    assert screen.input_box.cursor.y == 33
+    assert screen.motion_active is False
+
+
+def test_history_selection_refreshes_footer_before_motion_frame():
+    screen = _history_screen(total=5)
+    screen._ensure_footer_cache()
+
+    assert screen.update(KeyboardStub(), (3, 1, False)) == "REDRAW"
+
+    footer = screen._state[2][1]
+    assert footer[5] == 1
+    assert footer[8] == 1
+    assert footer[2] == "2/5"
+
+
+def test_calculator_input_caret_blinks_during_quiet_steps(monkeypatch):
+    clock = [0]
+    monkeypatch.setattr(calculator_module.time, "ticks_ms", lambda: clock[0])
+    screen = CalculatorScreen(None, registry=build_registry(), variables={})
+    screen.activate()
+    screen.mark_presented()
+
+    assert screen.input_box.cursor.is_visible is True
+    clock[0] = 500
+    assert screen.settle_step() == SETTLE_REDRAW
+    assert screen.input_box.cursor.is_visible is False
+    clock[0] = 1000
+    assert screen.settle_step() == SETTLE_REDRAW
+    assert screen.input_box.cursor.is_visible is True
+
+
+def test_input_change_refreshes_footer_before_caret_motion_frame():
+    screen = CalculatorScreen(None, registry=build_registry(), variables={})
+    screen.activate()
+
+    assert screen.update(KeyboardStub(), (3, 0, False)) == "REDRAW"
+    assert screen.motion_active is True
+
+    footer = screen._state[2][1]
+    assert footer[5] == 0
+    assert footer[6] == 1
+    assert footer[2] == "1/96"
 
 
 def test_typing_splits_editor_and_footer_rows_but_wrapping_uses_full_frame():
@@ -494,8 +588,8 @@ def test_calculator_history_cache_formats_only_the_visible_window(monkeypatch):
 
     screen.draw(display)
 
-    assert formatted == [16, 17, 18, 19]
-    assert screen._state[2][2][:4] == screen._state[0][16:20]
+    assert formatted == [16, 17, 18]
+    assert screen._state[2][2][:3] == screen._state[0][16:19]
     assert len(screen._state[2][2]) == 12
 
 
@@ -515,17 +609,17 @@ def test_calculator_history_cache_reuses_visible_text_until_a_key_changes(
     cached_result = screen._state[2][2][8]
     screen._ensure_history_cache(4)
 
-    assert formatted == [0, 1, 2, 3]
+    assert formatted == [0, 1, 2]
     assert screen._state[2][2][4] is cached_expr
     assert screen._state[2][2][8] is cached_result
 
     screen._state[3][1] = 1
     screen._state[3][2] = 1
     screen._ensure_history_cache(4)
-    assert formatted == [0, 1, 2, 3, 1, 2, 3, 4]
+    assert formatted == [0, 1, 2, 1, 2, 3]
 
     screen._ensure_history_cache(3)
-    assert formatted == [0, 1, 2, 3, 1, 2, 3, 4, 1, 2, 3]
+    assert formatted == [0, 1, 2, 1, 2, 3]
 
     screen._state[0][1] = ["replacement", 99]
     screen._ensure_history_cache(3)
@@ -555,8 +649,8 @@ def test_calculator_history_font_cache_reuses_encoded_visible_rows(
     display = CalculatorDisplay()
 
     screen.draw(display)
-    expr_bytes = screen._state[2][2][4:8]
-    result_bytes = screen._state[2][2][8:12]
+    expr_bytes = screen._state[2][2][4:7]
+    result_bytes = screen._state[2][2][8:11]
 
     def unexpected_format(*_args):
         raise AssertionError("steady history draw must reuse cached text")
@@ -566,10 +660,10 @@ def test_calculator_history_font_cache_reuses_encoded_visible_rows(
 
     assert all(isinstance(value, bytes) for value in expr_bytes)
     assert all(isinstance(value, bytes) for value in result_bytes)
-    assert screen._state[2][2][4:8] == expr_bytes
-    assert screen._state[2][2][8:12] == result_bytes
+    assert screen._state[2][2][4:7] == expr_bytes
+    assert screen._state[2][2][8:11] == result_bytes
     history_direct = [row for row in display.direct if 15 <= row[1] < 54]
-    assert len(history_direct) == 16
+    assert len(history_direct) == 8
     assert all(isinstance(row[2], bytes) for row in history_direct)
 
 
@@ -582,6 +676,28 @@ def test_calculator_history_cache_release_preserves_lossless_history():
     assert screen._state[0] is history
     assert screen._state[2][2] is None
     assert screen._state[2][3] == 0
+
+
+def test_calculator_activation_rebuilds_visible_caches_before_page_draw(
+        monkeypatch):
+    screen = _history_screen(total=3)
+    screen.input_box.set_str("12345", immediate=True)
+    screen.draw(CalculatorDisplay())
+
+    assert screen.release_memory() is True
+    assert screen._state[2][0] is None
+    assert screen._state[2][2] is None
+
+    screen.activate()
+
+    assert screen._state[2][0] is not None
+    assert screen._state[2][2] is not None
+
+    def unexpected_format(*_args):
+        raise AssertionError("page draw rebuilt Calculator history")
+
+    monkeypatch.setattr(CalculatorScreen, "_fmt", unexpected_format)
+    screen.draw(CalculatorDisplay())
 
 
 def test_calculator_history_cache_propagates_memory_error(monkeypatch):

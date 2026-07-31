@@ -82,7 +82,7 @@ def test_history_error_and_stopwatch_text_use_direct_packed_path():
     calculator._state[0] = [("x+123", 123.45)]
     calculator._ensure_history_cache(4, encoded=True)
     calculator._draw_cached_history_row(
-        display, 15, 0, False, DirectOnlyDisplay.draw_text_direct)
+        display, 15, 0, DirectOnlyDisplay.draw_text_direct)
 
     popup = ErrorPopup(font, font)
     popup.show("bad(x)", "Unknown variable")

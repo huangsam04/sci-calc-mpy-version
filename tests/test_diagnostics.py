@@ -18,7 +18,8 @@ def test_serial_diagnostic_session_traces_input_navigation_and_results(tmp_path)
     assert any("key=ENT" in line and "page=Plot" in line for line in output)
     assert any("page=MainMenu" in line for line in output)
     assert any("expr=2+3*4 result=14" in line for line in output)
-    assert any("id=basic" in line and "Arithmetic" in line for line in output)
+    assert any("id=basic" in line and "Basic (+ - * / ...)" in line
+               for line in output)
 
 
 def test_diagnostic_matrix_returns_the_shared_acceptance_verdict(tmp_path):

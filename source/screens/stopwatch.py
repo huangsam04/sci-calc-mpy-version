@@ -10,6 +10,7 @@ LAP_H = 9        # row height for lap entries
 LAP_COUNT = 4    # visible lap rows
 LAP_MAX = 20     # bounded RAM snapshot while the heavy page is unloaded
 STOPWATCH_FRAME_MS = 50
+STOPWATCH_CURSOR_MS = 96
 _TIMER_BAND_H = 13
 _SHORT_TIME_X = 81
 _LONG_TIME_X = 72
@@ -57,7 +58,7 @@ class StopwatchScreen(UIElement):
             [bytearray(b"00:00:00"), bytearray(b"00:00:00:00"),
              bytearray(b"000:00:00:00")],
             [None, None, None, None],
-            [None, None],
+            [None, None, -1, 0],
         )
         # Keep one status footer, rather than a cache keyed by every timer or
         # lap value.  The 20 fps timer path can then redraw its top band
@@ -71,12 +72,14 @@ class StopwatchScreen(UIElement):
         # larger permanent heap footprint.
         self._runtime = (
             [[None, None, None, None], None, None, None],
-            [None, None, None],
+            [None, None, None, None],
         )
         self._ensure_footer_cache()
+        self._snap_lap_motion()
 
     def activate(self):
-        pass
+        self._clamp_lap_view()
+        self._snap_lap_motion()
 
     def release_memory(self):
         released = False
@@ -95,6 +98,8 @@ class StopwatchScreen(UIElement):
         runtime[0][2] = None
         runtime[0][3] = None
         runtime[1][0] = None
+        runtime[1][3] = None
+        self._snap_lap_motion()
         return released
 
     def detach_state(self):
@@ -273,6 +278,49 @@ class StopwatchScreen(UIElement):
             self._clock[3][0] = 0
             self._clock[3][1] = 0
 
+    def _lap_cursor_y(self):
+        return 14 + max(0, self._clock[3][0] - self._clock[3][1]) * LAP_H
+
+    @property
+    def motion_active(self):
+        return self._render[2][2] >= 0
+
+    def _snap_lap_motion(self):
+        y = self._lap_cursor_y()
+        self._render[2][2] = -1
+        self._render[2][3] = (y & 63) | ((y & 63) << 6)
+
+    def _start_lap_motion(self, old_y):
+        target_y = self._lap_cursor_y()
+        if old_y != target_y:
+            old_y += 2 if target_y > old_y else -2
+        self._render[2][2] = time.ticks_ms()
+        self._render[2][3] = (old_y & 63) | ((old_y & 63) << 6)
+
+    def advance_motion(self, now):
+        started = self._render[2][2]
+        if started < 0:
+            return False
+        elapsed = time.ticks_diff(now, started)
+        if elapsed < 0:
+            elapsed = 0
+        packed = self._render[2][3]
+        start_y = packed & 63
+        old_y = (packed >> 6) & 63
+        target_y = self._lap_cursor_y()
+        if elapsed >= STOPWATCH_CURSOR_MS:
+            self._snap_lap_motion()
+            return True
+        remaining = STOPWATCH_CURSOR_MS - elapsed
+        distance = target_y - start_y
+        residual = (abs(distance) * remaining * remaining
+                    // (STOPWATCH_CURSOR_MS * STOPWATCH_CURSOR_MS))
+        current_y = (target_y - residual if distance >= 0
+                     else target_y + residual)
+        self._render[2][3] = ((start_y & 63)
+                              | ((current_y & 63) << 6))
+        return current_y != old_y
+
     def _footer_state(self):
         if self._clock[1]:
             return 2
@@ -347,7 +395,9 @@ class StopwatchScreen(UIElement):
                 or self._clock[3][3] != self._render[1][2]
                 or self._clock[3][0] != self._render[1][3]
                 or self._clock[3][1] != self._render[2][0]
-                or self._footer_state() != self._render[2][1]):
+                or self._footer_state() != self._render[2][1]
+                or self._runtime[1][3]
+                != ((self._render[2][3] >> 6) & 63)):
             return DAMAGE_FULL
         if self._clock[1] and elapsed_cs != self._render[1][1]:
             damage.add(0, _TIMER_BAND_H)
@@ -362,6 +412,7 @@ class StopwatchScreen(UIElement):
         self._render[1][3] = self._clock[3][0]
         self._render[2][0] = self._clock[3][1]
         self._render[2][1] = self._footer_state()
+        self._runtime[1][3] = (self._render[2][3] >> 6) & 63
 
     def draw_present_rows(self, display):
         display.fill_rectangle(0, 0, self.width, _TIMER_BAND_H, 0)
@@ -393,6 +444,12 @@ class StopwatchScreen(UIElement):
         self._clamp_lap_view()
         total = len(self._clock[2][3])
         self._ensure_lap_label_cache(total)
+        if not self.motion_active:
+            self._snap_lap_motion()
+        cursor_y = (self._render[2][3] >> 6) & 63
+        if total:
+            fh = self._clock[0].height if self._clock[0] else 8
+            display.fill_rectangle(2, cursor_y, self.width - 4, fh, 14)
 
         i = self._clock[3][1]
         end = min(i + LAP_COUNT, total)
@@ -400,11 +457,9 @@ class StopwatchScreen(UIElement):
         while i < end:
             y = lap_top + row * LAP_H
             label = self._runtime[0][0][row]
-            is_selected = (i == self._clock[3][0])
+            is_selected = abs(cursor_y - y) <= 2
 
             if is_selected:
-                fh = self._clock[0].height if self._clock[0] else 8
-                display.fill_rectangle(2, y, self.width - 4, fh, 14)
                 if self._clock[0]:
                     draw_text(display, 4, y, label, self._clock[0], invert=True,
                               gs=14, raw=True)
@@ -427,6 +482,9 @@ class StopwatchScreen(UIElement):
         if event is None:
             return None
 
+        if self.motion_active:
+            self._snap_lap_motion()
+
         r, c, shift = event
         label = get_key_label(r, c, shift)
 
@@ -434,6 +492,9 @@ class StopwatchScreen(UIElement):
             return "BACK"
 
         # Navigation: scroll lap list
+        previous_cursor = self._clock[3][0]
+        previous_view = self._clock[3][1]
+        old_y = self._lap_cursor_y()
         changed = False
         if label in ("up", "8"):
             if self._clock[2][3] and self._clock[3][0] > 0:
@@ -453,5 +514,13 @@ class StopwatchScreen(UIElement):
                 changed = self._lap()
             else:
                 changed = self._reset()
+
+        if self._clock[3][0] != previous_cursor:
+            self._clamp_lap_view()
+            if (self._clock[2][3]
+                    and self._clock[3][1] == previous_view):
+                self._start_lap_motion(old_y)
+            else:
+                self._snap_lap_motion()
 
         return "REDRAW" if changed else None

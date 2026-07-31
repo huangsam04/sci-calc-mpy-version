@@ -2,7 +2,7 @@
 
 SCI-CALC 的 MicroPython 固件，目标硬件为 ESP32-WROOM-32E、SSD1322 256×64 灰阶 OLED、5×6 矩阵键盘和 FAT32 SD 卡。
 
-当前应用版本为 **1.6.0**。源码和设备固件均由本仓库 `micropython/` 中的
+当前应用版本为 **1.6.1**。源码和设备固件均由本仓库 `micropython/` 中的
 **MicroPython 1.29.0-preview** 构建；SCI-CALC 只增加 frozen manifest/board 配置，不修改
 MicroPython 核心。
 
@@ -121,6 +121,10 @@ SD 卡和 OLED 共用 GPIO18/23 上的 SPI2，通过 CS4/CS5 分隔事务。内�
 右侧 `^` / `v` 表示上方或下方还有内容，右下角的 `n/96` 显示当前长度。按 `Shift+4` / `Shift+6`
 可向左 / 向右移动光标，适合检查和修改长公式。
 
+输入光标按 96 ms ease-out 平滑移到新位置，并每 500 ms 闪烁。最新一条历史使用两行：表达式
+左对齐，结果使用完整内容宽度右对齐；单行输入时其下再显示两条紧凑旧历史，输入框换成两行时
+再显示一条。历史模式的选择框也使用相同的短距离滑动。
+
 历史模式中，`8/2` 选择记录，`ENT` 插入结果，物理 `4/6` 插入原表达式。
 
 支持示例：
@@ -179,8 +183,9 @@ max(3, 5, 4)          -> 5
 ### 其他页面
 
 - 函数面板：`ENT` 开关函数组或插件；有改动时 `ESC` 保存并返回，未改动时直接返回
-- 变量表：`ENT` 插入变量，`DEL` 删除，物理 `4/6` 切换列
-- 秒表：`ENT` 开始/暂停/继续，运行时 `DEL` 计圈，停止时 `DEL` 复位
+- 函数选择器：同页上下左右选择使用短距离 ease-out，跨 8 项页面时内容水平滑动
+- 变量表：`ENT` 插入变量，`DEL` 删除，物理 `4/6` 切换列；选择框使用短距离 ease-out
+- 秒表：`ENT` 开始/暂停/继续，运行时 `DEL` 计圈，停止时 `DEL` 复位；`8/2` 浏览圈速时选择框平滑移动
 - 字母面板：`Sh` 切换大小写，`OK` 写入，`ESC` 取消，`Bk` 退格
 - 设置：第一项显示固件版本，第二项进入关于页面；第三项亮度使用物理 `4/6` 或
   左右方向键调节，范围为 10%–100%，每次调整 10%，立即应用并在空闲时保存。第四项
@@ -275,13 +280,13 @@ def register(registry):
 
 函数面板上方四项是始终随固件提供的内置函数组，默认全部启用：
 
-- `Arithmetic`：`+`、`-`、`*`、`/`、`^` 和赋值 `=`。幂为右结合，赋值支持
+- `Basic (+ - * / ...)`：`+`、`-`、`*`、`/`、`^` 和赋值 `=`。幂为右结合，赋值支持
   `x=y=2`；不提供隐式乘法，请使用 `2*x`。
-- `Trigonometry`：`sin`、`cos`、`tan`、`asin`、`acos`、`atan`、`sec`、`csc`、
+- `Trig (sin cos tan)`：`sin`、`cos`、`tan`、`asin`、`acos`、`atan`、`sec`、`csc`、
   `cot`。这些函数跟随右侧状态栏的 DEG/RAD 模式。
-- `Scientific`：`sqrt`、自然对数 `ln`、指数 `exp`、常用对数 `log` 和绝对值
+- `Science (sqrt ln exp)`：`sqrt`、自然对数 `ln`、指数 `exp`、常用对数 `log` 和绝对值
   `abs`。
-- `List tools`：`max(...)` 与 `min(...)`，接受一个或多个逗号分隔参数，例如
+- `Lists (max min ...)`：`max(...)` 与 `min(...)`，接受一个或多个逗号分隔参数，例如
   `max(3,5,4)`。
 
 ### 随附 Add-on
@@ -320,9 +325,10 @@ compile_expression
 普通 `Menu` 使用约 96 ms 的整数 ease-out，让高亮在相邻行间短距离滑动；只重画旧行、新行和
 实际经过行，滚屏时直接吸附。`Nav` 使用 210 ms 整数 quadratic ease-out：进入子级向左、返回上级
 向右，只移动 210 px 内容区，固定状态栏不动。Display 原地移动同一个 GS4 framebuffer 的内容字节，
-并把目标页只画入新暴露条带。Menu、Nav 和 Display 共复用 10 个固定标量槽（约 40 B），新增像素
-缓冲为 0 B；新输入、异常、复位或休眠会吸附到正确终态，不恢复亮度淡变、`LazyScreen`、SWAP
-或双 framebuffer。
+并把目标页只画入新暴露条带。Calculator 光标与历史、Function Picker、Variable Panel 和 Stopwatch 圈速继续复用
+固定打包标量完成 96 ms 光标运动和 160 ms Picker 翻页；活动路径合计最多 15 个标量槽（约 60 B），
+新增像素缓冲为 0 B。新输入、异常、复位或休眠会吸附到正确终态，不恢复亮度淡变、
+`LazyScreen`、SWAP 或双 framebuffer。
 
 设置与变量采用 `文件.tmp → 文件` 提交，并保留上一份 `.bak`。主文件损坏时优先
 读取备份；按键处理只更新内存并把写入排入空闲主循环，写入失败不会清除当前内存状态，
@@ -381,7 +387,7 @@ UI 会显示保存失败并每两秒重试。
 ..\.venv\python.exe -m mpremote connect PORTNAME reset
 ```
 
-1.6.0 的最新主机检查为 `1127 passed in 19.29s`，并通过 CPython 语法检查和
+1.6.1 的最终主机检查为 `1142 passed in 23.25s`，并通过 CPython 语法检查和
 MicroPython 1.29 `mpy-cross -march=xtensawin` 全源编译。主机 traced memory 只用于比较逻辑
 工作量，不替代真机堆或 SPI 时延。
 
@@ -395,12 +401,14 @@ MicroPython 1.29 `mpy-cross -march=xtensawin` 全源编译。主机 traced memor
 状态应用矩阵、五轮运行时目标导航、五轮捕获边沿到屏幕提交的交互探针，以及 16 帧秒表局部刷新
 分配探针；载荷在结束时删除，每阶段后复位设备并让 OLED 休眠。
 
-1.6.0 COM5 五阶段验收此前已完整通过：framebuffer 始终为同一个 8192 B 对象，Plot 工作区为
-104 B，frozen/MPY/Viper ABI 正确。本次显示与流畅度修正定向重跑应用矩阵，最低空闲堆为
-`10544 B`，`MemoryError=0`、普通错误 0，加载条覆盖的动态插件重载为 `146.166 ms`；交互复验的
-输入提交最大 `16.630 ms`，五轮前进/返回共 80 个动画帧，最大 `19.979 ms` 且净分配为 `0 B`。
-此前完整验收的普通最大 step 为 `26.939 ms`，Stopwatch 16 帧分配也为 `0 B`。
-验收输出 `ACCEPTANCE_COMPLETE`，随后删除临时载荷并让 OLED 硬件休眠。
+1.6.1 COM5 五阶段验收完整通过：35 个场景连续五轮的最低空闲堆为 `10832 B`，高于 8 KiB
+硬门槛 `2640 B`；`MemoryError=0`、普通错误 0，加载条覆盖的动态插件重载为 `142.466 ms`。
+预热运行期最大普通 step 为 `24.066 ms`，输入提交最大 `18.916 ms`；80 个动画帧最大
+`17.959 ms` 且净分配为 `0 B`，Stopwatch 16 帧分配也为 `0 B`。定向操作另覆盖 Calculator
+历史、光标、RPN 往返、Function Picker 四向/翻页、Variable Panel 和 Stopwatch 圈速运动：
+前五类 71 帧最大 `19.561 ms`，Stopwatch 4 帧最大 `19.872 ms`，最大操作 step `23.183 ms`，
+动画分配 `0 B`、堆漂移 `-368 B`。验收输出
+`ACCEPTANCE_COMPLETE`，随后删除临时载荷并让 OLED 硬件休眠。
 
 ## 实机回归清单
 
@@ -408,7 +416,7 @@ MicroPython 1.29 `mpy-cross -march=xtensawin` 全源编译。主机 traced memor
 2. 计算、赋值、重启，确认变量持久化；开关插件后再次进入函数选择器。
 3. 快速输入、长按 DEL/ESC、Shift+RPN、Shift+Tab，确认没有重复事件。
 4. 运行 `tools/run_device_acceptance.ps1` 完成统一验收；只有全部硬门槛通过时才应看到
-   `ACCEPTANCE_COMPLETE`。当前 1.5.0 合同为最低空闲堆 8 KiB、普通 step/动画帧严格 `<40 ms`、
+   `ACCEPTANCE_COMPLETE`。当前合同为最低空闲堆 8 KiB、普通 step/动画帧严格 `<40 ms`、
    输入提交 `<20 ms`，以及零错误和堆无持续下降。
 5. 运行秒表 30 分钟，并检查绘图、缩放、求解和错误弹窗。
 

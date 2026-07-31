@@ -144,19 +144,34 @@ def test_cross_panel_try_insert_is_all_or_nothing_when_input_is_full():
     assert box.get_str() == "1234"
 
 
-def test_typing_and_cursor_motion_snap_without_scheduling_frames():
+def test_typing_and_cursor_motion_uses_nonlinear_ease_out(monkeypatch):
+    clock = [100]
+    monkeypatch.setattr("ui.inputbox.time.ticks_ms", lambda: clock[0])
+    monkeypatch.setattr(
+        "ui.inputbox.time.ticks_diff", lambda newer, older: newer - older)
     box = InputBox(0, 0, 34, 12, 96)
 
     assert box.insert_str("1") is True
-    after_insert = box.cursor.x
+    first = box.cursor.x
+    target = box.x + 1 + 8
+    assert box.motion_active is True
+    assert box.x + 1 < first < target
 
-    assert box.delete_str() is True
-    assert box.cursor.x < after_insert
+    clock[0] = 124
+    assert box.advance_motion(clock[0]) is True
+    early = box.cursor.x
+    clock[0] = 148
+    assert box.advance_motion(clock[0]) is True
+    late = box.cursor.x
+    assert first < early < late < target
+    assert early - first > late - early
 
-    box.insert_str("12")
-    at_end = box.cursor.x
-    box.move_cursor_left()
-    assert box.cursor.x < at_end
+    clock[0] = 196
+    assert box.advance_motion(clock[0]) is True
+    assert box.cursor.x == target
+    assert box.motion_active is False
+    assert len(box._state[7:]) == 3
+    assert all(isinstance(value, int) for value in box._state[7:])
 
 
 def test_restored_text_can_position_the_cursor_without_animation():

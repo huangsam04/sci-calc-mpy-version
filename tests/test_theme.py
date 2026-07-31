@@ -1,3 +1,4 @@
+from ui import theme as theme_module
 from ui.theme import (
     draw_footer, draw_footer_cached, draw_footer_fast, draw_header_fast,
     fit_text)
@@ -7,6 +8,7 @@ class DisplaySpy:
     def __init__(self):
         self.direct = []
         self.text = []
+        self.builtin = []
 
     def fill_rectangle(self, *args):
         pass
@@ -19,6 +21,9 @@ class DisplaySpy:
 
     def draw_text(self, x, y, text, font, invert=False, gs=15, raw=False):
         self.text.append((x, y, text, font, gs, raw))
+
+    def draw_text8x8(self, x, y, text, gs=15):
+        self.builtin.append((x, y, text, gs))
 
 
 class FontStub:
@@ -54,6 +59,25 @@ def test_fast_footer_draws_static_and_dynamic_text_directly_as_bytes():
         (184, 56, b"1/96", font, 15),
     ]
     assert display.text == []
+
+
+def test_fast_footer_draws_prefitted_builtin_text_without_generic_fit(
+        monkeypatch):
+    display = DisplaySpy()
+
+    def generic_footer_forbidden(*_args, **_kwargs):
+        raise AssertionError("pre-fitted built-in footer used generic fitting")
+
+    monkeypatch.setattr(
+        theme_module, "draw_footer", generic_footer_forbidden)
+
+    draw_footer_fast(
+        display, "ENT UP/DN 4/6", b"ENT UP/DN 4/6", None, "12/24")
+
+    assert display.builtin == [
+        (3, 56, "ENT UP/DN 4/6", 9),
+        (168, 56, "12/24", 15),
+    ]
 
 
 def test_generic_footer_uses_allocation_free_direct_text():

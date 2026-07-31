@@ -43,6 +43,13 @@
 - [x] **页面流畅度**：按[动效分支](plans/motion.md#v160-显示与流畅度修正)把页面滑动改为 210 ms 整数 quadratic ease-out；在真机近似 24 ms 节拍下由 6 个增加到至少 10 个单调可见位置，不增加状态或缓冲。
 - [x] **验证与提交**：聚焦回归、`1127 passed` 主机门禁及 COM5 交互/应用矩阵已通过：动画由 56 增至 80 帧，最大 `19.979 ms`，输入 `16.630 ms`，逐帧分配 0 B，最低堆 `10544 B`，错误 0；单人 review 的数据来源措辞发现已修正，本批建立本地提交且不 push。
 
+## v1.6.1 Calculator 与列表交互修正
+
+- [x] **崩溃与页面生命周期**：按[页面生命周期分支](plans/page-lifecycle.md#v161-function-picker-往返与启动文案)先以真实 `Nav` 往返测试稳定复现 Calculator 按 `RPN` 打开 Function Picker 后返回的 `NoneType` 下标错误，再修复所有权或释放边界；不得靠保留整页常驻、吞掉异常或扩大产品导航接口规避。
+- [x] **Calculator 历史与光标**：按[动效分支](plans/motion.md#v161-calculator-与自绘列表动效)把最新历史改为表达式左对齐、结果右对齐的两行布局，并在其下显示两条单行旧历史；删除固定 `78 px` 结果宽度。历史选择和输入光标使用固定标量 ease-out，输入光标同时闪烁。
+- [x] **Function Panel 与自绘列表**：四个内置函数组显示紧凑用途摘要；Function Picker 的上下左右选择和跨 8 项页切换均有非线性动画。已有 `Menu` 列表继续复用其现有滑动；Calculator 历史、Variable Panel 与 Stopwatch 圈速均用固定标量补齐，最坏活动路径约 60 B，不新建通用动画框架。
+- [x] **启动、版本与验证**：启动进度区不再绘制任何 `import...` 详情，产品版本为 `1.6.1`；最终 `check.ps1` 为 `1142 passed`，COM5 五阶段全部通过并清理载荷、休眠 OLED，说明与差异复核完成且建立本地 checkpoint，不 push。
+
 ## 唯一执行顺序
 
 1. 运行 `check.ps1` 和现有 COM5 验收，记录未修改基线并让 OLED 休眠。

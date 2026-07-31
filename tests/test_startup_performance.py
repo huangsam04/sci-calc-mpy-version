@@ -482,7 +482,7 @@ def test_boot_progress_avoids_artificial_animation_delay(monkeypatch):
     assert delays == []
 
 
-def test_boot_progress_shows_the_actual_operation(monkeypatch):
+def test_boot_progress_does_not_render_internal_operation_details(monkeypatch):
     display = SplashDisplay()
     delays = []
     monkeypatch.setattr(main.time, "sleep_ms", delays.append)
@@ -490,8 +490,10 @@ def test_boot_progress_shows_the_actual_operation(monkeypatch):
     main._boot_progress(
         display, 3, 8, "Loading settings...", "load_settings()")
 
-    assert any(value == "load_settings()"
-               for _, _, value in display.text)
+    assert not any(value == "load_settings()"
+                   for _, _, value in display.text)
+    assert not any("import" in value.lower()
+                   for _, _, value in display.text)
     assert delays == []
 
 

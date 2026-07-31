@@ -12,6 +12,7 @@ LOWER_CONTINUATION_CUE_BYTES = b"v"
 INPUT_FULL_NOTICE = "Input full"
 INPUT_FULL_NOTICE_BYTES = b"Input full"
 MAX_VISIBLE_ROWS = 2
+CURSOR_MOTION_MS = 96
 _FUNCTION_KEY_INSERTS = {
     "sin": "sin(", "cos": "cos(", "tan": "tan(",
     "sec": "sec(", "csc": "csc(", "cot": "cot(",
@@ -61,15 +62,15 @@ class InputBox:
         visible_chars = max(1, max(1, width - 2 - cue_width) // pitch)
         # Fixed slots: packed geometry/limits, dimensions, delete time, packed
         # shade/layout rows, packed cached window, visible text/bytes, packed
-        # cached rows. Visible character count shares the dimensions integer;
-        # this seven-slot table needs at most 28 contiguous bytes.
+        # cached rows, plus three packed cursor-motion scalars. Visible
+        # character count shares the dimensions integer.
         state = [
             ((x & 511) | ((y & 511) << 9)
              | ((visible_rows - 1) << 18) | (max_char << 19)),
             ((width & 511) | ((height & 511) << 9)
              | ((visible_chars & 511) << 18)),
             0, 15 | (1 << 4) | (1 << 5), 0,
-            None, None,
+            None, None, -1, 0, 0,
         ]
         state[5] = [""] * visible_rows
         state[6] = [b""] * visible_rows
@@ -87,7 +88,95 @@ class InputBox:
         self.cursor.is_visible = True
 
     def deactivate(self):
+        self.finish_motion()
         self.cursor.is_visible = False
+
+    @property
+    def motion_active(self):
+        return self._state[7] >= 0
+
+    @staticmethod
+    def _pack_cursor_xy(x, y):
+        return (int(x) & 511) | ((int(y) & 127) << 9)
+
+    @staticmethod
+    def _cursor_x(packed):
+        return packed & 511
+
+    @staticmethod
+    def _cursor_y(packed):
+        return (packed >> 9) & 127
+
+    def set_cursor_target(self, x, y, width=None, height=None,
+                          immediate=False):
+        """Retarget the existing cursor with three fixed packed scalars."""
+        cursor = self.cursor
+        if width is not None:
+            cursor.width = width
+        if height is not None:
+            cursor.height = height
+        x = int(x)
+        y = int(y)
+        if immediate or (cursor.x == x and cursor.y == y):
+            cursor.x = x
+            cursor.y = y
+            self._state[7] = -1
+            return
+
+        dx = x - int(cursor.x)
+        dy = y - int(cursor.y)
+        if dx:
+            cursor.x += min(2, abs(dx)) if dx > 0 else -min(2, abs(dx))
+        if dy:
+            cursor.y += min(2, abs(dy)) if dy > 0 else -min(2, abs(dy))
+        state = self._state
+        state[7] = time.ticks_ms()
+        state[8] = self._pack_cursor_xy(cursor.x, cursor.y)
+        state[9] = self._pack_cursor_xy(x, y)
+        cursor.is_visible = True
+
+    def advance_motion(self, now):
+        state = self._state
+        started = state[7]
+        if started < 0:
+            return False
+        elapsed = time.ticks_diff(now, started)
+        if elapsed < 0:
+            elapsed = 0
+        start = state[8]
+        target = state[9]
+        start_x = self._cursor_x(start)
+        start_y = self._cursor_y(start)
+        target_x = self._cursor_x(target)
+        target_y = self._cursor_y(target)
+        old_x = int(self.cursor.x)
+        old_y = int(self.cursor.y)
+        if elapsed >= CURSOR_MOTION_MS:
+            self.cursor.x = target_x
+            self.cursor.y = target_y
+            state[7] = -1
+            return True
+        remaining = CURSOR_MOTION_MS - elapsed
+        denominator = CURSOR_MOTION_MS * CURSOR_MOTION_MS
+        distance = target_x - start_x
+        residual = abs(distance) * remaining * remaining // denominator
+        self.cursor.x = (target_x - residual if distance >= 0
+                         else target_x + residual)
+        distance = target_y - start_y
+        residual = abs(distance) * remaining * remaining // denominator
+        self.cursor.y = (target_y - residual if distance >= 0
+                         else target_y + residual)
+        return old_x != self.cursor.x or old_y != self.cursor.y
+
+    def finish_motion(self):
+        state = self._state
+        if state[7] < 0:
+            return False
+        target = state[9]
+        self.cursor.x = self._cursor_x(target)
+        self.cursor.y = self._cursor_y(target)
+        state[7] = -1
+        return True
 
     def release_memory(self):
         """Release bounded rendered rows without changing input text."""
@@ -154,17 +243,17 @@ class InputBox:
             if (new_length <= ((self._state[1] >> 18) & 511)
                     and self.view_offset == 0):
                 pitch = self.font.width + 1 if self.font else 8
-                self.cursor.change_target(
+                self.set_cursor_target(
                     self.x + 1 + new_length * pitch, self.y + 1)
                 return True
             self._clamp_view()
-            self._update_cursor_target(immediate=True)
+            self._update_cursor_target()
             return True
         self.str = current[:position] + value + current[position:]
         self.cursor_pos += len(value)
         self._invalidate_layout()
         self._clamp_view()
-        self._update_cursor_target(immediate=True)
+        self._update_cursor_target()
         return True
 
     def try_insert(self, value):
@@ -178,7 +267,7 @@ class InputBox:
         self.cursor_pos -= 1
         self._invalidate_layout()
         self._clamp_view()
-        self._update_cursor_target(immediate=True)
+        self._update_cursor_target()
         return True
 
     def move_cursor_left(self):
@@ -302,12 +391,13 @@ class InputBox:
         pitch = self.font.width + 1 if self.font else 8
         target_x = self.x + 1 + (position - line_start) * pitch
         target_y = self._text_y(cursor_line - view_line)
-        self.cursor.height = self._cursor_height()
-        self.cursor.change_target(target_x, target_y)
+        self.set_cursor_target(
+            target_x, target_y, height=self._cursor_height(),
+            immediate=immediate)
 
     def draw(self, display):
         state = self._state
-        self._update_cursor_target(immediate=True)
+        self._ensure_layout()
 
         layout = state[3]
         shade = layout & 15

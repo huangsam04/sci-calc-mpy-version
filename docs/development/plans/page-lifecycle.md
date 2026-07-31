@@ -40,3 +40,11 @@
 - [x] Calculator 固定历史与直接求值组合最终为 `11136 B / 56.665 ms`，`MemoryError=0`、普通错误 0、固定缓冲峰值 `8296 B`；未达到 12 KiB/32 ms，故恢复正式 tuple 历史，不进入 Stopwatch 或动画实现。
 
 完成后回到 [PLAN](../PLAN.md) 勾选“页面按需加载与彻底卸载”，再读取[动效分支](motion.md)。
+
+## v1.6.1 Function Picker 往返与启动文案
+
+- [x] 用真实 `Nav` 和 Calculator 页面生命周期建立最小红灯：Calculator 按 `RPN` 打开 Function Picker，选择或取消后返回 Calculator，原输入与历史仍可用且不得出现 `TypeError`；同一聚焦命令连续两次稳定复现修复前 `presented=None` 下标错误。
+- [x] 已证实 Calculator 离页释放派生 `render[0]` 后，返回首次全绘仍直接下标访问该空缓存；两个首次全绘边界现容忍 `None`，聚焦往返/释放/重建回归 `3 passed`。页面仍按原规则释放，不保留整页常驻、不吞异常且未增加导航接口。
+- [x] 已清点所有 `_boot_progress` 调用；启动屏保留面向用户的阶段、进度和启动失败界面，但不再绘制 54 px 的内部 operation/detail 整行，因此不显示模块名、调用名或 `import...` 文本。
+- [x] Function Panel 四个内置组改为屏宽内固定短摘要：`Basic (+ - * / ...)`、`Trig (sin cos tan)`、`Science (sqrt ln exp)`、`Lists (max min ...)`；最长 25 字符。动态 Add-ons 名称和加载边界不变。
+- [x] Calculator/Picker 往返、OOM/异常回滚、启动详情、内置/动态分组和设备 boot probe 聚焦回归通过，产品版本为 `1.6.1`；文本/版本批次 `39 passed`，无旧形状兼容层。

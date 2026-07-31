@@ -198,12 +198,34 @@ def test_variable_panel_draws_only_the_visible_value_page():
                for _x, _y, text, _gs in display.direct)
 
     panel.draw(display)
-    assert len(formatted) == 16
+    assert len(formatted) == 8
 
     panel._state[2] = 8
     panel.draw(display)
 
-    assert len(formatted) == 24
+    assert len(formatted) == 16
+
+
+def test_variable_panel_selection_has_cursor_motion(monkeypatch):
+    clock = [100]
+    monkeypatch.setattr(variable_panel_module.time, "ticks_ms", lambda: clock[0])
+    monkeypatch.setattr(
+        variable_panel_module.time, "ticks_diff",
+        lambda newer, older: newer - older)
+    calc = _Calculator(accepts=True)
+    calc.vars = {"a": 1, "b": 2, "c": 3}
+    panel = VariablePanel(_Font(), calc)
+    panel.activate()
+
+    assert panel.update(None, (3, 1, False)) == "REDRAW"
+    assert panel.motion_active is True
+    clock[0] = 148
+    assert panel.advance_motion(clock[0]) is True
+    assert panel.motion_active is True
+    clock[0] = 196
+    assert panel.advance_motion(clock[0]) is True
+    assert panel.motion_active is False
+    assert all(isinstance(value, int) for value in panel._state[6:8])
 
 
 def test_variable_panel_draws_its_empty_state():
