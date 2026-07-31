@@ -56,6 +56,13 @@
 - [x] 新 frozen 固件仅写入 COM5 factory 应用分区 `0x10000`，快速 MPY 增量部署及统一验收通过：`heap_min=10080 B`、普通最大 step `23.554 ms`、输入 `19.012 ms`、动画最大 `17.058 ms`、逐帧分配 `0 B`、错误 0；临时载荷已删除，用户数据未受影响，收尾 OLED 休眠。
 - [x] `.work/releases/v1.5.0/` 中保留 `1823232 B` 可上传固件及 SHA-256 摘要；README/技术说明已写入实际结果，单人审查无未解决发现，本批完成本地 release commit 和 annotated tag `v1.5.0`，不 push。
 
+## v1.6.0 横向滑动验证
+
+- [x] 版本、Display 原地位移/裁剪、Renderer 同帧组合和 Nav 前进/返回方向有聚焦回归；旧亮度过渡实现与专属测试已删除。
+- [x] 单一 8192 B framebuffer、0 B 新像素缓冲、10 个动画固定标量约 40 B、逐帧分配 0 B，以及中断/异常/休眠终态由现有回归覆盖。
+- [x] 最终 `check.ps1` 为 `1125 passed`；frozen 固件与 MPY 已部署 COM5，统一五阶段为最低堆 `10528 B`、普通最大 step `26.939 ms`、输入 `16.608 ms`、动画最大 `20.030 ms`、逐帧分配 `0 B`、错误 0 和五轮堆稳定。
+- [x] COM5 临时载荷已删除并硬件休眠 OLED；README、USER_GUIDE 和 TECHNICAL_GUIDE 已写入实际行为与数据，单人双轴 review 无未解决发现，本批建立本地提交且不 push。
+
 ## 8 KiB 动画优先续行
 
 - [x] 已把无动画发布基线 `7e4e807` 标记为本地 annotated tag `v1.4.0`，工作树在续行前干净，未 push。

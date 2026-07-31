@@ -163,21 +163,105 @@ def test_brightness_and_addressing_use_fixed_command_helpers():
     ]
 
 
-def test_transition_current_uses_fixed_command_without_changing_user_setting():
+def test_content_slide_shifts_only_page_bytes_and_preserves_sidebar_bytes():
     display = Display.__new__(Display)
-    display.brightness = 80
-    calls = []
-    display._write_cmd1 = lambda command, value: calls.append(
-        (command, value))
+    display.width = 8
+    display.height = 2
+    display.byte_width = 4
+    display.gs4_buf = bytearray((
+        0x12, 0x34, 0x56, 0xAB,
+        0x78, 0x9A, 0xBC, 0xCD,
+    ))
 
-    display.set_transition_current(0)
-    display.set_transition_current(15)
+    display.shift_content(-2, 6)
 
-    assert calls == [
-        (display.MASTER_CURRENT_CONTROL, 0),
-        (display.MASTER_CURRENT_CONTROL, 15),
+    assert display.gs4_buf == bytearray((
+        0x34, 0x56, 0x00, 0xAB,
+        0x9A, 0xBC, 0x00, 0xCD,
+    ))
+
+    display.shift_content(2, 6)
+
+    assert display.gs4_buf == bytearray((
+        0x00, 0x34, 0x56, 0xAB,
+        0x00, 0x9A, 0xBC, 0xCD,
+    ))
+
+
+def test_content_draw_window_translates_and_clips_packed_text_exactly():
+    display = Display.__new__(Display)
+    display.width = 16
+    display.height = 16
+    display.byte_width = 8
+    display.gs4_buf = bytearray(display.byte_width * display.height)
+    display._draw_x = 0
+    display._clip_x0 = 0
+    display._clip_x1 = display.width
+    font = type("Font", (), {
+        "letters": bytes((2, 5, 2)),
+        "height": 3,
+        "bytes_per_letter": 3,
+        "start_letter": 65,
+        "letter_count": 1,
+    })()
+
+    display.begin_content_draw(4, 5, 6)
+    display.draw_text_direct(0, 7, b"A", font, gs=9)
+    display.end_content_draw()
+
+    assert display.gs4_buf[7 * 8 + 2] == 0
+    assert display.gs4_buf[8 * 8 + 2] == 0x09
+    assert display.gs4_buf[9 * 8 + 2] == 0
+    assert (display._draw_x, display._clip_x0, display._clip_x1) == (
+        0, 0, display.width)
+
+
+def test_content_draw_window_clips_page_primitives_to_exposed_strip():
+    class FrameSpy:
+        def __init__(self):
+            self.calls = []
+
+        def fill_rect(self, *args):
+            self.calls.append(("fill",) + args)
+
+        def hline(self, *args):
+            self.calls.append(("hline",) + args)
+
+        def vline(self, *args):
+            self.calls.append(("vline",) + args)
+
+        def line(self, *args):
+            self.calls.append(("line",) + args)
+
+        def pixel(self, *args):
+            self.calls.append(("pixel",) + args)
+
+    display = Display.__new__(Display)
+    display.width = 16
+    display.height = 8
+    display._draw_x = 0
+    display._clip_x0 = 0
+    display._clip_x1 = display.width
+    display.gs4_fb = FrameSpy()
+
+    display.begin_content_draw(4, 6, 10)
+    display.fill_rectangle(0, 1, 8, 2, 3)
+    display.draw_hline(0, 3, 8, 4)
+    display.draw_vline(2, 0, 4, 5)
+    display.draw_pixel(0, 0, 6)
+    display.draw_line(0, 5, 8, 5, 7)
+    display.end_content_draw()
+
+    assert display.gs4_fb.calls == [
+        ("fill", 6, 1, 4, 2, 3),
+        ("hline", 6, 3, 4, 4),
+        ("vline", 6, 0, 4, 5),
+        ("line", 6, 5, 9, 5, 7),
     ]
-    assert display.brightness == 80
+
+
+def test_hardware_brightness_has_no_page_transition_current_api():
+    assert not hasattr(Display, "set_transition_current")
 
 
 def test_present_rows_merges_each_contiguous_full_width_range_into_one_write():
@@ -233,6 +317,8 @@ def test_display_initialization_preseeds_all_eleven_hot_partial_views(
                and view[2].obj is display.gs4_buf
                for view in display._row_views)
     assert len(display._row_views) == 11
+    assert (display._draw_x, display._clip_x0, display._clip_x1) == (
+        0, 0, display.width)
 
 
 def test_present_rows_uses_preseeded_views_for_steady_one_and_two_band_damage():

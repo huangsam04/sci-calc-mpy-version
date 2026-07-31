@@ -23,7 +23,9 @@ class _Summary:
         "buffer_peak_bytes", "failure_mask", "step_name", "phase",
         "bounded_close_attempts", "bounded_session_restored",
         "primary_error", "blocking_round", "blocking_step",
-        "heap_step_name", "heap_phase", "heap_round", "heap_step")
+        "heap_step_name", "heap_phase", "heap_round", "heap_step",
+        "scenario_name", "scenario_heap_before", "scenario_heap_after",
+        "scenario_heap_delta")
 
     def __init__(self):
         self.accepted = False
@@ -49,6 +51,10 @@ class _Summary:
         self.heap_phase = 0
         self.heap_round = -1
         self.heap_step = 0
+        self.scenario_name = None
+        self.scenario_heap_before = -1
+        self.scenario_heap_after = -1
+        self.scenario_heap_delta = -1
 
     def observe(self, event, report):
         heap_free = -1
@@ -112,6 +118,10 @@ def _merge(summary, report):
     summary.bounded_session_restored = (
         summary.bounded_session_restored
         and report.bounded_session_restored)
+    summary.scenario_name = report.scenario_name
+    summary.scenario_heap_before = report.heap_before
+    summary.scenario_heap_after = report.heap_after
+    summary.scenario_heap_delta = report.heap_delta
 
 
 def _warm_pages(runtime):
@@ -199,7 +209,11 @@ def run(runtime=None, emit=print):
             + " heap_step_name=" + str(report.heap_step_name)
             + " heap_phase=" + str(report.heap_phase)
             + " heap_round=" + str(report.heap_round)
-            + " heap_step=" + str(report.heap_step))
+            + " heap_step=" + str(report.heap_step)
+            + " scenario_name=" + str(report.scenario_name)
+            + " scenario_heap_before=" + str(report.scenario_heap_before)
+            + " scenario_heap_after=" + str(report.scenario_heap_after)
+            + " scenario_heap_delta=" + str(report.scenario_heap_delta))
         if not report.accepted:
             primary = report.primary_error
             emit(

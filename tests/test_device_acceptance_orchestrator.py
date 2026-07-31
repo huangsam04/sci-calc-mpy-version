@@ -239,6 +239,45 @@ def test_device_acceptance_dry_run_orders_five_existing_tracers():
     assert "application_matrix" in result.stdout
 
 
+def test_device_acceptance_dry_run_can_select_one_existing_tracer():
+    powershell = shutil.which("pwsh")
+    assert powershell is not None
+
+    result = subprocess.run(
+        [
+            powershell,
+            "-NoProfile",
+            "-File",
+            str(ORCHESTRATOR),
+            "-Port",
+            "TEST_PORT",
+            "-DryRun",
+            "-OnlyStage",
+            "interaction_screen_tracer",
+        ],
+        cwd=PROJECT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    events = [
+        line for line in result.stdout.splitlines()
+        if line.startswith("ACCEPTANCE_")
+    ]
+    assert events == [
+        "ACCEPTANCE_RESET TEST_PORT",
+        "ACCEPTANCE_SUPPORT_INSTALL files=23",
+        "ACCEPTANCE_STAGE interaction_screen_tracer",
+        ("ACCEPTANCE_COMMAND TEST_PORT "
+         ".work/mpy/device-tools/device_interaction_acceptance.mpy"),
+        "ACCEPTANCE_RESET TEST_PORT",
+        "ACCEPTANCE_SUPPORT_REMOVE files=23",
+        "ACCEPTANCE_DRY_RUN_COMPLETE TEST_PORT stages=1",
+    ]
+
+
 def test_device_acceptance_sleeps_through_the_nav_owner_interface():
     source = ORCHESTRATOR.read_text(encoding="utf-8")
 

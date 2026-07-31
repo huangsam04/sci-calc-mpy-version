@@ -6,6 +6,7 @@ from screens import calculator as calculator_module
 from screens.calculator import (
     MAX_HISTORY_ENTRIES, MAX_HISTORY_EXPRESSION_CHARS, CalculatorScreen,
     MAX_EXPRESSION_CHARS)
+from ui.element import SETTLE_REDRAW
 from ui.motion import DAMAGE_FULL, DAMAGE_NONE, DAMAGE_PARTIAL, DamageMap
 
 
@@ -194,7 +195,7 @@ def test_expanding_the_input_panel_keeps_selected_history_visible():
     assert screen._state[3][2] == 1
 
 
-def test_typing_uses_editor_and_footer_rows_but_wrapping_falls_back_to_full_frame():
+def test_typing_splits_editor_and_footer_rows_but_wrapping_uses_full_frame():
     screen = CalculatorScreen(None, registry=build_registry(), variables={})
     footer = screen._state[2][1]
     screen.activate()
@@ -206,9 +207,15 @@ def test_typing_uses_editor_and_footer_rows_but_wrapping_falls_back_to_full_fram
     screen.input_box.insert_str("1")
     damage = DamageMap()
     assert screen.collect_present_damage(damage) == DAMAGE_PARTIAL
-    assert damage.ranges == [[0, 12], [54, 10]]
+    assert damage.ranges == [[0, 12], [0, 0]]
     assert not hasattr(screen, "_editor_present_state")
 
+    screen.mark_presented()
+    assert screen.settle_step() == SETTLE_REDRAW
+    damage.clear()
+    assert screen.collect_present_damage(damage) == 3
+    assert damage.ranges == [[54, 10], [0, 0]]
+    screen.draw_present_rows(CalculatorDisplay())
     screen.mark_presented()
     damage.clear()
     assert screen.collect_present_damage(damage) == DAMAGE_NONE
@@ -427,12 +434,25 @@ def test_calculator_partial_editor_redraw_keeps_static_footer_hint():
     display.hlines.clear()
 
     screen.input_box.insert_str("1")
+    damage = DamageMap()
+    assert screen.collect_present_damage(damage) == DAMAGE_PARTIAL
     screen.draw_present_rows(display)
+    screen.mark_presented()
 
     footer_draws = [item for item in display.direct if item[1] == 56]
     assert all(
         item[2] != calculator_module._INPUT_FOOTER_HINT.encode()
         for item in footer_draws)
+    assert not any(item[2] == b"1/96" for item in footer_draws)
+    assert (130, 54, 80, 10, 0) not in display.fills
+
+    assert screen.settle_step() == SETTLE_REDRAW
+    damage.clear()
+    assert screen.collect_present_damage(damage) == 3
+    screen.draw_present_rows(display)
+    screen.mark_presented()
+
+    footer_draws = [item for item in display.direct if item[1] == 56]
     assert any(item[2] == b"1/96" for item in footer_draws)
     assert (130, 54, 80, 10, 0) in display.fills
     assert (130, 54, 80, 8) in display.hlines

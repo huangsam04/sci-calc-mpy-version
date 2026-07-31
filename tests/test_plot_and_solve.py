@@ -51,21 +51,10 @@ class FooterFont:
         return len(text) * 6
 
 
-class CurveFrame:
+class CurveDisplay:
     def __init__(self):
         self.pixels = []
         self.lines = []
-
-    def pixel(self, *args):
-        self.pixels.append(args)
-
-    def line(self, *args):
-        self.lines.append(args)
-
-
-class CurveDisplay:
-    def __init__(self):
-        self.gs4_fb = CurveFrame()
 
     def draw_rectangle(self, *_args):
         pass
@@ -76,8 +65,11 @@ class CurveDisplay:
     def draw_vline(self, *_args):
         pass
 
-    def draw_pixel(self, *_args):
-        pass
+    def draw_pixel(self, *args):
+        self.pixels.append(args)
+
+    def draw_line(self, *args):
+        self.lines.append(args)
 
 
 class ProgressDisplay(CurveDisplay):
@@ -132,11 +124,11 @@ def test_plot_draws_compact_samples_directly_into_the_main_framebuffer():
 
     plot._draw_graph(display)
 
-    assert display.gs4_fb.pixels == [
+    assert display.pixels[:2] == [
         (2, 10, 15),
         (8, 20, 15),
     ]
-    assert display.gs4_fb.lines == [(2, 10, 4, 12, 15)]
+    assert display.lines == [(2, 10, 4, 12, 15)]
 
 
 def test_resident_plot_keeps_parameters_while_rebuilding_released_curve():

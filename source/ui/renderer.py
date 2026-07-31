@@ -102,6 +102,39 @@ class Renderer:
             marker(screen)
         return True
 
+    def prepare_slide(self, screen):
+        """Release the departed screen identity while retaining its pixels."""
+        self._cache_screen_hooks(screen)
+        self._visible_screen = None
+
+    def present_slide(self, screen, direction, distance, delta):
+        """Compose one directional page frame in the sole framebuffer."""
+        self._cache_screen_hooks(screen)
+        display = self.display
+        display_type = type(display)
+        display_type.shift_content(display, direction * delta, CONTENT_W)
+        if direction < 0:
+            offset = CONTENT_W - distance
+            clip_start = offset
+            clip_end = CONTENT_W
+        else:
+            offset = distance - CONTENT_W
+            clip_start = 0
+            clip_end = distance
+        display_type.begin_content_draw(
+            display, offset, clip_start, clip_end)
+        try:
+            self._draw_hook(screen, display)
+        finally:
+            display_type.end_content_draw(display)
+        self._present(None)
+        if distance >= CONTENT_W:
+            self._visible_screen = screen
+            marker = self._mark_hook
+            if marker is not None:
+                marker(screen)
+        return True
+
     def invalidate(self):
         self._visible_screen = None
         self._sidebar_dirty = True

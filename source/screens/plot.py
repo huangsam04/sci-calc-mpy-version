@@ -801,11 +801,11 @@ class PlotScreen(UIElement):
                     if (previous_x is not None
                             and abs(sample_y - previous_y)
                             <= graph_h * 3 // 4):
-                        display.gs4_fb.line(
+                        display.draw_line(
                             graph_left + previous_x, graph_top + previous_y,
                             graph_left + sample_x, graph_top + sample_y, 15)
                     else:
-                        display.gs4_fb.pixel(
+                        display.draw_pixel(
                             graph_left + sample_x, graph_top + sample_y, 15)
                     previous_x = sample_x
                     previous_y = sample_y

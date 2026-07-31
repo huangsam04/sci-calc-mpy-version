@@ -24,9 +24,14 @@ class RendererStub:
         self.invalidated = False
         self.commit = True
         self.error = None
+        self.slide_error = None
         self.hook_screen = None
+        self.slides = []
 
     def _cache_screen_hooks(self, screen):
+        self.hook_screen = screen
+
+    def prepare_slide(self, screen):
         self.hook_screen = screen
 
     def present(self, screen):
@@ -34,6 +39,12 @@ class RendererStub:
             raise self.error
         self.presented.append(screen)
         return self.commit
+
+    def present_slide(self, screen, direction, distance, delta):
+        if self.slide_error is not None:
+            raise self.slide_error
+        self.slides.append((screen, direction, distance, delta))
+        return True
 
     def invalidate(self):
         self.invalidated = True
@@ -82,20 +93,6 @@ class KeyboardStub:
         return self.pressed
 
 
-class BrightnessDisplay:
-    def __init__(self, brightness=80):
-        self.brightness = brightness
-        self.currents = []
-        self.restored = []
-
-    def set_transition_current(self, level):
-        self.currents.append(level)
-
-    def set_brightness(self, percent):
-        self.brightness = percent
-        self.restored.append(percent)
-
-
 class LifecycleMemory:
     def __init__(self, events):
         self.events = events
@@ -137,8 +134,7 @@ def _nav(monkeypatch, memory=None, display=None, page_builder=None):
 
 def test_navigation_exposes_followup_input_immediately_without_page_motion(
         monkeypatch):
-    display = BrightnessDisplay(brightness=80)
-    nav = _nav(monkeypatch, display=display)
+    nav = _nav(monkeypatch, display=object())
     first = ScreenStub()
     second = ScreenStub()
     keyboard = KeyboardStub([(3, 0, False), (3, 1, False)])
@@ -148,11 +144,40 @@ def test_navigation_exposes_followup_input_immediately_without_page_motion(
 
     assert nav.current is second
     assert nav.motion_active is True
+    assert nav.present_current() is True
+    assert nav.renderer.slides
     assert nav.poll_event(keyboard) == (3, 0, False)
     assert nav.motion_active is False
     assert nav.renderer.presented == [second]
-    assert display.currents == [12]
     assert nav.poll_event(keyboard) == (3, 1, False)
+
+
+def test_navigation_slide_uses_three_scalars_and_decelerating_cubic_steps(
+        monkeypatch):
+    clock = [100]
+    monkeypatch.setattr(main_module.time, "ticks_ms", lambda: clock[0])
+    monkeypatch.setattr(
+        main_module.time, "ticks_diff", lambda newer, older: newer - older)
+    nav = _nav(monkeypatch, display=object())
+    nav.boot(ScreenStub())
+    nav.go_to(ScreenStub(), (3, 3, False))
+    distances = []
+
+    for elapsed in (0, 28, 56, 84, 112, 140):
+        clock[0] = 100 + elapsed
+        nav.present_current(clock[0])
+        distances.append(nav.renderer.slides[-1][2])
+
+    increments = [
+        distances[index] - distances[index - 1]
+        for index in range(1, len(distances))]
+    assert len(nav._motion) == 3
+    assert distances[0] == 2
+    assert distances[-1] == 210
+    assert all(left < right for left, right in zip(
+        distances, distances[1:]))
+    assert all(left > right for left, right in zip(
+        increments, increments[1:]))
 
 
 def test_main_menu_routes_page_ids_through_nav_owned_lazy_construction(
@@ -336,14 +361,13 @@ def test_nav_first_and_repeat_entry_covers_every_supported_page(monkeypatch):
     nav.back()
 
 
-def test_navigation_fades_in_hardware_and_commits_target_once_at_dark_point(
+def test_navigation_uses_cubic_forward_slide_and_commits_target_at_endpoint(
         monkeypatch):
     clock = [100]
     monkeypatch.setattr(main_module.time, "ticks_ms", lambda: clock[0])
     monkeypatch.setattr(
         main_module.time, "ticks_diff", lambda newer, older: newer - older)
-    display = BrightnessDisplay(brightness=80)
-    nav = _nav(monkeypatch, display=display)
+    nav = _nav(monkeypatch, display=object())
     root = ScreenStub()
     child = ScreenStub()
     nav.boot(root)
@@ -353,51 +377,50 @@ def test_navigation_fades_in_hardware_and_commits_target_once_at_dark_point(
     assert nav.current is child
     assert nav.motion_active is True
     assert nav.renderer.hook_screen is child
-    assert nav.renderer.presented == []
 
     assert nav.present_current(clock[0]) is True
-    assert display.currents == [11]
-    assert nav.renderer.presented == []
+    first_distance = nav.renderer.slides[-1][2]
+    assert nav.renderer.slides[-1] == (child, -1, 2, 2)
 
     clock[0] = 170
     assert nav.present_current(clock[0]) is True
-    assert nav.renderer.presented == [child]
-    assert display.currents == [11, 0, 1]
+    middle = nav.renderer.slides[-1]
+    assert middle[1] == -1
+    assert middle[2] > 105
+    assert middle[2] > first_distance
+    assert middle[3] == middle[2] - first_distance
 
     clock[0] = 240
     assert nav.present_current(clock[0]) is True
     assert nav.motion_active is False
-    assert nav.renderer.presented == [child]
-    assert display.currents == [11, 0, 1, 12]
-    assert display.restored == []
+    assert nav.renderer.slides[-1][0:3] == (child, -1, 210)
 
 
-def test_navigation_fade_restores_brightness_if_dark_point_commit_fails(
+def test_navigation_slide_clears_motion_if_composition_fails(
         monkeypatch):
     clock = [100]
     monkeypatch.setattr(main_module.time, "ticks_ms", lambda: clock[0])
     monkeypatch.setattr(
         main_module.time, "ticks_diff", lambda newer, older: newer - older)
-    display = BrightnessDisplay(brightness=80)
-    nav = _nav(monkeypatch, display=display)
+    nav = _nav(monkeypatch, display=object())
     root = ScreenStub()
     child = ScreenStub()
     nav.boot(root)
     nav.go_to(child, (3, 3, False))
-    nav.present_current(clock[0])
-    nav.renderer.error = MemoryError("present")
+    nav.renderer.slide_error = MemoryError("present")
 
-    clock[0] = 170
     with pytest.raises(MemoryError, match="present"):
         nav.present_current(clock[0])
 
     assert nav.motion_active is False
-    assert display.currents == [11, 0, 12]
 
 
-def test_back_fade_prepares_root_hooks_without_invalidating_sidebar(monkeypatch):
-    display = BrightnessDisplay(brightness=80)
-    nav = _nav(monkeypatch, display=display)
+def test_back_slide_moves_right_and_prepares_root_hooks(monkeypatch):
+    clock = [100]
+    monkeypatch.setattr(main_module.time, "ticks_ms", lambda: clock[0])
+    monkeypatch.setattr(
+        main_module.time, "ticks_diff", lambda newer, older: newer - older)
+    nav = _nav(monkeypatch, display=object())
     root = ScreenStub()
     child = ScreenStub()
     nav.boot(root)
@@ -409,6 +432,10 @@ def test_back_fade_prepares_root_hooks_without_invalidating_sidebar(monkeypatch)
     assert nav.motion_active is True
     assert nav.renderer.hook_screen is root
     assert nav.renderer.invalidated is False
+
+    nav.present_current(clock[0])
+
+    assert nav.renderer.slides[-1] == (root, 1, 2, 2)
 
 
 def test_input_batch_bounds_latency_and_leaves_queued_edges_for_next_frame(

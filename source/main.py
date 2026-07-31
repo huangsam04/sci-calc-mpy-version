@@ -440,7 +440,8 @@ PAGE_ABOUT = 6
 PAGE_LETTERS = 7
 PAGE_FUNCTION_PICKER = 8
 PAGE_VARIABLE_PANEL = 9
-PAGE_FADE_MS = 70
+PAGE_SLIDE_MS = 140
+PAGE_SLIDE_WIDTH = 210
 
 class Nav:
     """Exclusive owner for root, active pages, and rebuildable resources."""
@@ -755,7 +756,7 @@ class Nav:
             self.stack.pop()
             self._restore_active_screen(old, primary_error)
             raise
-        self._start_motion(trigger_event)
+        self._start_motion(trigger_event, -1)
 
     def go_to(self, screen, trigger_event=None):
         self._go_to(screen, trigger_event)
@@ -804,7 +805,7 @@ class Nav:
                 raise parent_restore_error
             self._restore_active_screen(old, primary_error)
             raise
-        self._start_motion(trigger_event)
+        self._start_motion(trigger_event, 1)
 
     def go_back(self, trigger_event=None):
         self._go_back(trigger_event)
@@ -823,33 +824,25 @@ class Nav:
     def motion_active(self):
         return bool(self._motion[0])
 
-    def _normal_current(self):
-        percent = getattr(self.renderer.display, "brightness", 100)
-        percent = max(10, min(100, int(percent)))
-        return max(1, min(15, (percent * 15 + 50) // 100))
-
-    def _start_motion(self, trigger_event):
-        display = self.renderer.display
-        if (trigger_event is None
-                or getattr(display, "set_transition_current", None) is None):
+    def _start_motion(self, trigger_event, direction):
+        if trigger_event is None:
             return
-        cache_screen = getattr(
-            type(self.renderer), "_cache_screen_hooks", None)
-        if cache_screen is not None:
-            cache_screen(self.renderer, self.current)
+        prepare = getattr(type(self.renderer), "prepare_slide", None)
+        if prepare is None:
+            return
+        prepare(self.renderer, self.current)
         motion = self._motion
-        motion[0] = 1
+        motion[0] = direction
         motion[1] = time.ticks_ms()
-        motion[2] = self._normal_current()
+        motion[2] = 0
 
     def cancel_motion(self):
-        """Restore current without committing pixels, for sleep and recovery."""
+        """Stop a slide and force the next safe frame to rebuild the target."""
         motion = self._motion
         if not motion[0]:
             return False
-        normal_current = motion[2]
         motion[0] = 0
-        self.renderer.display.set_transition_current(normal_current)
+        self.renderer.invalidate()
         return True
 
     def finish_motion(self):
@@ -858,57 +851,47 @@ class Nav:
         phase = motion[0]
         if not phase:
             return False
-        normal_current = motion[2]
         motion[0] = 0
-        try:
-            if phase == 1:
-                presented = self.renderer.present(self.current)
-                self.last_present_us = self.renderer.last_present_us
-            else:
-                presented = False
-        finally:
-            self.renderer.display.set_transition_current(normal_current)
+        presented = self.renderer.present(self.current)
+        self.last_present_us = self.renderer.last_present_us
         return presented or True
 
     def present_current(self, now=None):
         motion = self._motion
-        phase = motion[0]
-        if phase:
+        direction = motion[0]
+        if direction:
             if now is None:
                 now = time.ticks_ms()
             elapsed = time.ticks_diff(now, motion[1])
             if elapsed < 0:
                 elapsed = 0
-            normal_current = motion[2]
-            display = self.renderer.display
-            if phase == 1:
-                if elapsed < PAGE_FADE_MS:
-                    level = normal_current * (PAGE_FADE_MS - elapsed) // PAGE_FADE_MS
-                    level = min(normal_current - 1, level)
-                    display.set_transition_current(max(0, level))
-                    self.last_present_us = 0
-                    return True
-                display.set_transition_current(0)
-                try:
-                    self.renderer.present(self.current)
-                    self.last_present_us = self.renderer.last_present_us
-                except BaseException:
-                    motion[0] = 0
-                    display.set_transition_current(normal_current)
-                    raise
-                motion[0] = 2
-                motion[1] = now
-                display.set_transition_current(1)
-                return True
-            if elapsed >= PAGE_FADE_MS:
-                display.set_transition_current(normal_current)
-                motion[0] = 0
+            previous = motion[2]
+            if elapsed >= PAGE_SLIDE_MS:
+                distance = PAGE_SLIDE_WIDTH
+            else:
+                remaining = PAGE_SLIDE_MS - elapsed
+                residual = (
+                    PAGE_SLIDE_WIDTH * remaining * remaining * remaining
+                    // (PAGE_SLIDE_MS * PAGE_SLIDE_MS * PAGE_SLIDE_MS))
+                distance = (PAGE_SLIDE_WIDTH - residual) & ~1
+                if previous == 0 and distance < 2:
+                    distance = 2
+            if distance <= previous:
                 self.last_present_us = 0
-                return True
-            level = normal_current * elapsed // PAGE_FADE_MS
-            display.set_transition_current(max(1, min(normal_current, level)))
-            self.last_present_us = 0
-            return True
+                return False
+            delta = distance - previous
+            try:
+                presented = self.renderer.present_slide(
+                    self.current, direction, distance, delta)
+                self.last_present_us = self.renderer.last_present_us
+            except BaseException:
+                motion[0] = 0
+                self.renderer.invalidate()
+                raise
+            motion[2] = distance
+            if distance >= PAGE_SLIDE_WIDTH:
+                motion[0] = 0
+            return presented
         presented = self.renderer.present(self.current)
         self.last_present_us = self.renderer.last_present_us
         return presented

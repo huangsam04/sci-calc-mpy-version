@@ -34,6 +34,8 @@ if _HAS_FAST_TEXT_DRAW:
                            shade: int, font_height: int, byte_height: int,
                            bytes_per_letter: int, start_letter: int,
                            end_letter: int, spacing: int,
+                           clip_enabled: int,
+                           clip_x0: int, clip_x1: int,
                            screen_width: int, screen_height: int) -> int:
         char_index: int = 0
         while char_index < text_length:
@@ -60,7 +62,11 @@ if _HAS_FAST_TEXT_DRAW:
                             # Viper pointer writes do not bounds-check.  Keep
                             # all four edge tests immediately before deriving
                             # the buffer offset so clipped text is safe too.
-                            if (pixel_x >= 0 and pixel_x < screen_width
+                            if ((clip_enabled == 0
+                                    or (pixel_x >= clip_x0
+                                        and pixel_x < clip_x1))
+                                    and pixel_x >= 0
+                                    and pixel_x < screen_width
                                     and pixel_y >= 0
                                     and pixel_y < screen_height):
                                 output_offset: int = (
@@ -77,6 +83,35 @@ if _HAS_FAST_TEXT_DRAW:
                 column += 1
             x += width + spacing
             char_index += 1
+        return 1
+
+
+    @micropython.viper
+    def _shift_content_bytes(target: ptr8, stride: int, rows: int,
+                             content_bytes: int, delta: int) -> int:
+        row: int = 0
+        while row < rows:
+            base: int = row * stride
+            if delta > 0:
+                index: int = content_bytes - 1
+                while index >= delta:
+                    target[base + index] = target[base + index - delta]
+                    index -= 1
+                index = 0
+                while index < delta:
+                    target[base + index] = 0
+                    index += 1
+            else:
+                shift: int = -delta
+                limit: int = content_bytes - shift
+                index = 0
+                while index < limit:
+                    target[base + index] = target[base + index + shift]
+                    index += 1
+                while index < content_bytes:
+                    target[base + index] = 0
+                    index += 1
+            row += 1
         return 1
 
 
@@ -161,6 +196,11 @@ class Display(object):
         self.buffer_length = self.byte_width * height
         # Buffer
         self.gs4_buf = bytearray(self.buffer_length)
+        # Three fixed drawing-window scalars let the sole framebuffer compose
+        # page slides without a page wrapper or raster scratch buffer.
+        self._draw_x = 0
+        self._clip_x0 = 0
+        self._clip_x1 = width
         # ``present_rows()`` keeps one main view and preseeded fixed hot-band
         # views.  The normal 64-row display covers Calculator/Plot editor
         # bands, the Stopwatch's 13-row timer band, the shared footer, and all
@@ -299,9 +339,17 @@ class Display(object):
             w (int): Width of line.
             gs (int): Grayscale 0=Black to 15=White (default grayscale table)
         """
-        if self.is_off_grid(x, y, x + w - 1, y):
+        if self._draw_x == 0:
+            if self.is_off_grid(x, y, x + w - 1, y):
+                return
+            self.gs4_fb.hline(x, y, w, gs)
             return
-        self.gs4_fb.hline(x, y, w, gs)
+        x += self._draw_x
+        x0 = max(self._clip_x0, x)
+        x1 = min(self._clip_x1, x + w)
+        if y < 0 or y >= self.height or x1 <= x0:
+            return
+        self.gs4_fb.hline(x0, y, x1 - x0, gs)
 
     def draw_pixel(self, x, y, gs=15):
         """Draw a single pixel.
@@ -311,9 +359,46 @@ class Display(object):
             y (int): Y position.
             gs (int): Grayscale 0=Black to 15=White (default grayscale table)
         """
-        if self.is_off_grid(x, y, x, y):
+        if self._draw_x == 0:
+            if self.is_off_grid(x, y, x, y):
+                return
+            self.gs4_fb.pixel(x, y, gs)
+            return
+        x += self._draw_x
+        if (x < self._clip_x0 or x >= self._clip_x1
+                or self.is_off_grid(x, y, x, y)):
             return
         self.gs4_fb.pixel(x, y, gs)
+
+    def draw_line(self, x1, y1, x2, y2, gs=15):
+        """Draw one line translated and clipped to the active content strip."""
+        if self._draw_x == 0:
+            self.gs4_fb.line(x1, y1, x2, y2, gs)
+            return
+        x1 += self._draw_x
+        x2 += self._draw_x
+        clip_left = max(0, self._clip_x0)
+        clip_right = min(self.width, self._clip_x1) - 1
+        if (clip_right < clip_left
+                or (x1 < clip_left and x2 < clip_left)
+                or (x1 > clip_right and x2 > clip_right)):
+            return
+        if x1 != x2:
+            if x1 < clip_left:
+                y1 += ((y2 - y1) * (clip_left - x1) // (x2 - x1))
+                x1 = clip_left
+            elif x1 > clip_right:
+                y1 += ((y2 - y1) * (clip_right - x1) // (x2 - x1))
+                x1 = clip_right
+            if x2 < clip_left:
+                y2 += ((y1 - y2) * (clip_left - x2) // (x1 - x2))
+                x2 = clip_left
+            elif x2 > clip_right:
+                y2 += ((y1 - y2) * (clip_right - x2) // (x1 - x2))
+                x2 = clip_right
+        elif x1 < clip_left or x1 > clip_right:
+            return
+        self.gs4_fb.line(x1, y1, x2, y2, gs)
 
     def draw_rectangle(self, x, y, w, h, gs=15):
         """Draw a rectangle.
@@ -325,7 +410,26 @@ class Display(object):
             h (int): Height of rectangle.
             gs (int): Grayscale 0=Black to 15=White (default grayscale table)
         """
-        self.gs4_fb.rect(x, y, w, h, gs)
+        if self._draw_x == 0:
+            if self.is_off_grid(x, y, x + w - 1, y + h - 1):
+                return
+            self.gs4_fb.rect(x, y, w, h, gs)
+            return
+        x += self._draw_x
+        if h <= 0 or w <= 0 or y < 0 or y + h > self.height:
+            return
+        x0 = max(self._clip_x0, x)
+        x1 = min(self._clip_x1, x + w)
+        if x1 <= x0:
+            return
+        self.gs4_fb.hline(x0, y, x1 - x0, gs)
+        if h > 1:
+            self.gs4_fb.hline(x0, y + h - 1, x1 - x0, gs)
+        if x >= self._clip_x0 and x < self._clip_x1:
+            self.gs4_fb.vline(x, y, h, gs)
+        right = x + w - 1
+        if w > 1 and right >= self._clip_x0 and right < self._clip_x1:
+            self.gs4_fb.vline(right, y, h, gs)
 
     def draw_text_direct(self, x, y, text, font, gs=15, spacing=1):
         """Draw an XGLCD string directly from its packed source bytes.
@@ -345,20 +449,34 @@ class Display(object):
         bytes_per_letter = font.bytes_per_letter
         start_letter = font.start_letter
         end_letter = start_letter + font.letter_count
+        try:
+            draw_x = self._draw_x
+            if draw_x:
+                clip_x0 = self._clip_x0
+                clip_x1 = self._clip_x1
+            else:
+                clip_x0 = 0
+                clip_x1 = self.width
+        except AttributeError:
+            draw_x = 0
+            clip_x0 = 0
+            clip_x1 = self.width
+        x += draw_x
         screen_width = self.width
         screen_height = self.height
         # Text advances only rightward and glyphs only downward.  Rejecting
         # wholly off-screen runs avoids unnecessary glyph traversal while the
         # inner loops still clip partial left/top/right/bottom glyphs.
-        if (x >= screen_width or y >= screen_height
+        if (x >= clip_x1 or y >= screen_height
                 or y + height <= 0):
             return
         encoded = not isinstance(text, str)
         if encoded and _HAS_FAST_TEXT_DRAW:
             _draw_packed_text(
-                target, data, text, len(text), x, y, stride, shade, height,
-                byte_height, bytes_per_letter, start_letter, end_letter,
-                spacing, screen_width, screen_height)
+                target, data, text, len(text), x, y, stride, shade,
+                height, byte_height, bytes_per_letter, start_letter,
+                end_letter, spacing, 1 if draw_x else 0, clip_x0, clip_x1,
+                screen_width, screen_height)
             return
         char_index = 0
         text_length = len(text)
@@ -381,7 +499,9 @@ class Display(object):
                         if bits & (1 << row):
                             pixel_y = y + row_base + row
                             pixel_x = x + column
-                            if (pixel_x >= 0 and pixel_x < screen_width
+                            if (pixel_x >= clip_x0 and pixel_x < clip_x1
+                                    and pixel_x >= 0
+                                    and pixel_x < screen_width
                                     and pixel_y >= 0
                                     and pixel_y < screen_height):
                                 offset_out = (
@@ -408,9 +528,18 @@ class Display(object):
             text (string): Text to draw.
             gs (int): Grayscale 0=Black to 15=White (default grayscale table)
         """
-        # Confirm coordinates in boundary.  An 8x8 glyph ends at x+7, y+7, so
-        # the far corner is inclusive (matching fill_rectangle / draw_vline).
-        if self.is_off_grid(x, y, x + 8 - 1, y + 8 - 1):
+        if self._draw_x == 0:
+            if self.is_off_grid(x, y, x + 8 - 1, y + 8 - 1):
+                return
+            self.gs4_fb.text(text, x, y, gs)
+            return
+        x += self._draw_x
+        width = len(text) * 8
+        # The built-in font renderer has no clip rectangle.  During a slide,
+        # admit a text run only after its complete pixels enter the exposed
+        # strip; the final canonical frame redraws every run at once.
+        if (x < self._clip_x0 or x + width > self._clip_x1
+                or self.is_off_grid(x, y, x + width - 1, y + 7)):
             return
         self.gs4_fb.text(text, x, y, gs)
 
@@ -425,7 +554,14 @@ class Display(object):
         """
         # Confirm coordinates in boundary.  A line of height h ends at row
         # y+h-1, so the far corner is y+h-1 (matching fill_rectangle).
-        if self.is_off_grid(x, y, x, y + h - 1):
+        if self._draw_x == 0:
+            if self.is_off_grid(x, y, x, y + h - 1):
+                return
+            self.gs4_fb.vline(x, y, h, gs)
+            return
+        x += self._draw_x
+        if (x < self._clip_x0 or x >= self._clip_x1
+                or self.is_off_grid(x, y, x, y + h - 1)):
             return
         self.gs4_fb.vline(x, y, h, gs)
 
@@ -439,9 +575,80 @@ class Display(object):
             h (int): Height of rectangle.
             gs (int): Grayscale 0=Black to 15=White (default grayscale table)
         """
-        if self.is_off_grid(x, y, x + w - 1, y + h - 1):
+        if self._draw_x == 0:
+            if self.is_off_grid(x, y, x + w - 1, y + h - 1):
+                return
+            self.gs4_fb.fill_rect(x, y, w, h, gs)
             return
-        self.gs4_fb.fill_rect(x, y, w, h, gs)
+        x += self._draw_x
+        if h <= 0 or y < 0 or y + h > self.height:
+            return
+        x0 = max(self._clip_x0, x)
+        x1 = min(self._clip_x1, x + w)
+        if x1 <= x0:
+            return
+        self.gs4_fb.fill_rect(x0, y, x1 - x0, h, gs)
+
+    def begin_content_draw(self, x_offset, clip_x0, clip_x1):
+        """Translate page drawing and confine it to one exposed strip."""
+        self._draw_x = int(x_offset)
+        self._clip_x0 = max(0, min(self.width, int(clip_x0)))
+        self._clip_x1 = max(
+            self._clip_x0, min(self.width, int(clip_x1)))
+
+    def end_content_draw(self):
+        self._draw_x = 0
+        self._clip_x0 = 0
+        self._clip_x1 = self.width
+
+    def shift_content(self, delta_pixels, content_width):
+        """Move the page region in place; GS4's two pixels share one byte."""
+        pixels = int(delta_pixels)
+        pixels = (pixels & ~1) if pixels >= 0 else -((-pixels) & ~1)
+        content_bytes = min(self.width, int(content_width)) // 2
+        if not pixels or content_bytes <= 0:
+            return
+        delta = pixels // 2
+        if abs(delta) >= content_bytes:
+            row = 0
+            while row < self.height:
+                base = row * self.byte_width
+                index = 0
+                while index < content_bytes:
+                    self.gs4_buf[base + index] = 0
+                    index += 1
+                row += 1
+            return
+        if _HAS_FAST_TEXT_DRAW:
+            _shift_content_bytes(
+                self.gs4_buf, self.byte_width, self.height,
+                content_bytes, delta)
+            return
+        row = 0
+        while row < self.height:
+            base = row * self.byte_width
+            if delta > 0:
+                index = content_bytes - 1
+                while index >= delta:
+                    self.gs4_buf[base + index] = self.gs4_buf[
+                        base + index - delta]
+                    index -= 1
+                index = 0
+                while index < delta:
+                    self.gs4_buf[base + index] = 0
+                    index += 1
+            else:
+                shift = -delta
+                limit = content_bytes - shift
+                index = 0
+                while index < limit:
+                    self.gs4_buf[base + index] = self.gs4_buf[
+                        base + index + shift]
+                    index += 1
+                while index < content_bytes:
+                    self.gs4_buf[base + index] = 0
+                    index += 1
+            row += 1
 
     def is_off_grid(self, xmin, ymin, xmax, ymax):
         """Check if coordinates extend past display boundaries.
@@ -575,11 +782,6 @@ class Display(object):
         current = max(1, min(15, (percent * 15 + 50) // 100))
         self._write_cmd1(self.MASTER_CURRENT_CONTROL, current)
         self.brightness = percent
-
-    def set_transition_current(self, level):
-        """Set temporary hardware current without changing user brightness."""
-        level = max(0, min(15, int(level)))
-        self._write_cmd1(self.MASTER_CURRENT_CONTROL, level)
 
     def write_cmd(self, command, *args):
         """Write command to display.

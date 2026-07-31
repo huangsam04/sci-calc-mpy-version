@@ -1,6 +1,6 @@
 # SCI-CALC MicroPython 技术说明
 
-本文是 `mp_version` 1.5.0 的实现说明和维护入口。它以源码当前行为为准，使用伪代码解释
+本文是 `mp_version` 1.6.0 的实现说明和维护入口。它以源码当前行为为准，使用伪代码解释
 从 ESP32 上电到应用、输入、计算、显示、持久化、部署与诊断的完整逻辑。设备使用仓库
 MicroPython 1.29.0-preview 的自定义 frozen 固件；动态 Add-ons 和用户数据仍留在 SD 卡。
 
@@ -193,17 +193,17 @@ Shift+`^` 为 `sqrt`，Shift+`RPN` 为 `rpn`，Shift+`Tab` 为 `stab`。页面�
 工作期限；普通脏帧间隔为 66 ms，循环固定休眠 4 ms。
 
 `Menu` 在现有 `_state` 中使用起点、目标、开始时间和活动标量，按 96 ms 整数 ease-out 推进；
-输入首帧先移动 2 px，滚屏直接吸附，反向输入从当前像素重新定向。`Nav` 的三个固定标量驱动
-SSD1322 70 ms 淡出和 70 ms 淡入。没有 `MotionMenu`、通用插值框架或像素合成动画；按键和
-逐帧路径不调用 `gc.collect()` 或 `gc.mem_free()`。
+输入首帧先移动 2 px，滚屏直接吸附，反向输入从当前像素重新定向。`Nav` 的三个固定标量保存
+页面方向、开始 ticks 和已呈现位移，按 140 ms 整数 cubic ease-out 推进。没有 `MotionMenu`、
+通用插值框架、亮度淡变或像素合成动画；按键和逐帧路径不调用 `gc.collect()` 或 `gc.mem_free()`。
 
 ### 4.2 `Nav` 栈、同步页面切换与输入恢复
 
 `Nav` 独占页面栈、固定 `page_id` 和可重建资源生命周期；普通调用方只使用 `open(page_id)`、
 `back()` 与 `current`。启动只构造根菜单，进入页面时才创建实例；离页会分离需要保留的紧凑状态、
-清除页面引用，并把 GC 安排到安静回收点。真实输入完成旧页停用、释放和新页激活后，先降低
-SSD1322 master-current，在 70 ms 暗点只调用一次 `Renderer.present()`，再恢复用户亮度；
-程序化导航保持同步。新输入中断、异常、复位和休眠均取消过渡并吸附正确终态。
+清除页面引用，并把 GC 安排到安静回收点。真实输入完成旧页停用、释放和新页激活后，进入子级
+向左滑动，返回上级向右滑动；程序化导航保持同步。新输入中断、异常、复位和休眠均结束裁剪状态，
+重画当前逻辑页并吸附正确终态。
 
 崩溃恢复中的 `reset(root)` 会释放可重建资源、清空导航栈到根页并锁住输入，直到所有物理按键
 释放。页面激活或回滚发生 `MemoryError` 时保留原异常优先级，不用视觉效果延迟恢复。
@@ -231,6 +231,11 @@ Renderer.present(screen):
 预建有限的菜单跨度视图，供滑动高亮只重画旧行、新行和实际经过行；当前 4 行菜单从清空 9568
 像素、重画 4 个标签，降到清空受影响行并只重画相交标签。
 `Display.present_rows()` 对其他不认识的合法行区仍直接退化为全帧传输，避免逐帧切片分配。
+
+页面滑动只移动 `CONTENT_W=210` 的 GS4 字节，右侧 Sidebar 不动。`Display` 的 x 平移、左裁剪和
+右裁剪三个标量把目标页限制到新暴露条带；`Renderer.present_slide()` 每帧原地移动旧像素、绘制
+条带并使用既有全帧提交。全系统仍只有一个 8192 B framebuffer，新增像素缓冲为 0 B；Menu 4、
+Nav 3、Display 3 个动效标量合计约 40 B。
 
 侧栏每 5 s 才在安静调度槽检查刷新；输入导致 DEG/RAD 改变时只标记侧栏脏并复用缓存电池样本，
 ADC 读取不进入输入帧。电压文本和固定标签使用预分配字节缓冲或紧凑字体直绘。
@@ -273,6 +278,9 @@ forever:
 
 输入造成的可见变化绕过普通 66 ms 限速。侧栏轮询、GC、插件执行和持久化都要求安静期；
 有输入、按键仍按住或页面仍需稳定时不会进入这些分支。诊断模式每 5 秒输出平均渲染/传输耗时和空闲堆。
+Calculator 输入帧先提交 12 行编辑区，右下角 `n/96` 计数在紧随其后的 quiet settle 帧提交 10 行；
+这复用 presented-mode 标量中的两个状态位，不增加 render 表槽或堆对象，并把输入提交稳定保持在
+20 ms 内。
 
 ## 5. 持久化、空闲休眠和运行期服务
 
@@ -766,14 +774,14 @@ CPython `compileall`、对所有源码使用 `-march=xtensawin` 编译 `.mpy`。
 4. 验收侧缓存同一 application matrix 内不变的 framebuffer 身份快照；该缓存不进入普通 release。
    没有增加像素缓冲、通用动画层、`LazyScreen`、SWAP 或第二 framebuffer。
 
-1.5.0 的最终 `check.ps1` 为 `1116 passed in 18.22s`；CPython compileall 和
+1.6.0 的最终 `check.ps1` 为 `1125 passed in 19.93s`；CPython compileall 和
 MicroPython 1.29 全源 mpy-cross 均通过。
 
-### 10.2 COM5 严格门禁（1.5.0）
+### 10.2 COM5 严格门禁（1.6.0）
 
-当前 MPY release 为 `b1a647e7f7453f7e45512838bd833479324f52e63a30e232a5a50f69a58c557d`，
-manifest SHA-256 为 `9c29a337ab462bcc8fc006cbd2069b746beab5879438714edf72d31094430f26`。
-正式 frozen 镜像为 `1823232 B`，SHA-256 为 `a3b20dacd08d7902e84daeb0d2bfcb9af53678c84053281eecaa4d88d25220a5`；增量构建用时 `26.023 s`，只写 factory 分区 `0x10000` 并校验用时 `24.438 s`。同一已验证镜像及摘要保存在 `.work/releases/v1.5.0/`，供 GitHub Release 直接上传。统一入口仍为：
+当前 MPY release 为 `ee5d8ba8a3b5c421f730df8da5e16a967f661f5997f7c6fd585eaafe1638f904`，
+manifest SHA-256 为 `a0fcb063c7e51af98fbfdb2b5f592a07f7cd8ae962eee6b73b02204b3329b644`。
+正式 frozen 镜像为 `1826176 B`，SHA-256 为 `385ec7e19ce80f7d570e87e7b5c4eb77a270632b81986116ece71a340a9bc30a`；增量构建用时 `26.360 s`，只写 factory 分区 `0x10000` 并校验用时 `24.578 s`。本轮未创建 `v1.6.0` tag 或 GitHub Release 附件。统一入口仍为：
 
 ```powershell
 .\tools\run_device_acceptance.ps1 -Port PORTNAME
@@ -785,15 +793,16 @@ manifest SHA-256 为 `9c29a337ab462bcc8fc006cbd2069b746beab5879438714edf72d31094
 | --- | --- |
 | 启动与固定缓冲 | resident/root ready；同一个 framebuffer 8192 B；Plot 工作区 104 B；MPY/Viper ABI 通过 |
 | 模块来源 | `main=/sd/.slots/B/main.mpy`；`performance`、`runtime_handle`、`version` 为 frozen；`approot` 在根页阶段尚未加载 |
-| 应用矩阵 | 35 场景/五轮；最低空闲堆 10080 B；漂移 +1504 B；`MemoryError=0`、普通错误 0；加载条覆盖的插件重载 141.063 ms |
-| 页面 tracer | 预热后五轮；最低空闲堆 55632 B；漂移 -80 B；普通最大 step 23.554 ms |
-| 交互与动画 | 完整输入 `12345`；输入提交最大 19.012 ms；85 个动画帧最大 17.058 ms；三相净分配均 0 B；交互阶段堆漂移 -16 B |
+| 应用矩阵 | 35 场景/五轮；最低空闲堆 10528 B；漂移 +1472 B；`MemoryError=0`、普通错误 0；加载条覆盖的插件重载 145.895 ms |
+| 页面 tracer | 预热后五轮；最低空闲堆 55536 B；漂移 -80 B；普通最大 step 26.939 ms |
+| 交互与动画 | 完整输入 `12345`；输入提交最大 16.608 ms；56 个动画帧最大 20.030 ms；菜单/前进/返回净分配均 0 B；交互阶段堆漂移 -16 B |
 | 固定帧 | Stopwatch 16 帧全部提交，净分配 0 B |
 | 结果 | `ACCEPTANCE_COMPLETE`；最低堆高于 8 KiB，普通 step/动画帧严格 `<40 ms`，输入严格 `<20 ms` |
 | 收尾 | 临时 support/stage 载荷已删除；SSD1322 已发送硬件休眠命令 |
 
-交互数字若执行到该阶段，从已捕获边沿开始并包含页面更新和 OLED 提交；矩阵扫描与去抖合同必须
-单独报告，不能把它描述为物理按键闭合到像素的完整端到端时延。
+普通交互数字从已捕获边沿开始并包含页面更新和 OLED 提交；页面导航的提交在建立动画状态时结束，
+第一帧 OLED 提交计入动画时延和分配。矩阵扫描与去抖合同单独报告，不能把它描述为物理按键闭合
+到像素的完整端到端时延。
 
 ### 10.3 已测热点与淘汰候选
 
@@ -814,10 +823,10 @@ Stopwatch 压缩无法影响更早的 `calculator_history` 门禁，按 YAGNI �
 
 ### 10.4 动效门禁
 
-菜单 ease-out 和页面硬件亮度淡出/淡入合计只使用 7 个标量槽（约 28 B）和 0 B 新像素缓冲。
-Calculator 首次呈现缓存会在页面激活期建立，Renderer 在动画启动前解析目标页 hooks；返回根页不再
-把未变化 Sidebar 无效标脏，因此暗点提交没有净堆分配。1.5.0 COM5 最终 `heap_min=10080 B`，高于
-8192 B 硬底线 1888 B；85 个动画帧和 16 个 Stopwatch 帧的净分配均为 0 B。8 KiB 是启用底线，
+菜单 ease-out 与页面横向滑动合计使用 10 个标量槽（约 40 B）和 0 B 新像素缓冲。Renderer 在
+动画启动前解析目标页 hooks，每一帧都把目标页严格裁剪到当前新暴露条带，包含首个 2 px 边缘。
+1.6.0 COM5 最终 `heap_min=10528 B`，高于 8192 B 硬底线 2336 B；56 个动画帧和 16 个 Stopwatch
+帧的净分配均为 0 B。8 KiB 是启用底线，
 12 KiB 仍是优化目标；不得为追求余量删除已经满足错误、漂移和时延门槛的动画。
 
 ## 11. 验证范围与维护准则

@@ -16,6 +16,7 @@ MAX_HISTORY_ENTRIES = 20
 MAX_HISTORY_EXPRESSION_CHARS = 768
 _INPUT_FOOTER_HINT = "ENT calc  Tab ~"
 _HISTORY_FOOTER_HINT = "ENT ans  4 ins~"
+_DAMAGE_FOOTER = 3
 
 
 class CalculatorScreen:
@@ -161,6 +162,11 @@ class CalculatorScreen:
         """Expire quiet transient UI state without restoring periodic frames."""
         now = time.ticks_ms()
         changed = False
+        presented = self._state[2][0]
+        if (presented is not None and presented[0] is not None
+                and presented[0] & 4):
+            presented[0] = (presented[0] & ~4) | 8
+            changed = True
         popup = self._state[1]
         if self.mode == 2 and popup.expired(now):
             self.mode = 0
@@ -307,7 +313,8 @@ class CalculatorScreen:
         presented = self._state[2][0]
         if presented is None:
             return DAMAGE_FULL
-        if self.mode != 0 or presented[0] != 0:
+        if (self.mode != 0 or presented[0] is None
+                or (presented[0] & 3) != 0):
             return DAMAGE_FULL
         if (self.input_box.height != presented[5]
                 or len(self._state[0]) != presented[6]
@@ -319,13 +326,16 @@ class CalculatorScreen:
                 and self.input_box.cursor_pos == presented[2]
                 and self.input_box.cursor.x == presented[3]
                 and self.input_box.cursor.y == presented[4]):
-            return DAMAGE_NONE
+            return _DAMAGE_FOOTER if presented[0] & 8 else DAMAGE_NONE
         return DAMAGE_PARTIAL
 
     def collect_present_damage(self, damage):
         state = self._editor_damage_state()
         if state == DAMAGE_PARTIAL:
             damage.add(0, self.input_box.height)
+            presented = self._state[2][0]
+            presented[0] = (presented[0] & ~8) | 4
+        elif state == _DAMAGE_FOOTER:
             damage.add(54, 10)
         return state
 
@@ -337,7 +347,9 @@ class CalculatorScreen:
         if presented is None:
             presented = [None] * 10
             render[0] = presented
-        presented[0] = self.mode
+        pending = (
+            presented[0] & 12 if presented[0] is not None else 0)
+        presented[0] = self.mode | pending
         presented[1] = self.input_box.str
         presented[2] = self.input_box.cursor_pos
         presented[3] = self.input_box.cursor.x
@@ -578,12 +590,19 @@ class CalculatorScreen:
 
     def draw_present_rows(self, display):
         """Redraw only the rows declared by ``collect_present_damage``."""
-        self._draw_editor(display)
-        self._draw_footer_right(display)
+        presented = self._state[2][0]
+        if presented[0] & 8:
+            self._draw_footer_right(display)
+            presented[0] &= ~12
+        else:
+            self._draw_editor(display)
 
     def draw(self, display):
         if self.mode == 2:
             self._state[1].draw(display)
+            presented = self._state[2][0]
+            if presented[0] is not None:
+                presented[0] &= ~12
             return
 
         # --- One-line editor that expands to two rows only when needed ---
@@ -611,6 +630,9 @@ class CalculatorScreen:
 
         # --- Status line (y=55..63) ---
         self._draw_footer(display)
+        presented = self._state[2][0]
+        if presented[0] is not None:
+            presented[0] &= ~12
 
     def update(self, kb, event=None):
         meta = self._state[3]

@@ -2,7 +2,7 @@
 
 SCI-CALC 的 MicroPython 固件，目标硬件为 ESP32-WROOM-32E、SSD1322 256×64 灰阶 OLED、5×6 矩阵键盘和 FAT32 SD 卡。
 
-当前应用版本为 **1.5.0**。源码和设备固件均由本仓库 `micropython/` 中的
+当前应用版本为 **1.6.0**。源码和设备固件均由本仓库 `micropython/` 中的
 **MicroPython 1.29.0-preview** 构建；SCI-CALC 只增加 frozen manifest/board 配置，不修改
 MicroPython 核心。
 
@@ -103,6 +103,9 @@ SD 卡和 OLED 共用 GPIO18/23 上的 SPI2，通过 CS4/CS5 分隔事务。内�
 - `8 / 2`：上、下选择
 - `ENT`：进入
 - `ESC`：主菜单中无操作
+
+进入子级页面时，210 px 内容区会使用非线性 ease-out 向左滑动；返回上级时向右滑动。
+右侧状态栏保持固定。连续按键会立即结束旧过渡并进入正确的新页面，不需要等待动画完成。
 
 ### 计算器
 
@@ -315,9 +318,11 @@ compile_expression
 `gc.collect()` 或 `gc.mem_free()`。
 
 普通 `Menu` 使用约 96 ms 的整数 ease-out，让高亮在相邻行间短距离滑动；只重画旧行、新行和
-实际经过行，滚屏时直接吸附。`Nav` 使用 SSD1322 master-current 命令完成 70 ms 淡出和 70 ms
-淡入，在暗点只提交一次目标页。两项动画共复用 7 个固定标量槽，不增加像素缓冲；新输入、异常、
-复位或休眠会立即恢复用户亮度并吸附到正确终态，不恢复 `LazyScreen`、SWAP 或双 framebuffer。
+实际经过行，滚屏时直接吸附。`Nav` 使用 140 ms 整数 cubic ease-out：进入子级向左、返回上级
+向右，只移动 210 px 内容区，固定状态栏不动。Display 原地移动同一个 GS4 framebuffer 的内容字节，
+并把目标页只画入新暴露条带。Menu、Nav 和 Display 共复用 10 个固定标量槽（约 40 B），新增像素
+缓冲为 0 B；新输入、异常、复位或休眠会吸附到正确终态，不恢复亮度淡变、`LazyScreen`、SWAP
+或双 framebuffer。
 
 设置与变量采用 `文件.tmp → 文件` 提交，并保留上一份 `.bak`。主文件损坏时优先
 读取备份；按键处理只更新内存并把写入排入空闲主循环，写入失败不会清除当前内存状态，
@@ -376,7 +381,7 @@ UI 会显示保存失败并每两秒重试。
 ..\.venv\python.exe -m mpremote connect PORTNAME reset
 ```
 
-1.5.0 的最终主机检查为 `1116 passed in 18.22s`，并通过 CPython 语法检查和
+1.6.0 的最终主机检查为 `1125 passed in 19.93s`，并通过 CPython 语法检查和
 MicroPython 1.29 `mpy-cross -march=xtensawin` 全源编译。主机 traced memory 只用于比较逻辑
 工作量，不替代真机堆或 SPI 时延。
 
@@ -390,10 +395,10 @@ MicroPython 1.29 `mpy-cross -march=xtensawin` 全源编译。主机 traced memor
 状态应用矩阵、五轮运行时目标导航、五轮捕获边沿到屏幕提交的交互探针，以及 16 帧秒表局部刷新
 分配探针；载荷在结束时删除，每阶段后复位设备并让 OLED 休眠。
 
-最新 1.5.0 COM5 五阶段验收完整通过：framebuffer 始终为同一个 8192 B 对象，Plot 工作区为
-104 B，frozen/MPY/Viper ABI 正确。应用矩阵最低空闲堆 `10080 B`，`MemoryError=0`、普通错误 0；
-加载条覆盖的动态插件重载为 `141.063 ms`。预热后普通最大 step `23.554 ms`，输入到提交最大
-`19.012 ms`；85 个动画帧最大 `17.058 ms` 且净分配为 `0 B`，Stopwatch 16 帧也为 `0 B`。
+最新 1.6.0 COM5 五阶段验收完整通过：framebuffer 始终为同一个 8192 B 对象，Plot 工作区为
+104 B，frozen/MPY/Viper ABI 正确。应用矩阵最低空闲堆 `10528 B`，`MemoryError=0`、普通错误 0；
+加载条覆盖的动态插件重载为 `145.895 ms`。预热后普通最大 step `26.939 ms`，输入提交最大
+`16.608 ms`；56 个动画帧最大 `20.030 ms` 且净分配为 `0 B`，Stopwatch 16 帧也为 `0 B`。
 验收输出 `ACCEPTANCE_COMPLETE`，随后删除临时载荷并让 OLED 硬件休眠。
 
 ## 实机回归清单

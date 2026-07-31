@@ -4,6 +4,11 @@ param(
     [string]$Port,
     [switch]$DryRun,
     [string]$DryRunFailureStage = "",
+    [ValidateSet(
+        "", "boot_probe", "application_matrix", "runtime_target_tracer",
+        "interaction_screen_tracer", "frame_allocation_probe"
+    )]
+    [string]$OnlyStage = "",
     [ValidateRange(0, 60000)]
     [int]$BootWaitMs = 25000,
     [scriptblock]$MpremoteAdapter = $null
@@ -148,6 +153,11 @@ $Stages = @(
         Artifact = ".work/mpy/device-tools/device_frame_allocation_probe.mpy"
     }
 )
+$SelectedStages = @(
+    $Stages | Where-Object {
+        -not $OnlyStage -or $_.Name -eq $OnlyStage
+    }
+)
 
 if (-not $DryRun -and $null -eq $MpremoteAdapter -and -not (Test-Path -LiteralPath $Python)) {
     throw "Missing project Python: $Python"
@@ -163,7 +173,7 @@ function Build-AcceptanceArtifacts {
         throw "Wrong mpy-cross version for device acceptance: $MpyVersion"
     }
 
-    foreach ($Stage in $Stages) {
+    foreach ($Stage in $SelectedStages) {
         $LocalScript = Join-Path `
             $ProjectRoot $Stage.Script.Replace("/", "\")
         $LocalArtifact = Join-Path `
@@ -399,7 +409,7 @@ $SupportStarted = $true
 $AcceptanceFailure = $null
 try {
     Install-AcceptanceSupport
-    foreach ($Stage in $Stages) {
+    foreach ($Stage in $SelectedStages) {
         Invoke-AcceptanceStage -Stage $Stage
     }
 }
@@ -429,10 +439,13 @@ if ($null -ne $AcceptanceFailure) {
 }
 
 if ($DryRun) {
-    Write-Output "ACCEPTANCE_DRY_RUN_COMPLETE $Port stages=5"
+    Write-Output "ACCEPTANCE_DRY_RUN_COMPLETE $Port stages=$($SelectedStages.Count)"
 }
 else {
-    Write-Output "ACCEPTANCE_COMPLETE $Port stages=5 animation=enabled_heap_at_least_8k"
+    Write-Output (
+        "ACCEPTANCE_COMPLETE $Port stages=$($SelectedStages.Count) " +
+        "animation=enabled_heap_at_least_8k"
+    )
 }
 }
 finally {

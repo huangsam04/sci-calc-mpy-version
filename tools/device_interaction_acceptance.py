@@ -126,8 +126,9 @@ def _drive_page_motion(nav, stats, phase):
     frames = 0
     while getattr(nav, "motion_active", False):
         if frames >= MAX_MOTION_FRAMES:
-            raise RuntimeError("Page fade exceeded its frame bound")
-        time.sleep_ms(PAGE_FRAME_MS)
+            raise RuntimeError("Page slide exceeded its frame bound")
+        if frames:
+            time.sleep_ms(PAGE_FRAME_MS)
         before = mem_alloc() if mem_alloc is not None else 0
         started = time.ticks_us()
         nav.present_current()
@@ -181,7 +182,6 @@ def _exercise_round(
     started = time.ticks_us()
     calculator = nav.open(1, _PAGE_TRIGGER)
     calculator.input_box.clear_str()
-    nav.present_current()
     _record(stats, started, True, 3)
     _drive_page_motion(nav, stats, 8)
 
@@ -192,23 +192,34 @@ def _exercise_round(
         raise RuntimeError("Calculator edges were lost")
     if calculator.input_box.get_str() != "123":
         raise RuntimeError("Calculator edge value is wrong")
+    handled_us = time.ticks_diff(time.ticks_us(), started)
+    present_started = time.ticks_us()
     nav.present_current()
+    present_us = time.ticks_diff(time.ticks_us(), present_started)
     first_batch_us = _record(stats, started, True, 4)
+    stats[24] = max(stats[24], handled_us)
+    stats[25] = max(stats[25], present_us)
+    stats[26] = max(stats[26], getattr(nav, "last_present_us", 0))
 
     started = time.ticks_us()
     if drain(nav, keyboard, handler) != 2:
         raise RuntimeError("Calculator queued edges were lost")
     if calculator.input_box.get_str() != "12345":
         raise RuntimeError("Calculator queued edge value is wrong")
+    handled_us = time.ticks_diff(time.ticks_us(), started)
+    present_started = time.ticks_us()
     nav.present_current()
+    present_us = time.ticks_diff(time.ticks_us(), present_started)
     second_batch_us = _record(stats, started, True, 4)
+    stats[24] = max(stats[24], handled_us)
+    stats[25] = max(stats[25], present_us)
+    stats[26] = max(stats[26], getattr(nav, "last_present_us", 0))
     stats[8 + round_index] = max(first_batch_us, second_batch_us)
     _settle(nav, stats, 5)
 
     started = time.ticks_us()
     calculator.input_box.set_str(saved_input, immediate=True)
     nav.back(_PAGE_TRIGGER)
-    nav.present_current()
     _record(stats, started, True, 6)
     _drive_page_motion(nav, stats, 9)
     collector = getattr(nav, "collect_pending", None)
@@ -252,11 +263,11 @@ def run(runtime=None, emit=print):
     # Memory errors, other errors, rounds, steps, blocking max, edge max,
     # blocking phase, edge phase, five Calculator edge samples, animation
     # frames/max/phase, and animation allocation count/sum.
-    stats = [0] * 24
+    stats = [0] * 27
     gc.collect()
     heap_before = _free()
     emit("INTERACTION_SCREEN_TRACER_START mode=resident rounds=5"
-         + " coverage=captured_edge_to_screen_update_present"
+         + " coverage=input_submission_and_animation_present"
          + " oled=awake"
          + " scan_interval_us=" + str(SCAN_INTERVAL * 1000)
          + " debounce_us=" + str(DEBOUNCE_MS * 1000)
@@ -326,8 +337,8 @@ def run(runtime=None, emit=print):
          + " runtime_steps=" + str(stats[3])
          + " memory_errors=" + str(stats[0])
          + " errors=" + str(stats[1])
-         + " edge_to_present_max_us=" + str(stats[5])
-         + " edge_phase=" + str(stats[7])
+         + " input_submit_max_us=" + str(stats[5])
+         + " input_phase=" + str(stats[7])
          + " blocking_max_us=" + str(stats[4])
          + " blocking_phase=" + str(stats[6])
          + " animation_frames=" + str(stats[13])
@@ -340,9 +351,12 @@ def run(runtime=None, emit=print):
          + " animation_back_alloc=" + str(stats[22]) + ":" + str(stats[23])
          + " heap_after=" + str(heap_after)
          + " heap_delta=" + str(heap_delta)
-         + " calc_edge_round_us=" + str(stats[8]) + ","
+         + " calc_input_round_us=" + str(stats[8]) + ","
          + str(stats[9]) + "," + str(stats[10]) + ","
-         + str(stats[11]) + "," + str(stats[12]))
+         + str(stats[11]) + "," + str(stats[12])
+         + " calc_handle_max_us=" + str(stats[24])
+         + " calc_render_max_us=" + str(stats[25])
+         + " calc_oled_max_us=" + str(stats[26]))
     emit("INTERACTION_SCREEN_TRACER_RESULT "
          + ("PASS" if failure_mask == 0 else "FAIL")
          + " failure_mask=" + str(failure_mask))

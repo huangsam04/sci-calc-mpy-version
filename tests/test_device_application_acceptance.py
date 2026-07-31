@@ -43,6 +43,7 @@ class _Report:
         self.runtime_steps = 400
         self.heap_min = 20000
         self.heap_after = 21000
+        self.heap_before = 21160
         self.heap_delta = -160
         self.blocking_max_us = 24000
         self.buffer_peak_bytes = 8296
@@ -56,6 +57,10 @@ class _Report:
         self.heap_phase = 1
         self.heap_round = 2
         self.heap_step = 17
+        self.scenario_name = "calculator_history"
+        self.scenario_heap_before = 21160
+        self.scenario_heap_after = 21000
+        self.scenario_heap_delta = -160
 
 
 def test_device_application_acceptance_runs_the_shared_five_round_matrix(
@@ -81,6 +86,8 @@ def test_device_application_acceptance_runs_the_shared_five_round_matrix(
     assert "framebuffer_bytes=8192" in lines[-2]
     assert "heap_step_name=plot_pipeline" in lines[-2]
     assert "heap_phase=1 heap_round=2 heap_step=17" in lines[-2]
+    assert "scenario_name=calculator_history" in lines[-2]
+    assert "scenario_heap_delta=-160" in lines[-2]
     assert runtime.display.sleep_count == 2
 
 

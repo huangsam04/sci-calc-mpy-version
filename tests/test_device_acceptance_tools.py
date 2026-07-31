@@ -640,13 +640,10 @@ def test_interaction_screen_tracer_reports_its_narrow_measurement_scope():
     text = "\n".join(lines)
     assert lines[0].startswith("INTERACTION_SCREEN_TRACER_START ")
     assert "mode=resident" in lines[0]
-    assert (
-        "coverage=captured_edge_to_screen_update_present"
-        in lines[0]
-    )
+    assert "coverage=input_submission_and_animation_present" in lines[0]
     assert "scan_interval_us=8000" in lines[0]
     assert "debounce_us=8000" in lines[0]
-    assert "edge_to_present_max_us=" in text
+    assert "input_submit_max_us=" in text
     assert "heap_after=" in text
     assert "heap_delta=" in text
     assert "input_batch_us" not in text

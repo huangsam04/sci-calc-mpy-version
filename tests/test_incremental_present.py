@@ -10,6 +10,8 @@ class DisplaySpy:
         self.content_clears = 0
         self.full_presents = 0
         self.row_presents = []
+        self.shifts = []
+        self.windows = []
 
     def clear_buffers(self, color=0):
         self.clears += 1
@@ -27,6 +29,15 @@ class DisplaySpy:
         self.row_presents.append(
             tuple((row_start, row_count)
                   for row_start, row_count in rows if row_count))
+
+    def shift_content(self, delta, width):
+        self.shifts.append((delta, width))
+
+    def begin_content_draw(self, offset, clip_start, clip_end):
+        self.windows.append((offset, clip_start, clip_end))
+
+    def end_content_draw(self):
+        self.windows.append((0, 0, 256))
 
 
 class SidebarSpy:
@@ -88,6 +99,11 @@ class ExplicitDamageScreen:
 
     def mark_presented(self):
         self.marks += 1
+
+
+class FailingSlideScreen:
+    def draw(self, display):
+        raise MemoryError("slide draw")
 
 
 _SCREEN_HOOK_NAMES = (
@@ -207,6 +223,73 @@ def test_page_switch_preserves_sidebar_pixels_until_explicit_invalidation():
     assert display.clears == 2
     assert display.content_clears == 1
     assert sidebar.draws == 2
+
+
+def test_renderer_composes_forward_slide_in_exposed_single_buffer_strip():
+    display = DisplaySpy()
+    first = PartialScreen()
+    second = PartialScreen()
+    renderer = Renderer(display, SidebarSpy())
+    renderer.present(first)
+
+    assert renderer.present_slide(second, -1, 42, 42) is True
+
+    assert display.shifts == [(-42, 210)]
+    assert display.windows == [(168, 168, 210), (0, 0, 256)]
+    assert display.full_presents == 2
+    assert renderer._visible_screen is first
+    assert second.draws == 1
+    assert second.marks == 0
+
+    assert renderer.present_slide(second, -1, 210, 168) is True
+
+    assert display.shifts[-1] == (-168, 210)
+    assert display.windows[-2:] == [(0, 0, 210), (0, 0, 256)]
+    assert renderer._visible_screen is second
+    assert second.marks == 1
+
+
+def test_renderer_first_two_pixel_slide_frame_draws_exact_exposed_strip():
+    display = DisplaySpy()
+    first = PartialScreen()
+    second = PartialScreen()
+    renderer = Renderer(display, SidebarSpy())
+    renderer.present(first)
+
+    assert renderer.present_slide(second, -1, 2, 2) is True
+
+    assert display.shifts == [(-2, 210)]
+    assert display.windows == [(208, 208, 210), (0, 0, 256)]
+    assert display.full_presents == 2
+    assert second.draws == 1
+
+
+def test_renderer_composes_back_slide_from_left_exposed_strip():
+    display = DisplaySpy()
+    first = PartialScreen()
+    parent = PartialScreen()
+    renderer = Renderer(display, SidebarSpy())
+    renderer.present(first)
+
+    renderer.present_slide(parent, 1, 42, 42)
+
+    assert display.shifts == [(42, 210)]
+    assert display.windows == [(-168, 0, 42), (0, 0, 256)]
+
+
+def test_renderer_always_restores_full_draw_window_after_slide_error():
+    display = DisplaySpy()
+    renderer = Renderer(display, SidebarSpy())
+    renderer.present(PartialScreen())
+
+    try:
+        renderer.present_slide(FailingSlideScreen(), -1, 42, 42)
+    except MemoryError as error:
+        assert str(error) == "slide draw"
+    else:
+        raise AssertionError("slide draw error was not raised")
+
+    assert display.windows == [(168, 168, 210), (0, 0, 256)]
 
 
 def test_renderer_reuses_one_damage_backing_store_for_explicit_partial_bands():
