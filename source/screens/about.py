@@ -19,8 +19,7 @@ class AboutScreen(UIElement):
         display.draw_text8x8(5, 2, "SCI-CALC", gs=15)
         display.draw_text8x8(5, 10, "MP Edition v", gs=15)
         display.draw_text8x8(101, 10, self.version, gs=15)
-        display.draw_text8x8(
-            101 + len(self.version) * 8, 10, " by huangsam04", gs=15)
+        display.draw_text8x8(101, 18, "by huangsam04", gs=15)
         display.draw_text8x8(5, 26, "ESP32 WROOM-32E", gs=15)
         display.draw_text8x8(5, 34, "SSD1322 256x64 OLED", gs=15)
         display.draw_text8x8(5, 42, "Kailh Choc v1", gs=15)

@@ -440,7 +440,7 @@ PAGE_ABOUT = 6
 PAGE_LETTERS = 7
 PAGE_FUNCTION_PICKER = 8
 PAGE_VARIABLE_PANEL = 9
-PAGE_SLIDE_MS = 140
+PAGE_SLIDE_MS = 210
 PAGE_SLIDE_WIDTH = 210
 
 class Nav:
@@ -871,8 +871,8 @@ class Nav:
             else:
                 remaining = PAGE_SLIDE_MS - elapsed
                 residual = (
-                    PAGE_SLIDE_WIDTH * remaining * remaining * remaining
-                    // (PAGE_SLIDE_MS * PAGE_SLIDE_MS * PAGE_SLIDE_MS))
+                    PAGE_SLIDE_WIDTH * remaining * remaining
+                    // (PAGE_SLIDE_MS * PAGE_SLIDE_MS))
                 distance = (PAGE_SLIDE_WIDTH - residual) & ~1
                 if previous == 0 and distance < 2:
                     distance = 2

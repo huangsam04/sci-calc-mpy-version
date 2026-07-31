@@ -152,7 +152,7 @@ def test_navigation_exposes_followup_input_immediately_without_page_motion(
     assert nav.poll_event(keyboard) == (3, 1, False)
 
 
-def test_navigation_slide_uses_three_scalars_and_decelerating_cubic_steps(
+def test_navigation_slide_uses_three_scalars_and_decelerating_quadratic_steps(
         monkeypatch):
     clock = [100]
     monkeypatch.setattr(main_module.time, "ticks_ms", lambda: clock[0])
@@ -163,7 +163,7 @@ def test_navigation_slide_uses_three_scalars_and_decelerating_cubic_steps(
     nav.go_to(ScreenStub(), (3, 3, False))
     distances = []
 
-    for elapsed in (0, 28, 56, 84, 112, 140):
+    for elapsed in (0, 42, 84, 126, 168, 210):
         clock[0] = 100 + elapsed
         nav.present_current(clock[0])
         distances.append(nav.renderer.slides[-1][2])
@@ -178,6 +178,30 @@ def test_navigation_slide_uses_three_scalars_and_decelerating_cubic_steps(
         distances, distances[1:]))
     assert all(left > right for left, right in zip(
         increments, increments[1:]))
+
+
+def test_navigation_slide_has_ten_visible_steps_at_device_frame_cadence(
+        monkeypatch):
+    clock = [100]
+    monkeypatch.setattr(main_module.time, "ticks_ms", lambda: clock[0])
+    monkeypatch.setattr(
+        main_module.time, "ticks_diff", lambda newer, older: newer - older)
+    nav = _nav(monkeypatch, display=object())
+    nav.boot(ScreenStub())
+    nav.go_to(ScreenStub(), (3, 3, False))
+
+    # The final COM5 frame was about 20 ms and the main loop sleeps 4 ms.
+    for elapsed in range(0, main_module.PAGE_SLIDE_MS + 1, 24):
+        clock[0] = 100 + elapsed
+        nav.present_current(clock[0])
+    if nav.motion_active:
+        clock[0] = 100 + main_module.PAGE_SLIDE_MS
+        nav.present_current(clock[0])
+
+    distances = [slide[2] for slide in nav.renderer.slides]
+    assert len(distances) >= 10
+    assert distances == sorted(set(distances))
+    assert distances[-1] == main_module.PAGE_SLIDE_WIDTH
 
 
 def test_main_menu_routes_page_ids_through_nav_owned_lazy_construction(
@@ -361,7 +385,7 @@ def test_nav_first_and_repeat_entry_covers_every_supported_page(monkeypatch):
     nav.back()
 
 
-def test_navigation_uses_cubic_forward_slide_and_commits_target_at_endpoint(
+def test_navigation_uses_quadratic_forward_slide_and_commits_target_at_endpoint(
         monkeypatch):
     clock = [100]
     monkeypatch.setattr(main_module.time, "ticks_ms", lambda: clock[0])
@@ -390,7 +414,7 @@ def test_navigation_uses_cubic_forward_slide_and_commits_target_at_endpoint(
     assert middle[2] > first_distance
     assert middle[3] == middle[2] - first_distance
 
-    clock[0] = 240
+    clock[0] = 310
     assert nav.present_current(clock[0]) is True
     assert nav.motion_active is False
     assert nav.renderer.slides[-1][0:3] == (child, -1, 210)

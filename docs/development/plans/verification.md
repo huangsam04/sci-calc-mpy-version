@@ -63,6 +63,12 @@
 - [x] 最终 `check.ps1` 为 `1125 passed`；frozen 固件与 MPY 已部署 COM5，统一五阶段为最低堆 `10528 B`、普通最大 step `26.939 ms`、输入 `16.608 ms`、动画最大 `20.030 ms`、逐帧分配 `0 B`、错误 0 和五轮堆稳定。
 - [x] COM5 临时载荷已删除并硬件休眠 OLED；README、USER_GUIDE 和 TECHNICAL_GUIDE 已写入实际行为与数据，单人双轴 review 无未解决发现，本批建立本地提交且不 push。
 
+## v1.6.0 显示与流畅度修正
+
+- [x] About 内容边界和 24 ms 动画节拍已有红灯回归；修正后署名右边界不超过 210 px，动画至少 10 个严格单调位置并保持正确终态。
+- [x] 聚焦测试和一次 `check.ps1`（`1127 passed in 19.29s`）通过；COM5 `interaction_screen_tracer` 为 80 帧、最大 `19.979 ms`、输入 `16.630 ms`、分配 0 B、错误 0，应用矩阵最低堆 `10544 B`、错误 0；两阶段均删除载荷并休眠 OLED。
+- [x] README、TECHNICAL_GUIDE 与最终实测一致；单人 review 发现的定向/完整验收数据来源措辞已修正，无未解决发现，本批建立本地提交且不 push。
+
 ## 8 KiB 动画优先续行
 
 - [x] 已把无动画发布基线 `7e4e807` 标记为本地 annotated tag `v1.4.0`，工作树在续行前干净，未 push。

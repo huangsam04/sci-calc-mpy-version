@@ -318,7 +318,7 @@ compile_expression
 `gc.collect()` 或 `gc.mem_free()`。
 
 普通 `Menu` 使用约 96 ms 的整数 ease-out，让高亮在相邻行间短距离滑动；只重画旧行、新行和
-实际经过行，滚屏时直接吸附。`Nav` 使用 140 ms 整数 cubic ease-out：进入子级向左、返回上级
+实际经过行，滚屏时直接吸附。`Nav` 使用 210 ms 整数 quadratic ease-out：进入子级向左、返回上级
 向右，只移动 210 px 内容区，固定状态栏不动。Display 原地移动同一个 GS4 framebuffer 的内容字节，
 并把目标页只画入新暴露条带。Menu、Nav 和 Display 共复用 10 个固定标量槽（约 40 B），新增像素
 缓冲为 0 B；新输入、异常、复位或休眠会吸附到正确终态，不恢复亮度淡变、`LazyScreen`、SWAP
@@ -381,7 +381,7 @@ UI 会显示保存失败并每两秒重试。
 ..\.venv\python.exe -m mpremote connect PORTNAME reset
 ```
 
-1.6.0 的最终主机检查为 `1125 passed in 19.93s`，并通过 CPython 语法检查和
+1.6.0 的最新主机检查为 `1127 passed in 19.29s`，并通过 CPython 语法检查和
 MicroPython 1.29 `mpy-cross -march=xtensawin` 全源编译。主机 traced memory 只用于比较逻辑
 工作量，不替代真机堆或 SPI 时延。
 
@@ -395,10 +395,11 @@ MicroPython 1.29 `mpy-cross -march=xtensawin` 全源编译。主机 traced memor
 状态应用矩阵、五轮运行时目标导航、五轮捕获边沿到屏幕提交的交互探针，以及 16 帧秒表局部刷新
 分配探针；载荷在结束时删除，每阶段后复位设备并让 OLED 休眠。
 
-最新 1.6.0 COM5 五阶段验收完整通过：framebuffer 始终为同一个 8192 B 对象，Plot 工作区为
-104 B，frozen/MPY/Viper ABI 正确。应用矩阵最低空闲堆 `10528 B`，`MemoryError=0`、普通错误 0；
-加载条覆盖的动态插件重载为 `145.895 ms`。预热后普通最大 step `26.939 ms`，输入提交最大
-`16.608 ms`；56 个动画帧最大 `20.030 ms` 且净分配为 `0 B`，Stopwatch 16 帧也为 `0 B`。
+1.6.0 COM5 五阶段验收此前已完整通过：framebuffer 始终为同一个 8192 B 对象，Plot 工作区为
+104 B，frozen/MPY/Viper ABI 正确。本次显示与流畅度修正定向重跑应用矩阵，最低空闲堆为
+`10544 B`，`MemoryError=0`、普通错误 0，加载条覆盖的动态插件重载为 `146.166 ms`；交互复验的
+输入提交最大 `16.630 ms`，五轮前进/返回共 80 个动画帧，最大 `19.979 ms` 且净分配为 `0 B`。
+此前完整验收的普通最大 step 为 `26.939 ms`，Stopwatch 16 帧分配也为 `0 B`。
 验收输出 `ACCEPTANCE_COMPLETE`，随后删除临时载荷并让 OLED 硬件休眠。
 
 ## 实机回归清单
