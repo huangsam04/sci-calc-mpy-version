@@ -6,7 +6,7 @@ SCI-CALC 的 MicroPython 固件，目标硬件为 ESP32-WROOM-32E、SSD1322 256�
 **MicroPython 1.29.0-preview** 构建；SCI-CALC 只增加 frozen manifest/board 配置，不修改
 MicroPython 核心。
 
-只想日常使用计算器时，请先看 [简明使用说明](docs/USER_GUIDE.md)。本文保留部署、插件和维护细节。
+日常使用计算器时，请先看 [简明使用说明](docs/USER_GUIDE.md)。本文保留部署、插件和维护细节。
 
 ## 目录与启动方式
 
