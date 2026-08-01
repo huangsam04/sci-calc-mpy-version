@@ -49,19 +49,19 @@ MicroPython 按 `_boot.py → /boot.py → /main.py` 启动。无 SD 卡、挂�
 
 ### 安装 Release 预编译固件
 
-GitHub Release 附件 `sci-calc-v1.6.1-esp32-factory.bin` 是已经冻结稳定核心模块的 ESP32 factory
+GitHub Release 附件 `sci-calc-v1.6.2-esp32-factory.bin` 是已经冻结稳定核心模块的 ESP32 factory
 应用镜像。它只能写入 factory 应用分区 `0x10000`，不要把它写到 `0x0`，也不要擦除整片 Flash：
 
 ```powershell
 python -m esptool --chip esp32 --port PORTNAME --baud 921600 `
   --before default_reset --after hard_reset write_flash `
-  0x10000 .\sci-calc-v1.6.1-esp32-factory.bin
+  0x10000 .\sci-calc-v1.6.2-esp32-factory.bin
 ```
 
 该镜像不会覆盖 SD 卡上的 Add-ons、`settings.json`、`vars.json` 或未知用户文件。现有 SCI-CALC
-设备刷入后仍保留原 SD 应用；安装同一 Release 的 1.6.1 动态应用时，在 Release 源码目录继续运行
+设备刷入后仍保留原 SD 应用；安装同一 Release 的 1.6.2 动态应用时，在 Release 源码目录继续运行
 下节的快速 MPY 部署命令。首次安装的空白 SD 卡使用该命令的 `--transactional` 选项。
-本仓库验证后的附件位于 `.work/releases/v1.6.1/`，同目录 `.sha256` 文件用于下载后校验。
+本仓库验证后的附件位于 `.work/releases/v1.6.2/`，同目录 `.sha256` 文件用于下载后校验。
 
 ## 正式部署应用
 

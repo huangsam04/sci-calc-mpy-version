@@ -92,4 +92,4 @@
 
 - [x] Plot 输入 `x` 后离页/重建的像素光标失败回路连续两次稳定红灯；修复后原始测试通过，Plot、InputBox 和真实 Nav 聚焦集合 `74 passed`，新增状态与像素缓冲均为 0 B。
 - [x] `check.ps1` 为 `1143 passed in 26.31s`；COM5 最低堆 `10688 B`、普通最大 step `24.633 ms`、输入 `19.410 ms`、动画最大 `18.223 ms`、逐帧分配 0 B、错误 0，临时载荷已清理且 SSD1322 已硬件休眠。
-- [ ] v1.6.2 frozen Release 附件与 SHA-256 摘要核对，README/USER_GUIDE/TECHNICAL_GUIDE 同步，单代理审查无未解决发现，并建立本地 release commit 与 annotated tag，不 push。
+- [x] v1.6.2 frozen Release 附件为 `1832576 B`、SHA-256 `08d4ebb2d6b74c777db357b0ea767f6ee84a9e91bb807d1ac6fd0d3d92fca5fc`；摘要、README/USER_GUIDE/TECHNICAL_GUIDE 和单代理审查均已核对，并建立本地 release commit 与 annotated tag，不 push。

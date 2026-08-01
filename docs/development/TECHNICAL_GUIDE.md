@@ -800,8 +800,9 @@ MicroPython 1.29 全源 mpy-cross 均通过。
 当前 MPY release 为 `ba19cf52672c0131d715d0c8cf5d64b364584e6d817a4a46e304f6db10af0280`，
 manifest SHA-256 为 `1a8d03902720f96c4a39d42f4a85ca6ceff7060419eb8263629292463194c597`。
 正式 frozen 镜像为 `1832576 B`，SHA-256 为 `08d4ebb2d6b74c777db357b0ea767f6ee84a9e91bb807d1ac6fd0d3d92fca5fc`；
-源变更增量构建用时 `35.940 s`，只写 factory 分区 `0x10000` 并校验用时 `24.851 s`。
-本节先记录已部署候选；Release 附件与 tag 在固定实现提交后的发布批次生成。统一入口仍为：
+源变更增量构建用时 `35.940 s`，只写 factory 分区 `0x10000` 并校验用时 `24.851 s`；
+固定实现提交后的可复现重建为 `7.669 s`。附件与摘要位于 `.work/releases/v1.6.2/`，
+本地 annotated tag 为 `v1.6.2`。统一入口仍为：
 
 ```powershell
 .\tools\run_device_acceptance.ps1 -Port PORTNAME
