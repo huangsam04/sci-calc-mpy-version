@@ -95,5 +95,5 @@
 - [x] 修订候选 `check.ps1` 为 `1144 passed in 26.45s`；COM5 照片路径严格通过，统一验收最低堆 `10608 B`、普通 step `24.122 ms`、输入 `19.102 ms`、动画 `18.129 ms`、逐帧分配 0 B、错误 0，载荷已清理且 OLED 已休眠。
 - [x] 最终 v1.6.2 frozen 附件为 `1832608 B`、SHA-256 `cec1c7e4b94505ce7000491bad7c7bb6e820fb08c45b4d3bd67e72c286057b2b`，固定修正提交后的增量重建为 `4.246 s`；附件、摘要、README/USER_GUIDE/TECHNICAL_GUIDE 和单代理审查均已核对，本地 annotated tag 移至修订 release commit，不 push。
 - [x] 用户真机复测否决上述附件作为最终版本：它只验证了静态恢复终点，没有让 Plot 页面经普通调度器推进输入光标。精确屏幕级红灯连续两次失败于缺少 `PlotScreen.motion_active`；复用 Calculator 的两项无状态转发后，完整 8 px 终点测试及四组相关 101 项通过。
-- [ ] 二次修订 `check.ps1` 已通过：`1145 passed in 26.49s`，CPython 与 MicroPython 兼容检查成功；仍须运行 COM5 逐字符定向探针和统一五阶段验收，记录内存/step/输入/动画/分配数据并清理载荷、休眠 OLED。
-- [ ] 重建并替换 v1.6.2 frozen 附件与 SHA-256，同步 README/USER_GUIDE/TECHNICAL_GUIDE，建立修订 release commit 并再次移动本地 annotated tag；自行审查且不 push。
+- [x] 二次修订 `check.ps1` 为 `1145 passed in 26.49s`。COM5 逐字符定向探针完整到达 8 px，3 帧最大 `10.929 ms`、分配 0 B；统一五阶段最低堆 `10576 B`、普通 step `23.801 ms`、输入 `19.091 ms`、动画 `18.046 ms`、逐帧分配 0 B、错误 0，载荷已清理且 OLED 已休眠。
+- [x] 最终 v1.6.2 frozen 附件为 `1832672 B`、SHA-256 `7f290d2e623ea596ad6ebd2a0fb6a6da212eaad88a67c95d218ec31da9acf8d9`，固定实现提交后的可复现增量重建为 `8.405 s`；附件、摘要、README/USER_GUIDE/TECHNICAL_GUIDE 和单代理审查均已核对，本地 annotated tag 移至最终 release commit，不 push。

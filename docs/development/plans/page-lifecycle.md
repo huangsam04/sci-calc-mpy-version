@@ -57,4 +57,4 @@
 - [x] 修订主机 `1144 passed`；COM5 照片路径严格得到 `x/1/9/inactive → empty/0/1/inactive`，统一五阶段最低堆 `10608 B`、错误 0，载荷已清理且 OLED 已硬件休眠。
 - [x] 用户复测随后发现逐字符移动仍只显示小于一格；新屏幕级红灯不直接结束子控件动画，而是按主循环合同查询 Plot 页面，连续两次稳定得到 `AttributeError: PlotScreen has no motion_active`。Calculator 对照确认它已转发相同 InputBox 动画。
 - [x] Plot 现与 Calculator 一样仅转发 `motion_active` 和 `advance_motion(now)`；主循环可把首次 2 px 小步继续推进到 96 ms 的完整 8 px 字符终点。未增加实例字段或状态，InputBox/Plot/Nav/动效相关 101 项通过。
-- [ ] COM5 定向逐字符动画与统一五阶段门禁通过后，由验证分支替换第二次修订的 v1.6.2 发布产物并休眠 OLED。
+- [x] COM5 定向逐字符探针为 `origin=1`、`initial=3`、`samples=[7,9,9]`、`final=9`，3 帧最大 `10.929 ms` 且分配 0 B；统一五阶段最低堆 `10576 B`、错误 0，载荷已清理且 OLED 已硬件休眠。发布产物由验证分支收口。
