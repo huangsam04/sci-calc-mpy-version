@@ -86,3 +86,4 @@
 - [x] 定向 profile 覆盖 Calculator 历史、光标、RPN 往返、Function Picker 翻页、Variable Panel 与 Stopwatch：71 帧最大 `19.561 ms`，Stopwatch 4 帧最大 `19.872 ms`，动画分配 0 B；随后复用 `tools/run_device_acceptance.ps1 -Port COM5` 完成五阶段验收。
 - [x] 最终统一验收为 `heap_min=10832 B`、预热普通最大 step `24.066 ms`、输入 `18.916 ms`、动画最大 `17.959 ms`、逐帧分配 0 B、错误 0；加载条覆盖的插件重载 `142.466 ms`，载荷已清理且 OLED 已硬件休眠。
 - [x] README、USER_GUIDE、TECHNICAL_GUIDE 已同步最终行为和数据；差异审查确认无调试插桩或 `.work` 外生成物，本批建立本地 `v1.6.1` checkpoint commit，不创建 tag、不 push。
+- [x] 用户随后授权发布：`check.ps1` 为 `1142 passed in 27.60s`；frozen 镜像重建为 `1832560 B`、SHA-256 `ea9f46c2f1037ffe5ba02c215dca99c7ece1acf061dd931b896dc87795c544ed`，`.work/releases/v1.6.1/` 附件与摘要已核对，并建立本地 annotated tag `v1.6.1`，不 push。

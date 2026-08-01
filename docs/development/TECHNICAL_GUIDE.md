@@ -791,7 +791,7 @@ CPython `compileall`、对所有源码使用 `-march=xtensawin` 编译 `.mpy`。
 5. 验收侧缓存同一 application matrix 内不变的 framebuffer 身份快照；该缓存不进入普通 release。
    没有增加像素缓冲、通用动画层、`LazyScreen`、SWAP 或第二 framebuffer。
 
-1.6.1 的最终 `check.ps1` 为 `1142 passed in 23.25s`；CPython compileall 和
+1.6.1 的发布前 `check.ps1` 为 `1142 passed in 27.60s`；CPython compileall 和
 MicroPython 1.29 全源 mpy-cross 均通过。
 
 ### 10.2 COM5 严格门禁（1.6.1）
@@ -799,8 +799,9 @@ MicroPython 1.29 全源 mpy-cross 均通过。
 当前 MPY release 为 `9cebfe0e3d96b147e394ebf36ee8c0a2c2bdbba4edae17db847beb6ec43b569e`，
 manifest SHA-256 为 `49ed5486a49b6d0d2fc41bd1009cfd4d6f0c8dcc6b0acf8bb22b830864c8d9ae`。
 正式 frozen 镜像为 `1832560 B`，SHA-256 为 `ea9f46c2f1037ffe5ba02c215dca99c7ece1acf061dd931b896dc87795c544ed`；
-增量构建用时 `29.126 s`，只写 factory 分区 `0x10000` 并校验用时 `24.635 s`。本轮不创建
-`v1.6.1` tag 或 GitHub Release 附件。统一入口仍为：
+发布前增量重建用时 `10.367 s`，只写 factory 分区 `0x10000` 并校验用时 `24.635 s`。
+可上传附件与 SHA-256 摘要位于 `.work/releases/v1.6.1/`，本地 annotated tag 为
+`v1.6.1`。统一入口仍为：
 
 ```powershell
 .\tools\run_device_acceptance.ps1 -Port PORTNAME

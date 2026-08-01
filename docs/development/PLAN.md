@@ -49,6 +49,7 @@
 - [x] **Calculator 历史与光标**：按[动效分支](plans/motion.md#v161-calculator-与自绘列表动效)把最新历史改为表达式左对齐、结果右对齐的两行布局，并在其下显示两条单行旧历史；删除固定 `78 px` 结果宽度。历史选择和输入光标使用固定标量 ease-out，输入光标同时闪烁。
 - [x] **Function Panel 与自绘列表**：四个内置函数组显示紧凑用途摘要；Function Picker 的上下左右选择和跨 8 项页切换均有非线性动画。已有 `Menu` 列表继续复用其现有滑动；Calculator 历史、Variable Panel 与 Stopwatch 圈速均用固定标量补齐，最坏活动路径约 60 B，不新建通用动画框架。
 - [x] **启动、版本与验证**：启动进度区不再绘制任何 `import...` 详情，产品版本为 `1.6.1`；最终 `check.ps1` 为 `1142 passed`，COM5 五阶段全部通过并清理载荷、休眠 OLED，说明与差异复核完成且建立本地 checkpoint，不 push。
+- [x] **发布固件与标签**：发布前主机门禁为 `1142 passed in 27.60s`；可复现 frozen 镜像为 `1832560 B`、SHA-256 `ea9f46c2f1037ffe5ba02c215dca99c7ece1acf061dd931b896dc87795c544ed`，已按既有结构保存到 `.work/releases/v1.6.1/` 并建立本地 annotated tag `v1.6.1`，不 push。
 
 ## 唯一执行顺序
 
