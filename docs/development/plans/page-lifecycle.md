@@ -51,6 +51,7 @@
 
 ## v1.6.2 Plot 光标恢复
 
-- [x] 用真实 `Nav` 驱动 Plot 输入 `x`、立即离页、销毁实例并以 retained state 重建；修复前连续两次稳定得到 `cursor_pos=1` 但 `cursor.x=3`，预期为 `9`，原始失败命令可在一秒内运行。
-- [x] 根因是保留的 `InputBox` 同时携带未完成的固定标量光标动画；Plot 重建激活没有推进或终止它。`_activate_visible_state()` 现调用既有 `finish_motion()`，适用于整页重建及子页返回中断，保持正常输入动画不变且新增状态/分配均为 0。
-- [x] 主机 `1143 passed`；COM5 的 `plot_pipeline`、页面往返及五阶段统一门禁通过，最低堆 `10688 B`、错误 0，临时载荷已删除且 OLED 已硬件休眠。发布附件由验证分支继续收口。
+- [x] 首轮用真实 `Nav` 驱动 Plot 输入 `x`、离页并重建，修复了 `cursor_pos=1` 但 `cursor.x=3` 的中断动画；用户照片随后证明真实漏测路径是同页取消编辑并立即重进，因此首轮 `finish_motion()` 结论被替换而非叠加兼容层。
+- [x] 照片路径使用真实按键映射执行 `RPN → finish input motion → ESC → ENT`；修复前连续两次稳定为文本空、`cursor_pos=0`、`cursor.x=7`，预期 `1`。原因是取消编辑使用非即时 `set_str()`，把隐藏状态恢复错误地启动为可见动画。
+- [x] Plot 取消编辑现复用 Calculator 的即时 InputBox 恢复语义，激活也复用其按文本重算目标的边界；正常输入仍使用原 96 ms ease-out，新增状态、分配和像素缓冲均为 0，Plot/Calculator/InputBox/Nav 聚焦集合 `109 passed`。
+- [x] 修订主机 `1144 passed`；COM5 照片路径严格得到 `x/1/9/inactive → empty/0/1/inactive`，统一五阶段最低堆 `10608 B`、错误 0，载荷已清理且 OLED 已硬件休眠。

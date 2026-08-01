@@ -787,22 +787,22 @@ CPython `compileall`、对所有源码使用 `-march=xtensawin` 编译 `.mpy`。
 3. 函数重载复用 live registry，固定 bundled 插件不再导入通用源码 loader；loader 临时模块在
    冷操作后移除，插件清理使用 `popitem()`，不创建键列表副本。
 4. Calculator、Function Picker、Variable Panel 和 Stopwatch 在激活、输入或换页边界重建固定大小的可见标签、
-   历史和页脚缓存；动画帧只读取这些缓存，不再格式化或截断字符串。Plot 激活时结束被页面切换
-   中断的现有 InputBox 光标运动，使用其固定目标标量吸附到保留文本的正确位置。
+   历史和页脚缓存；动画帧只读取这些缓存，不再格式化或截断字符串。Plot 取消编辑时使用
+   `set_str(..., immediate=True)` 直接恢复提交前文本；激活时与 Calculator 一样按当前文本立即重算
+   InputBox 光标目标。正常输入仍使用 96 ms ease-out，隐藏状态恢复不再暴露中间像素。
 5. 验收侧缓存同一 application matrix 内不变的 framebuffer 身份快照；该缓存不进入普通 release。
    没有增加像素缓冲、通用动画层、`LazyScreen`、SWAP 或第二 framebuffer。
 
-1.6.2 的发布前 `check.ps1` 为 `1143 passed in 26.31s`；CPython compileall 和
+1.6.2 修订候选的发布前 `check.ps1` 为 `1144 passed in 26.45s`；CPython compileall 和
 MicroPython 1.29 全源 mpy-cross 均通过。
 
 ### 10.2 COM5 严格门禁（1.6.2）
 
 当前 MPY release 为 `ba19cf52672c0131d715d0c8cf5d64b364584e6d817a4a46e304f6db10af0280`，
 manifest SHA-256 为 `1a8d03902720f96c4a39d42f4a85ca6ceff7060419eb8263629292463194c597`。
-正式 frozen 镜像为 `1832576 B`，SHA-256 为 `08d4ebb2d6b74c777db357b0ea767f6ee84a9e91bb807d1ac6fd0d3d92fca5fc`；
-源变更增量构建用时 `35.940 s`，只写 factory 分区 `0x10000` 并校验用时 `24.851 s`；
-固定实现提交后的可复现重建为 `7.669 s`。附件与摘要位于 `.work/releases/v1.6.2/`，
-本地 annotated tag 为 `v1.6.2`。统一入口仍为：
+修订 frozen 候选为 `1832608 B`，SHA-256 为 `cec1c7e4b94505ce7000491bad7c7bb6e820fb08c45b4d3bd67e72c286057b2b`；
+源变更增量构建用时 `30.595 s`，只写 factory 分区 `0x10000` 并校验用时 `24.852 s`。
+最终附件、可复现重建用时和移动后的本地 tag 在固定修正提交后的发布批次核对。统一入口仍为：
 
 ```powershell
 .\tools\run_device_acceptance.ps1 -Port PORTNAME
@@ -814,9 +814,9 @@ manifest SHA-256 为 `1a8d03902720f96c4a39d42f4a85ca6ceff7060419eb82636292924631
 | --- | --- |
 | 启动与固定缓冲 | resident/root ready；同一个 framebuffer 8192 B；Plot 工作区 104 B；MPY/Viper ABI 通过 |
 | 模块来源 | `main=/sd/.slots/B/main.mpy`；`performance`、`runtime_handle`、`version` 为 frozen；`approot` 在根页阶段尚未加载 |
-| 应用矩阵 | 35 场景/五轮；最低空闲堆 10688 B，高于 8 KiB 2496 B；漂移 +1440 B；`MemoryError=0`、普通错误 0；加载条覆盖的插件重载 145.321 ms |
-| 页面 tracer | 预热后五轮；最低空闲堆 54080 B；漂移 -80 B；普通最大 step 24.633 ms |
-| 交互与动画 | 完整输入 `12345`；输入提交最大 19.410 ms；80 个动画帧最大 18.223 ms；菜单/前进/返回净分配均 0 B；交互阶段堆漂移 -16 B |
+| 应用矩阵 | 35 场景/五轮；最低空闲堆 10608 B，高于 8 KiB 2416 B；漂移 +1552 B；`MemoryError=0`、普通错误 0；加载条覆盖的插件重载 143.754 ms |
+| 页面 tracer | 预热后五轮；最低空闲堆 54080 B；漂移 -80 B；普通最大 step 24.122 ms |
+| 交互与动画 | 完整输入 `12345`；输入提交最大 19.102 ms；80 个动画帧最大 18.129 ms；菜单/前进/返回净分配均 0 B；交互阶段堆漂移 -16 B |
 | v1.6.1 定向交互 | Calculator 历史/光标/闪烁、RPN 往返、Picker 四向/翻页、Variable Panel 与 Stopwatch 均通过；71 帧最大 19.561 ms，最大 step 23.183 ms，Variable Panel 最大帧 14.151 ms，Stopwatch 4 帧最大 19.872 ms，动画分配 0 B，漂移 -368 B |
 | 固定帧 | Stopwatch 16 帧全部提交，净分配 0 B |
 | 结果 | `ACCEPTANCE_COMPLETE`；最低堆高于 8 KiB，普通 step/动画帧严格 `<40 ms`，输入严格 `<20 ms` |
@@ -826,9 +826,10 @@ manifest SHA-256 为 `1a8d03902720f96c4a39d42f4a85ca6ceff7060419eb82636292924631
 第一帧 OLED 提交计入动画时延和分配。矩阵扫描与去抖合同单独报告，不能把它描述为物理按键闭合
 到像素的完整端到端时延。
 
-Plot 光标回归使用真实 `Nav` 输入 `x`、离页、销毁并重建页面；修复前连续两次为逻辑索引 1、
-像素 3 px，修复后吸附到目标 9 px 且 motion inactive。该边界不新增状态或分配；统一应用矩阵的
-`plot_pipeline` 和 `page_round_trips` 随后在同一真机候选通过。
+首轮 Plot 光标回归只覆盖真实 `Nav` 离页/重建，用户照片证明它没有覆盖同页取消并重进。修订红灯
+执行真实按键映射 `RPN(x) → 等待稳定 → ESC → ENT`，连续两次得到空文本、逻辑索引 0 但像素
+7 px；修复后 COM5 的实际 frozen 代码报告 `x/1/9/inactive → empty/0/1/inactive`。该边界不新增
+状态或分配；统一应用矩阵的 `plot_pipeline` 和 `page_round_trips` 随后在同一修订候选通过。
 
 ### 10.3 已测热点与淘汰候选
 
@@ -859,7 +860,7 @@ Stopwatch 压缩无法影响更早的 `calculator_history` 门禁，按 YAGNI �
 缓冲。Calculator、Function Picker、Variable Panel、Stopwatch 和固定 footer 的可见文本都在激活、输入或换页
 边界预先装入固定缓存，逐帧只读取缓存。Renderer 在
 动画启动前解析目标页 hooks，每一帧都把目标页严格裁剪到当前新暴露条带，包含首个 2 px 边缘。
-1.6.2 COM5 最终 `heap_min=10688 B`，高于 8192 B 硬底线 2496 B；v1.6.1 定向 71 帧、当前统一交互 80 帧
+1.6.2 修订候选 COM5 最终 `heap_min=10608 B`，高于 8192 B 硬底线 2416 B；v1.6.1 定向 71 帧、当前统一交互 80 帧
 和 Stopwatch 16 帧的净分配均为 0 B。8 KiB 是启用底线，
 12 KiB 仍是优化目标；不得为追求余量删除已经满足错误、漂移和时延门槛的动画。
 

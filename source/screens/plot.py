@@ -234,8 +234,9 @@ class PlotScreen(UIElement):
         self._state[1][3] = 0
         self._state[3][3][0][3] = None
         self._clear_presented_editor_state()
-        self.input_box.finish_motion()
         self.input_box.activate()
+        self.input_box.cursor.mode = 1
+        self.input_box._update_cursor_target(immediate=True)
         if not self.input_box.get_str() and self.expr:
             self.input_box.set_str(self.expr)
         if self.expr and self._state[2][0] is None:
@@ -533,7 +534,8 @@ class PlotScreen(UIElement):
                 self._state[2][2] = False
                 self._state[2][3] = False
         else:
-            self.input_box.set_str(self._state[3][3][0][2])
+            self.input_box.set_str(
+                self._state[3][3][0][2], immediate=True)
 
     # ── curve rendering (2-pass: find range → retain y samples) ──
 

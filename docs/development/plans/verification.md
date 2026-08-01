@@ -90,6 +90,7 @@
 
 ## v1.6.2 Plot 光标与发布
 
-- [x] Plot 输入 `x` 后离页/重建的像素光标失败回路连续两次稳定红灯；修复后原始测试通过，Plot、InputBox 和真实 Nav 聚焦集合 `74 passed`，新增状态与像素缓冲均为 0 B。
-- [x] `check.ps1` 为 `1143 passed in 26.31s`；COM5 最低堆 `10688 B`、普通最大 step `24.633 ms`、输入 `19.410 ms`、动画最大 `18.223 ms`、逐帧分配 0 B、错误 0，临时载荷已清理且 SSD1322 已硬件休眠。
-- [x] v1.6.2 frozen Release 附件为 `1832576 B`、SHA-256 `08d4ebb2d6b74c777db357b0ea767f6ee84a9e91bb807d1ac6fd0d3d92fca5fc`；摘要、README/USER_GUIDE/TECHNICAL_GUIDE 和单代理审查均已核对，并建立本地 release commit 与 annotated tag，不 push。
+- [x] 首轮离页/重建测试只覆盖中断动画，未捕获用户照片中的同页 `ESC → ENT`；原 `1832576 B` / `08d4ebb2...fca5fc` 附件与本地 tag 已被新证据否决，不作为最终 v1.6.2 候选。
+- [x] 照片路径连续两次稳定复现空文本和 7 px 错位；复用 Calculator 的即时恢复/激活目标重算后，照片路径与原 Nav 路径均通过，相关聚焦集合 `109 passed`，新增状态与像素缓冲 0 B。
+- [x] 修订候选 `check.ps1` 为 `1144 passed in 26.45s`；COM5 照片路径严格通过，统一验收最低堆 `10608 B`、普通 step `24.122 ms`、输入 `19.102 ms`、动画 `18.129 ms`、逐帧分配 0 B、错误 0，载荷已清理且 OLED 已休眠。
+- [ ] 替换 v1.6.2 frozen 附件、SHA-256、release commit 与本地 annotated tag；同步 README/USER_GUIDE/TECHNICAL_GUIDE 并完成单代理审查，不 push。

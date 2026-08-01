@@ -218,6 +218,23 @@ def test_plot_exposes_letters_only_while_its_editor_is_visible():
     assert plot.blocks_global_shortcuts() is True
 
 
+def test_plot_cancel_then_reenter_restores_empty_cursor_geometry():
+    plot = PlotScreen(None, registry=build_registry())
+
+    assert plot.update(KeyboardStub(), (3, 5, False)) == "REDRAW"
+    plot.input_box.finish_motion()
+    assert plot.input_box.get_str() == "x"
+    assert plot.input_box.cursor.x == plot.input_box.x + 1 + 8
+
+    assert plot.update(KeyboardStub(), (0, 0, False)) == "REDRAW"
+    assert plot.update(KeyboardStub(), (3, 3, False)) == "REDRAW"
+
+    assert plot.input_box.get_str() == ""
+    assert plot.input_box.cursor_pos == 0
+    assert plot.input_box.cursor.x == plot.input_box.x + 1
+    assert plot.input_box.motion_active is False
+
+
 def test_curve_job_is_fixed_shape_and_keeps_only_needed_autoscale_state():
     automatic = _curve_job(True, 20, 54, 21)
     manual = _curve_job(False, 20, 54, 21)
