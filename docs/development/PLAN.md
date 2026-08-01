@@ -51,6 +51,13 @@
 - [x] **启动、版本与验证**：启动进度区不再绘制任何 `import...` 详情，产品版本为 `1.6.1`；最终 `check.ps1` 为 `1142 passed`，COM5 五阶段全部通过并清理载荷、休眠 OLED，说明与差异复核完成且建立本地 checkpoint，不 push。
 - [x] **发布固件与标签**：发布前主机门禁为 `1142 passed in 27.60s`；可复现 frozen 镜像为 `1832560 B`、SHA-256 `ea9f46c2f1037ffe5ba02c215dca99c7ece1acf061dd931b896dc87795c544ed`，已按既有结构保存到 `.work/releases/v1.6.1/` 并建立本地 annotated tag `v1.6.1`，不 push。
 
+## v1.6.2 Plot 光标生命周期修正
+
+- [x] **稳定复现与修复**：按[页面生命周期分支](plans/page-lifecycle.md#v162-plot-光标恢复)用真实 `Nav` 连续两次复现输入 `x` 后离开并重进 Plot 时逻辑索引为 1、像素光标仍停在 3 px；Plot 激活时复用现有 `finish_motion()` 吸附到 9 px 正确终态，不新增状态或缓冲，聚焦回归 `74 passed`。
+- [x] **版本**：产品版本及 boot probe 合同更新为 `1.6.2`；历史 v1.6.1 发布数据不改写。
+- [x] **主机与 COM5 验证**：`check.ps1` 为 `1143 passed in 26.31s`；统一验收最低堆 `10688 B`、普通最大 step `24.633 ms`、输入 `19.410 ms`、动画最大 `18.223 ms`、逐帧分配 0 B、`MemoryError=0`、错误 0，载荷已清理且 OLED 已休眠。
+- [ ] **发布**：从固定实现提交重建 `.work/releases/v1.6.2/` 固件与摘要、同步最终附件说明、审查、提交并创建本地 annotated tag `v1.6.2`，不 push。
+
 ## 唯一执行顺序
 
 1. 运行 `check.ps1` 和现有 COM5 验收，记录未修改基线并让 OLED 休眠。

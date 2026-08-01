@@ -1,3 +1,3 @@
 """Single source of truth for the SCI-CALC application release."""
 
-VERSION = "1.6.1"
+VERSION = "1.6.2"

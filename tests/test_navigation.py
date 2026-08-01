@@ -345,6 +345,37 @@ def test_nav_rebuilds_calculator_and_keeps_only_its_lossless_state(
     assert second.input_box.get_str() == "2+3"
 
 
+def test_nav_rebuilds_plot_with_cursor_at_retained_text_position(monkeypatch):
+    class Persistence:
+        def request_settings(self, *_args):
+            pass
+
+        def detach_callbacks(self, _owner):
+            pass
+
+    nav = _nav(monkeypatch)
+    nav.configure_pages(
+        None, None, build_registry(), {},
+        {"display_digits": 4, "enabled_functions": ["basic"]},
+        Persistence(), "1.6.2")
+    root = MainMenu()
+    nav.boot(root)
+
+    first = nav.open(PAGE_PLOT)
+    first._enter_edit()
+    assert first.input_box.insert_str("x") is True
+    assert first.input_box.motion_active is True
+    nav.back()
+
+    second = nav.open(PAGE_PLOT)
+    second._enter_edit()
+
+    assert second.input_box.get_str() == "x"
+    assert second.input_box.cursor_pos == 1
+    assert second.input_box.cursor.x == second.input_box.x + 1 + 8
+    assert second.input_box.motion_active is False
+
+
 def test_nav_first_and_repeat_entry_covers_every_supported_page(monkeypatch):
     class Persistence:
         def request_settings(self, *_args):

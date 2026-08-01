@@ -87,3 +87,9 @@
 - [x] 最终统一验收为 `heap_min=10832 B`、预热普通最大 step `24.066 ms`、输入 `18.916 ms`、动画最大 `17.959 ms`、逐帧分配 0 B、错误 0；加载条覆盖的插件重载 `142.466 ms`，载荷已清理且 OLED 已硬件休眠。
 - [x] README、USER_GUIDE、TECHNICAL_GUIDE 已同步最终行为和数据；差异审查确认无调试插桩或 `.work` 外生成物，本批建立本地 `v1.6.1` checkpoint commit，不创建 tag、不 push。
 - [x] 用户随后授权发布：`check.ps1` 为 `1142 passed in 27.60s`；frozen 镜像重建为 `1832560 B`、SHA-256 `ea9f46c2f1037ffe5ba02c215dca99c7ece1acf061dd931b896dc87795c544ed`，`.work/releases/v1.6.1/` 附件与摘要已核对，并建立本地 annotated tag `v1.6.1`，不 push。
+
+## v1.6.2 Plot 光标与发布
+
+- [x] Plot 输入 `x` 后离页/重建的像素光标失败回路连续两次稳定红灯；修复后原始测试通过，Plot、InputBox 和真实 Nav 聚焦集合 `74 passed`，新增状态与像素缓冲均为 0 B。
+- [x] `check.ps1` 为 `1143 passed in 26.31s`；COM5 最低堆 `10688 B`、普通最大 step `24.633 ms`、输入 `19.410 ms`、动画最大 `18.223 ms`、逐帧分配 0 B、错误 0，临时载荷已清理且 SSD1322 已硬件休眠。
+- [ ] v1.6.2 frozen Release 附件与 SHA-256 摘要核对，README/USER_GUIDE/TECHNICAL_GUIDE 同步，单代理审查无未解决发现，并建立本地 release commit 与 annotated tag，不 push。

@@ -30,8 +30,8 @@ class BindingStub:
 
 
 
-def test_release_version_is_1_6_1():
-    assert VERSION == "1.6.1"
+def test_release_version_is_1_6_2():
+    assert VERSION == "1.6.2"
 
 
 def test_boot_probe_reports_version_root_and_buffer_contract():

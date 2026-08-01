@@ -2,7 +2,7 @@
 
 SCI-CALC 的 MicroPython 固件，目标硬件为 ESP32-WROOM-32E、SSD1322 256×64 灰阶 OLED、5×6 矩阵键盘和 FAT32 SD 卡。
 
-当前应用版本为 **1.6.1**。源码和设备固件均由本仓库 `micropython/` 中的
+当前应用版本为 **1.6.2**。源码和设备固件均由本仓库 `micropython/` 中的
 **MicroPython 1.29.0-preview** 构建；SCI-CALC 只增加 frozen manifest/board 配置，不修改
 MicroPython 核心。
 
@@ -179,6 +179,7 @@ max(3, 5, 4)          -> 5
 非有限值、视窗外分支和大幅跳变不会被连接成贯穿屏幕的伪曲线。
 提交后会立即显示 `Plotting` 和真实进度条；自动缩放、工作区清零和曲线采样按有界切片推进，
 中途按键会取消旧任务并进入对应操作。进度条直接画入唯一 framebuffer，未增加像素缓冲。
+离开 Plot 或打开子页面会结束尚未完成的光标移动；再次进入编辑时，光标立即位于保留表达式的正确位置。
 
 ### 其他页面
 
@@ -387,7 +388,7 @@ UI 会显示保存失败并每两秒重试。
 ..\.venv\python.exe -m mpremote connect PORTNAME reset
 ```
 
-1.6.1 的最终主机检查为 `1142 passed in 23.25s`，并通过 CPython 语法检查和
+1.6.2 的最终主机检查为 `1143 passed in 26.31s`，并通过 CPython 语法检查和
 MicroPython 1.29 `mpy-cross -march=xtensawin` 全源编译。主机 traced memory 只用于比较逻辑
 工作量，不替代真机堆或 SPI 时延。
 
@@ -401,10 +402,10 @@ MicroPython 1.29 `mpy-cross -march=xtensawin` 全源编译。主机 traced memor
 状态应用矩阵、五轮运行时目标导航、五轮捕获边沿到屏幕提交的交互探针，以及 16 帧秒表局部刷新
 分配探针；载荷在结束时删除，每阶段后复位设备并让 OLED 休眠。
 
-1.6.1 COM5 五阶段验收完整通过：35 个场景连续五轮的最低空闲堆为 `10832 B`，高于 8 KiB
-硬门槛 `2640 B`；`MemoryError=0`、普通错误 0，加载条覆盖的动态插件重载为 `142.466 ms`。
-预热运行期最大普通 step 为 `24.066 ms`，输入提交最大 `18.916 ms`；80 个动画帧最大
-`17.959 ms` 且净分配为 `0 B`，Stopwatch 16 帧分配也为 `0 B`。定向操作另覆盖 Calculator
+1.6.2 COM5 五阶段验收完整通过：35 个场景连续五轮的最低空闲堆为 `10688 B`，高于 8 KiB
+硬门槛 `2496 B`；`MemoryError=0`、普通错误 0，加载条覆盖的动态插件重载为 `145.321 ms`。
+预热运行期最大普通 step 为 `24.633 ms`，输入提交最大 `19.410 ms`；80 个动画帧最大
+`18.223 ms` 且净分配为 `0 B`，Stopwatch 16 帧分配也为 `0 B`。v1.6.1 定向操作另覆盖 Calculator
 历史、光标、RPN 往返、Function Picker 四向/翻页、Variable Panel 和 Stopwatch 圈速运动：
 前五类 71 帧最大 `19.561 ms`，Stopwatch 4 帧最大 `19.872 ms`，最大操作 step `23.183 ms`，
 动画分配 `0 B`、堆漂移 `-368 B`。验收输出

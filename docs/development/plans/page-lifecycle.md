@@ -48,3 +48,9 @@
 - [x] 已清点所有 `_boot_progress` 调用；启动屏保留面向用户的阶段、进度和启动失败界面，但不再绘制 54 px 的内部 operation/detail 整行，因此不显示模块名、调用名或 `import...` 文本。
 - [x] Function Panel 四个内置组改为屏宽内固定短摘要：`Basic (+ - * / ...)`、`Trig (sin cos tan)`、`Science (sqrt ln exp)`、`Lists (max min ...)`；最长 25 字符。动态 Add-ons 名称和加载边界不变。
 - [x] Calculator/Picker 往返、OOM/异常回滚、启动详情、内置/动态分组和设备 boot probe 聚焦回归通过，产品版本为 `1.6.1`；文本/版本批次 `39 passed`，无旧形状兼容层。
+
+## v1.6.2 Plot 光标恢复
+
+- [x] 用真实 `Nav` 驱动 Plot 输入 `x`、立即离页、销毁实例并以 retained state 重建；修复前连续两次稳定得到 `cursor_pos=1` 但 `cursor.x=3`，预期为 `9`，原始失败命令可在一秒内运行。
+- [x] 根因是保留的 `InputBox` 同时携带未完成的固定标量光标动画；Plot 重建激活没有推进或终止它。`_activate_visible_state()` 现调用既有 `finish_motion()`，适用于整页重建及子页返回中断，保持正常输入动画不变且新增状态/分配均为 0。
+- [x] 主机 `1143 passed`；COM5 的 `plot_pipeline`、页面往返及五阶段统一门禁通过，最低堆 `10688 B`、错误 0，临时载荷已删除且 OLED 已硬件休眠。发布附件由验证分支继续收口。
