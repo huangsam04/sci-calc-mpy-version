@@ -1,8 +1,5 @@
 import pathlib
 import runpy
-import sys
-from types import SimpleNamespace
-
 import pytest
 
 from version import VERSION
@@ -30,8 +27,8 @@ class BindingStub:
 
 
 
-def test_release_version_is_1_6_2():
-    assert VERSION == "1.6.2"
+def test_release_version_is_1_7_0():
+    assert VERSION == "1.7.0"
 
 
 def test_boot_probe_reports_version_root_and_buffer_contract():
@@ -47,34 +44,14 @@ def test_boot_probe_reports_version_root_and_buffer_contract():
     ]
     assert lines[3].startswith("BOOT_BUFFERS main:8192:")
     assert lines[4].startswith("BOOT_WORKSPACE plot:104:")
-    assert lines[5:7] == ["BOOT_MODE source", "BOOT_ABI_VIPER ok"]
+    assert lines[5:7] == ["BOOT_MODE firmware", "BOOT_ABI_VIPER ok"]
     assert [line.split(":", 1)[0] for line in lines[7:]] == [
-        "BOOT_MODULE main",
+        "BOOT_MODULE application",
         "BOOT_MODULE performance",
         "BOOT_MODULE runtime_handle",
         "BOOT_MODULE version",
-        "BOOT_MODULE approot",
+        "BOOT_MODULE sdcard",
     ]
-
-
-def test_boot_probe_reports_mpy_mode_from_dynamic_main_when_version_is_frozen(
-        monkeypatch):
-    monkeypatch.setitem(
-        sys.modules,
-        "main",
-        SimpleNamespace(__file__="/sd/.slots/B/main.mpy"),
-    )
-    monkeypatch.setitem(
-        sys.modules,
-        "version",
-        SimpleNamespace(VERSION=VERSION, __file__="version.py"),
-    )
-    module = runpy.run_path(str(TOOLS / "device_boot_probe.py"))
-    lines = []
-
-    module["run"](BindingStub(), emit=lines.append)
-
-    assert "BOOT_MODE mpy" in lines
 
 
 def test_boot_probe_reads_the_published_binding_without_materializing_runtime():

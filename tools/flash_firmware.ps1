@@ -2,8 +2,6 @@
 param(
     [Parameter(Mandatory = $true)]
     [string]$Port,
-    [ValidateSet("frozen")]
-    [string]$Profile = "frozen",
     [ValidateSet(460800, 921600)]
     [int]$Baud = 921600,
     [string]$IdfToolsPath = ""
@@ -12,7 +10,7 @@ param(
 $ErrorActionPreference = "Stop"
 $ProjectRoot = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
 $WorkRoot = Join-Path $ProjectRoot ".work"
-$Image = Join-Path $WorkRoot ("firmware\" + $Profile + "\micropython.bin")
+$Image = Join-Path $WorkRoot "firmware\product\micropython.bin"
 $FactoryBytes = 0x1F0000
 
 if (-not $IdfToolsPath) {
@@ -28,7 +26,7 @@ if (-not $Python) {
     throw "Missing ESP-IDF 5.5 Python environment under $IdfToolsPath"
 }
 if (-not (Test-Path -LiteralPath $Image -PathType Leaf)) {
-    throw "Missing $Profile application image: $Image"
+    throw "Missing SCI-CALC product application image: $Image"
 }
 $ImageBytes = (Get-Item -LiteralPath $Image).Length
 if ($ImageBytes -le 0 -or $ImageBytes -gt $FactoryBytes) {
@@ -62,12 +60,12 @@ $Started = Get-Date
     "0x10000" `
     $Image
 if ($LASTEXITCODE -ne 0) {
-    throw "Application flash failed for profile $Profile on $Port"
+    throw "SCI-CALC application flash failed on $Port"
 }
 
 $Elapsed = [int]((Get-Date) - $Started).TotalMilliseconds
 Write-Output (
-    "FIRMWARE_FLASH profile=$Profile port=$Port baud=$Baud" +
+    "FIRMWARE_FLASH product=sci-calc port=$Port baud=$Baud" +
     " elapsed_ms=$Elapsed app_bytes=$ImageBytes offset=0x10000 sha256=$Hash")
 }
 finally {

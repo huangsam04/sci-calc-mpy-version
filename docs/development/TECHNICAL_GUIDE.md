@@ -1,43 +1,39 @@
 # SCI-CALC MicroPython 技术说明
 
-本文是 `mp_version` 1.6.2 的实现说明和维护入口。它以源码当前行为为准，使用伪代码解释
+本文是 `mp_version` 1.7.0 的实现说明和维护入口。它以源码当前行为为准，使用伪代码解释
 从 ESP32 上电到应用、输入、计算、显示、持久化、部署与诊断的完整逻辑。设备使用仓库
-MicroPython 1.29.0-preview 的自定义 frozen 固件；动态 Add-ons 和用户数据仍留在 SD 卡。
+锁定的官方稳定 MicroPython v1.28.0 clean tag 构建自定义 frozen 固件；动态 Add-ons 和用户数据仍留在 SD 卡。
 
 ## 1. 系统边界与文件布局
 
 目标硬件为 ESP32-WROOM-32E、SSD1322 256x64 4 位灰阶 OLED、5x6 矩阵键盘和 FAT32
-SD 卡。内部 Flash 保存可恢复启动链和稳定 frozen 核心；SD 卡保存槽身份、动态运行边界、
-Add-ons、设置、变量及其他用户文件。
+SD 卡。内部 Flash 保存完整产品启动链和全部普通产品模块；SD 卡只保存动态 Add-ons、设置、变量及其他用户文件。
 
 ```text
-内部 Flash                                      SD 卡 /sd
------------                                      ---------
-boot.py       挂载 SD                            settings.json / vars.json（可变状态）
-sdcard.py     SPI block-device 驱动               .slots/A 或 B/
-main.py       槽选择与恢复入口                      release.manifest / .sci-calc-owner
-bootenv.py / bootsel.py / bootlog.py               launch.py -> main.mpy
-bootsupervisor.py                                  fonts/*.xglcd
-recovery.py / display/                            Add-ons 和其他未知用户文件
-.frozen（稳定应用核心及 approot/performance/
-runtime_handle/version）
-                                                .staging/（未激活候选）
+内部 Flash / .frozen                            SD 卡 /sd
+--------------------                            ---------
+boot.py / sdcard.py    挂载用户数据 SD            settings.json / vars.json
+main.py                固定最小启动器              Add-ons/*.py
+application.py         应用构造、导航与主循环       其他未知用户文件
+recovery.py            固件启动失败恢复
+calc/display/input/screens/ui/utils/functions
+                       全部普通产品代码和内置函数
 ```
 
 源码目录的职责如下：
 
 | 区域 | 责任 |
 | --- | --- |
-| `source/main.py` | 应用构造、事件循环、导航状态机、崩溃恢复。 |
+| `source/application.py` | 应用构造、事件循环、导航状态机、崩溃恢复。 |
 | `source/calc/` | 高精度十进制数、函数注册表、依赖感知插件加载、Pratt 表达式解析与求值。 |
 | `source/screens/` | 各业务页面的状态、绘制和按键处理。 |
 | `source/ui/` | 通用控件、固定行损伤、菜单短距离动效、帧调度和状态栏。 |
 | `source/display/` | SSD1322 帧缓冲/SPI 驱动、单色调色板、X-GLCD 字体读取。 |
 | `source/input/keyboard.py` | 键盘矩阵扫描、去抖、边沿事件与长按。 |
 | `source/utils/` | 崩溃可恢复 JSON 存储和 OLED 空闲休眠。 |
-| `source/boot.py`、`internal_main.py`、`bootenv.py`、`bootsel.py`、`bootlog.py`、`bootsupervisor.py`、`recovery.py`、`sdcard.py` | 内部 Flash 的挂载、A/B 选择、启动日志和失败恢复。 |
+| `firmware/main.py`、`source/boot.py`、`recovery.py`、`sdcard.py` | frozen 启动、SD 挂载、无卡降级和固件启动失败恢复。 |
 | `source/diagnostics.py`、`benchmarks.py`、`performance.py` | 串口自检、可重复的导航基准和有界统计。 |
-| `tools/`、`check.ps1` | 主机端字体构建、发布清单、A/B 部署、设备验收与持续检查。 |
+| `tools/`、`check.ps1` | 主机端字体构建、单固件构建/刷写、设备验收与持续检查。 |
 
 `__init__.py` 仅标记包，不承载业务逻辑。`source/fonts/*.c` 是 96 个 ASCII 字形的源数据，
 `image*.png` 是静态图片；它们不包含运行期控制流程。
@@ -60,8 +56,8 @@ SPI host 的 `machine.SDCard(slot=2)`。
 
 ### 2.2 MicroPython 启动与恢复
 
-MicroPython 的启动顺序是 `_boot.py -> /boot.py -> /main.py`。内部 `boot.py` 只建立 SD 文件系统，
-不会把 `/sd` 放到全局 `sys.path`；这样根目录中的旧应用文件不能遮蔽受信任的内部启动模块。
+MicroPython 的启动顺序是 `_boot.py -> frozen boot.py -> frozen main.py`。`boot.py` 建立 SD 文件系统，
+但不会把 `/sd` 放到全局 `sys.path`；因此任何 SD 文件都不能遮蔽固件产品模块。
 
 ```text
 on boot.py:
@@ -72,35 +68,24 @@ on boot.py:
     except error:
         print("SD mount failed", error)
 
-on internal /main.py:
+on frozen main.py:
     try:
-        sys.path = ["/lib", "/"]
-        selector = read_redundant_selector_records()
-        choose unconsumed trial, otherwise confirmed A/B slot
-        write boot evidence; consume a one-shot trial before execution
-        require selected slot release.manifest
-        sys.path = [".frozen", selected_slot, "/lib"]
-        purge cached application modules
-        release boot supervisor modules; gc.collect()
-        execfile(selected_slot + "/launch.py")
+        sys.path = [".frozen", "/lib"]
+        from application import main
+        main()
     except app_error:
-        sys.path = ["/lib", "/"]
-        purge cached slot modules; gc.collect()
+        print startup error
+        gc.collect()
         show_recovery(app_error)
 ```
 
-恢复界面只初始化 OLED 所需的 SPI、CS、DC、RST，显示“CHECK SD CARD”、截断至 28 字符的
-错误信息和“Fix card, then RESET”。这样即使 SD 上的主应用、字体或 Python 模块损坏，设备
-在堆足够时仍有可见的故障出口。若页面启动已经耗尽到无法再申请恢复界面的 8192 B framebuffer，
-`main` 会先发送 OLED 硬件休眠命令再原样上抛 `MemoryError`；此时串口错误是权威出口，避免启动画面
-长时间停留造成烧屏风险。
-
-`launch.py` 的职责只有 `import main; main.main()`，所以部署 `.mpy` 时解释器会优先加载
-`main.mpy`，回退部署时加载 `main.py`。
+恢复界面只初始化 OLED 所需的 SPI、CS、DC、RST，显示 `SCI-CALC RECOVERY`、截断至 28 字符的
+错误摘要和 `Press RESET to retry`。SD 挂载失败本身不触发恢复页：应用继续使用 frozen 内置功能，
+持久化回退到内部文件系统。只有产品启动失败才进入该 frozen 恢复出口。
 
 ### 2.3 主应用的分阶段引导
 
-`main._init_display()` 最先构造 SSD1322，这让用户先看到启动页，再承受后续导入与 SD I/O。
+`application._init_display()` 最先构造 SSD1322，这让用户先看到启动页，再承受后续导入与 SD I/O。
 进度条不是虚假的长动画：每个同步阶段只提交一帧，标题灰度逐步增加，完成阶段才推进条宽。
 
 ```text
@@ -453,7 +438,7 @@ evaluate(node, context):
 
 ### 6.3 SD 插件隔离、热重载和附带插件
 
-插件为活动槽 `functions/*.py` 中不以 `_` 开头的文件，每个必须定义 `register(registry)`。可选的
+插件为 `/sd/Add-ons/*.py` 中不以 `_` 开头的文件，每个必须定义 `register(registry)`。可选的
 `DEPENDENCIES = ("other", ...)` 声明其他 Add-in；可选 `EXPORTS` 字典
 显式提供可复用的函数或常量。加载器先在全新的 staging registry 中 `exec(compile(source))`，
 仅在 `register` 成功且没有名称冲突时合并到 live registry。单个插件的语法、执行、依赖或注册
@@ -561,7 +546,7 @@ Calculator.update:
 `Science (sqrt ln exp)` 和 `Lists (max min ...)`；动态 Add-on 标签保持原样。
 
 `Shift+ENT` 是唯一主动重扫路径：重新执行隔离摘要、保持可用的原选择并夹住光标。这样运行中
-更换活动槽内容可见，同时不会将任意插件代码带回普通页面切换关键路径。
+更换 `/sd/Add-ons` 内容可见，同时不会将任意插件代码带回普通页面切换关键路径。
 
 函数选择器在激活时对 live registry 名称排序，使用四行两列（每页八项）。上下移动一项，
 物理 4/6 在列间跳四项，`ENT` 插入选择：prefix/list 插入 `name(`，其他插入符号或名称；`ESC`
@@ -747,34 +732,31 @@ frame_p95():
 正式入口是：
 
 ```powershell
-..\.venv\python.exe .\tools\release_deploy.py --port PORTNAME --mode mpy
+..\.venv\python.exe -B .\tools\release_deploy.py --port PORTNAME
 ```
 
-它先在主机生成 source/MPY 两份确定性发布计划，选择指定模式，并在任何设备接触前校验清单、
-字体输出、编译产物、路径边界和每项 SHA-256。默认路径面向已 provision 的开发板，在稳定的
-confirmed 槽中做一次单会话增量同步：
+入口默认调用 `build_firmware.ps1` 增量构建完整 frozen 产品，然后调用 `flash_firmware.ps1`。
+已有可信构建产物时可加 `--skip-build`。设备路径固定为：
 
 ```text
-release_deploy(port, mode):
-    prepare and validate immutable release plan
-    require one stable confirmed selector and trusted manifest/owner
-    upload only new or SHA-changed managed files into that slot
-    remove only obsolete files owned by the prior manifest
-    commit manifest, owner and selector last; reset once and return
-    seed /sd/settings.json and /sd/vars.json only when absent
+release_deploy(port):
+    optionally build .work/firmware/product/micropython.bin
+    require a non-empty application image fitting the factory partition
+    esptool write_flash 0x10000 micropython.bin
+    verify the flashed data and hard reset
 ```
 
-默认路径不创建备用槽，也不在复位后重新连接执行 resident smoke。`/sd/settings.json`、
-`/sd/vars.json`、`/sd/Add-ons` 和槽内未知文件不覆盖、不删除；新 managed 路径与未知文件同名时
-会在任何写入前拒绝。需要完整 A/B、逐项校验和冷启动
-resident smoke 时增加 `--transactional`；同一选项也负责首次安装或修复 bootstrap。MPY 模式固定
-使用仓库 `v1.29.0-preview` 的
-`mpy-cross -march=xtensawin -X no-source-lines`。COM5 实测从原完整流程 `374 s`、精简后的
-完整 A/B `65.890 s`，降至默认单会话增量 `17.352 s`；当前候选含编译与同步为 `31.355 s`。
+该流程不打开或修改 SD，不写 bootloader、partition table、NVS 或其他分区。A/B slot、selector、
+release manifest、`launch.py`、SD `main.mpy`、事务部署及 source/MPY 双发布实现均已删除。
+v1.7.0 最终增量构建实测 `27.640 s`，COM5 `--skip-build` 写入并校验 `1836528 B` 用时 `24.631 s`。
 
-`check.ps1` 强制使用仓库 MicroPython `v1.29.0-preview` 的 `mpy-cross`，依序生成字体、运行 pytest、
-CPython `compileall`、对所有源码使用 `-march=xtensawin` 编译 `.mpy`。它在兼容性或语法错误时立刻
-失败。
+`build_firmware.ps1` 强制相邻 MicroPython 源码精确等于 stable v1.28.0 commit
+`e0e9fbb17ed6fd06bb76e266ae554784c9c80804` 和 Git tree
+`6c48c290ce7e85916892549933ffea4daaedd331`，并拒绝 tracked 修改、preview 或非 v1.28.0 MPY 编译器。
+`check.ps1` 使用由该 clean source 构建的 v1.28.0 / MPY v6.3 工具，依序生成字体、运行 pytest、CPython `compileall`，再用
+`-march=xtensawin` 编译全部源码和设备验收载荷。稳定工具不支持 preview-only
+`-X no-source-lines`，因此该选项不再进入构建或验收命令。编译器变更会使既有
+`frozen_content.c` 失效；验证后旧 preview 源码、旧编译器及新编译器的可重建中间文件均已删除。
 
 ## 10. 当前内存与动效结论
 
@@ -796,49 +778,41 @@ CPython `compileall`、对所有源码使用 `-march=xtensawin` 编译 `.mpy`。
 5. 验收侧缓存同一 application matrix 内不变的 framebuffer 身份快照；该缓存不进入普通 release。
    没有增加像素缓冲、通用动画层、`LazyScreen`、SWAP 或第二 framebuffer。
 
-1.6.2 最终修订版的发布前 `check.ps1` 为 `1145 passed in 26.49s`；CPython compileall 和
-MicroPython 1.29 全源 mpy-cross 均通过。
+1.7.0 的最终发布前 `check.ps1` 为 `764 passed in 17.76s`；CPython compileall、v1.28.0 / MPY v6.3
+全源和设备载荷编译均通过。
 
-### 10.2 COM5 严格门禁（1.6.2）
+### 10.2 COM5 严格门禁（1.7.0）
 
-当前 MPY release 为 `ba19cf52672c0131d715d0c8cf5d64b364584e6d817a4a46e304f6db10af0280`，
-manifest SHA-256 为 `1a8d03902720f96c4a39d42f4a85ca6ceff7060419eb8263629292463194c597`。
-最终修订 frozen 镜像为 `1832672 B`，SHA-256 为 `7f290d2e623ea596ad6ebd2a0fb6a6da212eaad88a67c95d218ec31da9acf8d9`；
-源变更构建用时 `29.988 s`，只写 factory 分区 `0x10000` 并校验的命令总耗时 `24.5 s`。
-固定实现提交后的可复现增量重建为 `8.405 s`。附件与摘要位于 `.work/releases/v1.6.2/`，
-本地 annotated tag `v1.6.2` 指向最终 release commit。统一入口仍为：
+单固件镜像为 `1836528 B`，SHA-256 为
+`22002f2280af961c0e2dbd0d7bddbf6c0e96307f8ca42963b02b07e3d60a63f5`；factory 分区余量
+`195088 B`。最终增量构建用时 `27.640 s`，只写 `0x10000` 并校验用时 `24.631 s`。统一验收入口为：
 
 ```powershell
 .\tools\run_device_acceptance.ps1 -Port PORTNAME
 ```
 
-下列行来自同一 1.6.2 修订版的最终五阶段统一验收；定向交互 profile 保留 v1.6.1 较大交互批次的数据：
+下列行来自同一 v1.7.0 固件的最终五阶段统一验收：
 
 | 检查 | 真机结果 |
 | --- | --- |
 | 启动与固定缓冲 | resident/root ready；同一个 framebuffer 8192 B；Plot 工作区 104 B；MPY/Viper ABI 通过 |
-| 模块来源 | `main=/sd/.slots/B/main.mpy`；`performance`、`runtime_handle`、`version` 为 frozen；`approot` 在根页阶段尚未加载 |
-| 应用矩阵 | 35 场景/五轮；最低空闲堆 10576 B，高于 8 KiB 2384 B；漂移 +1488 B；`MemoryError=0`、普通错误 0；加载条覆盖的插件重载 144.227 ms |
-| 页面 tracer | 预热后五轮；最低空闲堆 54016 B；漂移 -80 B；普通最大 step 23.801 ms |
-| 交互与动画 | 完整输入 `12345`；输入提交最大 19.091 ms；80 个动画帧最大 18.046 ms；菜单/前进/返回净分配均 0 B；交互阶段堆漂移 -16 B |
-| v1.6.1 定向交互 | Calculator 历史/光标/闪烁、RPN 往返、Picker 四向/翻页、Variable Panel 与 Stopwatch 均通过；71 帧最大 19.561 ms，最大 step 23.183 ms，Variable Panel 最大帧 14.151 ms，Stopwatch 4 帧最大 19.872 ms，动画分配 0 B，漂移 -368 B |
+| 模块来源 | `sys.path=['.frozen','/lib']`；`application`、`performance`、`runtime_handle`、`version`、`sdcard` 均为 frozen；旧 slot 模块未加载 |
+| 应用矩阵 | 35 场景/五轮；最低空闲堆 15584 B，高于 8 KiB 7392 B；`MemoryError=0`、普通错误 0；加载条覆盖的插件重载 127.813 ms |
+| 页面 tracer | 预热后五轮；最低空闲堆 59888 B；漂移 -80 B；普通最大 step 25.188 ms |
+| 交互与动画 | 完整输入 `12345`；输入提交最大 16.321 ms；90 个动画帧最大 16.756 ms；菜单/前进/返回净分配均 0 B；交互阶段堆漂移 -16 B |
 | 固定帧 | Stopwatch 16 帧全部提交，净分配 0 B |
+| 用户数据 | 刷写前、刷写后及验收清理后均为 100 文件、271089 B、聚合 SHA-256 `33297546...ffb7`；support 目录不存在 |
 | 结果 | `ACCEPTANCE_COMPLETE`；最低堆高于 8 KiB，普通 step/动画帧严格 `<40 ms`，输入严格 `<20 ms` |
 | 收尾 | 临时 support/stage 载荷已删除；SSD1322 已发送硬件休眠命令 |
+
+应用矩阵外层报告的 `heap_delta=-12416 B` 包含按需导入验收专用模块产生的永久 qstr，不能作为产品
+状态漂移。每个真实场景仍由 `runtime_acceptance.run()` 在连续五轮内执行不变的 `-512 B` 硬门槛，
+且全部通过；预热后的普通产品页面 tracer 另测得 `-80 B`。外层只报告验收载荷成本，不降低或替代
+产品堆漂移门槛。
 
 普通交互数字从已捕获边沿开始并包含页面更新和 OLED 提交；页面导航的提交在建立动画状态时结束，
 第一帧 OLED 提交计入动画时延和分配。矩阵扫描与去抖合同单独报告，不能把它描述为物理按键闭合
 到像素的完整端到端时延。
-
-首轮 Plot 光标回归只覆盖真实 `Nav` 离页/重建，用户照片证明它没有覆盖同页取消并重进。修订红灯
-执行真实按键映射 `RPN(x) → 等待稳定 → ESC → ENT`，连续两次得到空文本、逻辑索引 0 但像素
-7 px；修复后 COM5 的实际 frozen 代码报告 `x/1/9/inactive → empty/0/1/inactive`。该边界不新增
-状态或分配；统一应用矩阵的 `plot_pipeline` 和 `page_round_trips` 随后在同一修订版通过。
-
-用户继续复测发现正常输入仍只显示首次小步。第二个屏幕级红灯没有直接调用 `finish_motion()`，而是
-按主循环合同查询 Plot 页面，连续两次稳定失败于缺少 `motion_active`；根因是 Plot 没有像 Calculator
-一样把子控件动画转发给页面调度器。补齐两个无状态转发后，COM5 frozen 代码报告
-`origin=1, initial=3, samples=[7,9,9], final=9`，3 个 OLED 帧最大 `10.929 ms` 且分配 0 B。
 
 ### 10.3 已测热点与淘汰候选
 
@@ -857,9 +831,10 @@ v1.6.1 最终 Stopwatch 候选的统一验收两次在 100 次连续错误压力
 `28.785/29.027 ms`，最终完整矩阵通过。该 controller 不进入普通 release，产品按键和逐帧路径
 仍不调用 `gc.collect()` 或 `gc.mem_free()`。
 
-随后冻结 `performance`、`runtime_handle`、`version` 和 `approot`，把正式候选最低堆提高到
-`15920 B`；冻结同名 `main.py` 会抢在内部 supervisor 前执行，故该单项已删除并保留 slot
-`main.mpy`。Calculator flat 历史和直接 Pratt 求值候选在 `error_lifecycle` 仍同时违反 12 KiB 和
+v1.6 的历史候选冻结 `performance`、`runtime_handle`、`version` 和 `approot`，曾把最低堆提高到
+`15920 B`；当时同名产品 `main.py` 会抢在内部 supervisor 前执行，所以仍保留 SD `main.mpy`。
+v1.7 删除 supervisor/slot 链，并把产品入口更名为 `application.py`，从而让固定最小
+`firmware/main.py` 安全启动完整 frozen 产品；`approot` 及旧候选兼容层也随之删除。Calculator flat 历史和直接 Pratt 求值候选在 `error_lifecycle` 仍同时违反 12 KiB 和
 严格 `<40 ms` 门槛，已连同专属测试删除；
 Stopwatch 压缩无法影响更早的 `calculator_history` 门禁，按 YAGNI 未实现。
 
@@ -869,7 +844,7 @@ Stopwatch 压缩无法影响更早的 `calculator_history` 门禁，按 YAGNI �
 缓冲。Calculator、Function Picker、Variable Panel、Stopwatch 和固定 footer 的可见文本都在激活、输入或换页
 边界预先装入固定缓存，逐帧只读取缓存。Renderer 在
 动画启动前解析目标页 hooks，每一帧都把目标页严格裁剪到当前新暴露条带，包含首个 2 px 边缘。
-1.6.2 最终修订版 COM5 的 `heap_min=10576 B`，高于 8192 B 硬底线 2384 B；v1.6.1 定向 71 帧、当前统一交互 80 帧
+v1.7.0 COM5 的 `heap_min=15584 B`，高于 8192 B 硬底线 7392 B；当前统一交互 90 帧
 和 Stopwatch 16 帧的净分配均为 0 B。8 KiB 是启用底线，
 12 KiB 仍是优化目标；不得为追求余量删除已经满足错误、漂移和时延门槛的动画。
 

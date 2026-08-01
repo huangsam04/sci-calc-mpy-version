@@ -1,7 +1,7 @@
 import pytest
 from pathlib import Path
 
-import main
+import application as main
 from calc import functions as functions_module
 from calc import loader, plugin_reload
 from calc.functions import EvalContext, FunctionRegistry, build_registry
@@ -68,6 +68,45 @@ def test_canonical_bundled_plugins_skip_runtime_source_compilation(
     assert "%" in registry
     assert "solve" in registry
     assert "sind" in registry
+
+
+def test_firmware_bundled_plugins_do_not_require_sd_source_shims(
+        tmp_path, monkeypatch):
+    monkeypatch.setattr(loader, "_default_func_dir", lambda: str(tmp_path))
+    monkeypatch.setattr(
+        loader, "_execute_plugin",
+        lambda *_args: pytest.fail("bundled source was compiled"))
+    registry = build_registry()
+
+    report = load_function_files(
+        registry, ["basic", "solve", "trig"], in_place=True)
+
+    assert report.errors == []
+    assert [item[0] for item in report.loaded] == ["basic", "solve", "trig"]
+
+
+def test_firmware_bundled_plugins_survive_a_missing_add_on_directory(
+        monkeypatch):
+    monkeypatch.setattr(
+        loader, "_plugin_files",
+        lambda _directory: (_ for _ in ()).throw(OSError("no SD directory")))
+    monkeypatch.setattr(
+        loader, "_execute_plugin",
+        lambda *_args: pytest.fail("bundled source was compiled"))
+    registry = build_registry()
+
+    report = load_function_files(
+        registry, ["basic", "solve", "trig"], in_place=True)
+
+    assert report.errors == []
+    assert [item[0] for item in report.loaded] == ["basic", "solve", "trig"]
+    assert "%" in registry
+    assert "solve" in registry
+    assert "sind" in registry
+
+
+def test_default_add_on_directory_is_user_owned_sd_root():
+    assert loader._default_func_dir() == "/sd/Add-ons"
 
 
 def test_firmware_registrations_skip_untrusted_definition_validation(

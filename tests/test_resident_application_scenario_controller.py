@@ -217,7 +217,7 @@ class _Stopwatch:
 
 
 class _FixtureSnapshot:
-    directory = "/sd/.slots/A/functions"
+    directory = "/sd/_sci_accept_support/functions"
     files = (
         "_acceptance_core.py",
         "_acceptance_dependent.py",
@@ -284,7 +284,7 @@ class _PluginTransaction:
 
 
 class _FixturePack:
-    directory = "/sd/.slots/A/functions"
+    directory = "/sd/_sci_accept_support/functions"
     files = _FixtureSnapshot.files
     valid_selection = _FixtureSnapshot.valid_selection
     missing_selection = _FixtureSnapshot.missing_selection
@@ -353,7 +353,7 @@ def test_real_resident_controller_runs_one_bounded_matrix_with_public_primitives
     def open_plugin_reload(_registry, _panel, settings=None, func_dir=None,
                            files=None, selection=None):
         assert settings is binding.settings
-        assert func_dir == "/sd/.slots/A/functions"
+        assert func_dir == "/sd/_sci_accept_support/functions"
         assert files == _FixtureSnapshot.files
         assert selection in (
             _FixtureSnapshot.valid_selection, _FixtureSnapshot.missing_selection)

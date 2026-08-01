@@ -62,6 +62,13 @@
 - [x] **二次修订验证**：`check.ps1` 为 `1145 passed in 26.49s`。COM5 逐字符探针为 `1→3→[7,9,9]→9`，完整到达 8 px 终点，3 帧最大 `10.929 ms`、分配 0 B；统一验收最低堆 `10576 B`、普通 step `23.801 ms`、输入 `19.091 ms`、动画 `18.046 ms`、错误 0，载荷已清理且 OLED 已休眠。
 - [x] **二次修订发布**：从固定实现提交可复现重建 `1832672 B` frozen 镜像，SHA-256 `7f290d2e623ea596ad6ebd2a0fb6a6da212eaad88a67c95d218ec31da9acf8d9`，增量构建 `8.405 s`；已替换 v1.6.2 附件与摘要，同步最终说明并完成单代理差异审查，本地 annotated tag 移至最终 release commit，不 push。
 
+## v1.7.0 稳定 MicroPython 与单固件发布
+
+- [x] **锁定稳定上游**：按[冻结固件分支](plans/frozen-firmware.md#v170-稳定-micropython-与单固件)锁定官方稳定 `v1.28.0`，tag object `2b001562`、commit `e0e9fbb1`、Git tree `6c48c290`、`micropython-lib` `8380c7bb`；clean-tag 产品固件验证后已删除旧 preview 源码备份，不再维护第二套上游树。
+- [x] **固件内完整产品**：产品启动入口、运行编排、页面、内置函数和静态资源均已冻结/XIP；独立最小 frozen `main.py` 启动器调用 `application.py`，SD 只保存 `/sd/Add-ons/`、`settings.json`、`vars.json` 和未知用户文件，不再要求 `.slots`、selector、manifest、`launch.py` 或 `main.mpy` 才能启动。
+- [x] **收敛发布入口**：`tools/release_deploy.py` 已成为唯一正式部署入口，只执行可选增量构建并刷写 `0x10000` 产品应用镜像；旧 SD 应用槽同步、事务兼容实现及专属测试已删除，不整片擦除、不格式化、不覆盖用户数据，也不维护混合模式。
+- [x] **验证与发布**：按[验证分支](plans/verification.md#v170-稳定-micropython-与单固件)完成聚焦测试、一次 `check.ps1`、COM5 冷启动/数据保护/统一验收并休眠 OLED；同步三份现有说明，生成 GitHub Release 固件与 SHA-256，完成单人 review、本地 release commit 和 annotated tag `v1.7.0`，不 push。
+
 ## 唯一执行顺序
 
 1. 运行 `check.ps1` 和现有 COM5 验收，记录未修改基线并让 OLED 休眠。

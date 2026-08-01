@@ -231,7 +231,7 @@ def _exercise_round(
 
 def run(runtime=None, emit=print):
     from input.keyboard import DEBOUNCE_MS, SCAN_INTERVAL
-    from main import _drain_input_batch
+    from application import _drain_input_batch
 
     if runtime is None:
         from runtime_materialize import get_resident_runtime

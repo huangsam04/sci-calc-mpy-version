@@ -124,7 +124,7 @@ def test_runtime_handle_fails_closed_for_missing_or_foreign_binding():
 
 
 def test_main_constructs_binding_without_a_resident_page_tuple():
-    main_source = (SOURCE / "main.py").read_text(encoding="utf-8")
+    main_source = (SOURCE / "application.py").read_text(encoding="utf-8")
     materializer_source = (
         SOURCE / "runtime_materialize.py").read_text(encoding="utf-8")
 

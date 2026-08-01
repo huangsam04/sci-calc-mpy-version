@@ -49,6 +49,13 @@
 
 完成后回到 [PLAN](../PLAN.md) 勾选“最终验证与说明”。
 
+## v1.7.0 稳定 MicroPython 与单固件
+
+- [x] 主机测试证明固件 manifest 包含唯一 frozen 启动器和全部普通产品模块，普通 release 不再生成或同步 SD 槽应用资产，受保护用户路径仍永不进入删除候选；旧发布/启动/验收 slot 耦合净删除超过 15,000 行。
+- [x] 稳定 MicroPython 的精确 tag/commit/Git tree、v1.28.0 `mpy-cross` 版本/ABI、固件版本和可重复构建结果均被现有检查覆盖；编译器替换会强制重生成 frozen bytecode。最终 `check.ps1` 为 `764 passed in 17.76s`，全源和设备载荷 MPY 编译通过；增量固件构建为 `27.640 s`、`1836528 B`、SHA-256 `22002f2280af961c0e2dbd0d7bddbf6c0e96307f8ca42963b02b07e3d60a63f5`。旧 preview 源码、旧编译器及可重建中间文件已删除。
+- [x] COM5 只写必要的 `0x10000` 应用分区；冷启动 `sys.path=['.frozen','/lib']` 且不加载旧 slot 模块。SD 在刷写及验收清理后仍为 `100` 文件、`271089 B`，Settings/vars 未变，Add-ons 原本不存在；临时 support/stage 路径已删除。统一五阶段为最低堆 `15584 B`、普通 step `25.188 ms`、输入 `16.321 ms`、动画 `16.756 ms`、逐帧 0 分配、错误 0。
+- [x] 验收载荷已删除且 OLED 已硬件休眠；README、USER_GUIDE、TECHNICAL_GUIDE 已按实际单固件安装方式更新。`.work/releases/v1.7.0/` 的最终附件为 `1836528 B`，SHA-256 `22002f2280af961c0e2dbd0d7bddbf6c0e96307f8ca42963b02b07e3d60a63f5`；以 `710ec14` 为固定点的单代理 Standards/Spec review 无未解决发现，本 release commit 建立 annotated tag `v1.7.0` 且不 push。非生成文件从清理前 208 个降至 176 个，Python/PowerShell 从约 48988 行降至 35149 行。
+
 ## v1.5.0 文档与发布
 
 - [x] 文档已归入 `docs/`，根目录只保留 `README.md` 作为入口，权限文件改名为 `PERMISSIONS.md`，11 份文档的本地链接检查通过。

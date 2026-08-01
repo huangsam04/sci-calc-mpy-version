@@ -148,7 +148,7 @@ def test_product_navigation_has_no_acceptance_lifecycle_entrypoints():
         "_page_scenario_transaction",
     )
     for relative in (
-            "main.py",
+            "application.py",
             "runtime_handle.py",
             "screens/calculator.py",
             "screens/plot.py",

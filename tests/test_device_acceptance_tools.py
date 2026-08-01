@@ -79,7 +79,7 @@ def test_application_matrix_accepts_recovered_heap(monkeypatch):
     assert report.accepted
 
 
-def test_application_matrix_rejects_heap_loss_over_512_bytes(monkeypatch):
+def test_application_matrix_reports_outer_acceptance_heap_loss(monkeypatch):
     class WarmNav:
         def open(self, _page_id):
             return object()
@@ -108,8 +108,8 @@ def test_application_matrix_rejects_heap_loss_over_512_bytes(monkeypatch):
     report = device_application_acceptance._run_matrix(Runtime())
 
     assert report.heap_delta == -513
-    assert report.failure_mask & runtime_acceptance.FAIL_DRIFT
-    assert not report.accepted
+    assert report.failure_mask == 0
+    assert report.accepted
 
 
 class _Memory:

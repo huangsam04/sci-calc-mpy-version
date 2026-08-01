@@ -1,12 +1,12 @@
 import sys
 
 import pytest
-import main as main_module
+import application as main_module
 import ui.renderer
 import ui.sidebar
 
 from calc.functions import build_registry
-from main import (PAGE_ABOUT, PAGE_CALCULATOR, PAGE_FUNCTION_PANEL,
+from application import (PAGE_ABOUT, PAGE_CALCULATOR, PAGE_FUNCTION_PANEL,
                   PAGE_FUNCTION_PICKER, PAGE_LETTERS, PAGE_PLOT,
                   PAGE_SETTINGS, PAGE_STOPWATCH, PAGE_VARIABLE_PANEL, Nav,
                   _drain_input_batch, _navigate_registered_page,

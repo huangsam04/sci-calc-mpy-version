@@ -46,18 +46,17 @@ def run(runtime=None, emit=print):
         raise RuntimeError("SCI-CALC boot framebuffer contract is invalid")
 
     from version import VERSION
-    build_file = _module_origin("main")
-    build_mode = "mpy" if build_file.endswith(".mpy") else "source"
     viper_ok = _viper_identity(41) == 41
     emit("BOOT_VERSION " + VERSION)
     emit("BOOT_RUNTIME_READY True")
     emit("BOOT_ROOT_VISIBLE True")
     emit("BOOT_BUFFERS main:8192:" + str(id(buffer)))
     emit("BOOT_WORKSPACE plot:104:" + str(id(workspace)))
-    emit("BOOT_MODE " + build_mode)
+    emit("BOOT_MODE firmware")
     emit("BOOT_ABI_VIPER " + ("ok" if viper_ok else "failed"))
     for name in (
-            "main", "performance", "runtime_handle", "version", "approot"):
+            "application", "performance", "runtime_handle", "version",
+            "sdcard"):
         emit("BOOT_MODULE " + name + ":" + _module_origin(name))
 
 

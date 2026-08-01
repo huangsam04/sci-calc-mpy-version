@@ -297,14 +297,14 @@ def test_public_benchmark_builder_does_not_publish_a_benchmark_as_resident(
     built = RuntimeHandle(
         FakeNav(root), root, ("plot",), mode="benchmark")
     calls = []
-    main_module = types.ModuleType("main")
+    main_module = types.ModuleType("application")
 
     def fake_main(**kwargs):
         calls.append(kwargs)
         return built
 
     main_module.main = fake_main
-    monkeypatch.setitem(sys.modules, "main", main_module)
+    monkeypatch.setitem(sys.modules, "application", main_module)
     set_resident_runtime(resident)
 
     assert benchmarks.build_runtime() is built

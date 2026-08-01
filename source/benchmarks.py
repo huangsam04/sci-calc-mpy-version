@@ -84,7 +84,7 @@ def _emit_report(report, metrics_report, emit):
 
 def build_runtime(mode="benchmark"):
     """Construct an explicit non-resident runtime for intentional benchmarks."""
-    from main import main
+    from application import main
 
     runtime = main(
         run_loop=False, runtime_mode=mode, publish_runtime=False)

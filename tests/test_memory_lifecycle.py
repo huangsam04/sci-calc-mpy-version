@@ -1,6 +1,6 @@
 import sys
 
-import main
+import application as main
 from calc.functions import build_registry
 from screens import plot as plot_module
 from screens.plot import PlotScreen

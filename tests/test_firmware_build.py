@@ -1,20 +1,14 @@
 from pathlib import Path
 
-from tools.release_plan import is_frozen_module
-
-
 ROOT = Path(__file__).parents[1]
 
 
-def test_base_manifest_contains_no_application_modules():
-    source = (ROOT / "firmware" / "manifest-base.py").read_text()
-    assert 'freeze("$(PORT_DIR)/modules")' in source
-    assert "mp_version/source" not in source
-
-
 def test_frozen_manifest_selects_production_modules_only():
-    source = (ROOT / "firmware" / "manifest-frozen.py").read_text()
+    source = (ROOT / "firmware" / "manifest.py").read_text()
     for module in (
+        'freeze(_FIRMWARE, "main.py")',
+        '"application.py"',
+        '"boot.py"',
         '"calc/number.py"',
         '"display"',
         '"input"',
@@ -23,6 +17,8 @@ def test_frozen_manifest_selects_production_modules_only():
         '"functions/basic.py"',
         '"functions/solve.py"',
         '"functions/trig.py"',
+        '"recovery.py"',
+        '"sdcard.py"',
         '"ui"',
         '"utils"',
     ):
@@ -35,6 +31,16 @@ def test_frozen_manifest_selects_production_modules_only():
     assert "device_" not in source
 
 
+def test_frozen_main_is_only_a_bootstrap_for_the_renamed_product_entry():
+    source = (ROOT / "firmware" / "main.py").read_text(encoding="utf-8")
+
+    assert 'sys.path = [".frozen", "/lib"]' in source
+    assert "from application import main" in source
+    assert "main()" in source
+    assert ".slots" not in source
+    assert "launch.py" not in source
+
+
 def test_frozen_manifest_does_not_mix_directories_into_a_file_list():
     calls = []
 
@@ -42,7 +48,7 @@ def test_frozen_manifest_does_not_mix_directories_into_a_file_list():
         calls.append((path, selection))
 
     namespace = {"freeze": freeze, "include": lambda _path: None}
-    manifest = ROOT / "firmware" / "manifest-frozen.py"
+    manifest = ROOT / "firmware" / "manifest.py"
     exec(compile(manifest.read_text(), str(manifest), "exec"), namespace)
     assert (manifest.parent / namespace["_SOURCE"]).resolve() == ROOT / "source"
 
@@ -61,17 +67,23 @@ def test_frozen_manifest_does_not_mix_directories_into_a_file_list():
             )
     for package in ("display", "input", "ui", "utils"):
         assert package in application_calls
-    release_paths = {
-        path.relative_to(ROOT / "source").as_posix()
-        for path in (ROOT / "source").rglob("*.py")
-        if is_frozen_module(path.relative_to(ROOT / "source").as_posix())
-    }
-    assert release_paths == manifest_paths
+    assert "application.py" in manifest_paths
+    for obsolete in (
+        "approot.py", "bootenv.py", "bootlog.py", "bootsel.py",
+        "bootsupervisor.py", "internal_main.py", "launch.py",
+    ):
+        assert obsolete not in manifest_paths
 
 
-def test_firmware_builder_only_builds_and_checks_the_factory_application():
+def test_firmware_builder_locks_stable_upstream_and_product_output():
     source = (ROOT / "tools" / "build_firmware.ps1").read_text()
-    assert 'ValidateSet("base", "frozen")' in source
+    assert "v1.28.0" in source
+    assert "tooling\\mpy-cross-v1.28\\mpy-cross.exe" in source
+    assert 'MpyVersion -notmatch "MicroPython v1\\.28\\.0"' in source
+    assert 'MpyVersion -notmatch "mpy v6\\.3"' in source
+    assert "e0e9fbb17ed6fd06bb76e266ae554784c9c80804" in source
+    assert "6c48c290ce7e85916892549933ffea4daaedd331" in source
+    assert 'Join-Path $ProjectRoot "firmware\\manifest.py"' in source
     assert "MICROPY_MPYCROSS" in source
     assert "PYTHONUTF8=1" in source
     assert "PYTHONIOENCODING=utf-8" in source
@@ -79,7 +91,8 @@ def test_firmware_builder_only_builds_and_checks_the_factory_application():
     assert "Get-FileHash" not in source
     assert '"frozen_content.c"' in source
     assert "LastWriteTimeUtc" in source
-    assert 'Join-Path $WorkRoot ("firmware\\" + $Profile)' in source
+    assert '(Get-Item -LiteralPath $MpyCross).LastWriteTimeUtc' in source
+    assert 'Join-Path $WorkRoot "firmware\\product"' in source
     assert "COMPONENTS=main" in source
     assert "firmware_qstr_wrapper.py" in source
     assert "Set-QstrCommandAdapter" in source
@@ -96,10 +109,10 @@ def test_firmware_builder_only_builds_and_checks_the_factory_application():
     assert "firmware.bin" not in source
 
 
-def test_firmware_flasher_writes_only_the_factory_application_partition():
+def test_firmware_flasher_writes_only_the_product_application_partition():
     source = (ROOT / "tools" / "flash_firmware.ps1").read_text()
     assert '[string]$Port' in source
-    assert 'ValidateSet("frozen")' in source
+    assert 'ValidateSet("frozen")' not in source
     assert "micropython.bin" in source
     assert '"0x10000"' in source
     assert "write_flash" in source

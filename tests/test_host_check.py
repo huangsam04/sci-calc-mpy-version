@@ -171,13 +171,16 @@ def test_host_check_mpy_compiles_every_device_tool():
     script = CHECK_SCRIPT.read_text(encoding="utf-8")
     support = CHECK_SUPPORT.read_text(encoding="utf-8")
 
+    assert "tooling\\mpy-cross-v1.28\\mpy-cross.exe" in script
+    assert 'MpyVersion -notmatch "MicroPython v1\\.28\\.0"' in script
+    assert 'MpyVersion -notmatch "mpy v6\\.3"' in script
     assert "Invoke-DeviceToolCompilation" in script
     assert 'Join-Path $ProjectRoot ".work"' in script
     assert 'Join-Path $WorkRoot "mpy"' in script
     assert 'Join-Path $ProjectRoot "tools"' in script
     assert 'Join-Path $BuildRoot "device-tools"' in script
-    assert "-X no-source-lines" in script
-    assert "-X no-source-lines" in support
+    assert "-X no-source-lines" not in script
+    assert "-X no-source-lines" not in support
     assert "-s $Relative" in script
     assert '-s $EmbeddedSource' in support
 
@@ -191,7 +194,7 @@ def test_generated_build_and_test_paths_share_one_work_root():
         ),
         "tools/build_firmware.ps1": (
             'Join-Path $ProjectRoot ".work"',
-            'Join-Path $WorkRoot ("firmware\\" + $Profile)',
+            'Join-Path $WorkRoot "firmware\\product"',
             'set "PYTHONPYCACHEPREFIX=',
         ),
         "tools/flash_firmware.ps1": (
@@ -214,7 +217,6 @@ def test_generated_build_and_test_paths_share_one_work_root():
             'WORK_ROOT = PROJECT / ".work"',
             'PYTEST_TEMP_ROOT = WORK_ROOT / "pytest"',
         ),
-        "tools/release_build.py": ('_WORK_DIR_NAME = ".work"',),
     }
     for relative, markers in expected.items():
         source = (PROJECT / relative).read_text(encoding="utf-8")

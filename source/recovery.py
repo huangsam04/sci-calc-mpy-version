@@ -1,4 +1,4 @@
-"""Small internal recovery UI used when the SD application cannot start."""
+"""Small frozen recovery UI used when the product cannot start."""
 from machine import Pin, SPI
 
 
@@ -11,10 +11,10 @@ def show_recovery(error):
     display.clear_buffers(0)
     display.draw_text8x8(32, 8, "SCI-CALC RECOVERY", gs=15)
     display.draw_hline(24, 19, 168, 8)
-    display.draw_text8x8(8, 27, "CHECK SD CARD", gs=15)
+    display.draw_text8x8(8, 27, "STARTUP FAILED", gs=15)
     message = str(error)
     if len(message) > 28:
         message = message[:27] + "~"
     display.draw_text8x8(8, 39, message, gs=10)
-    display.draw_text8x8(8, 53, "Fix card, then RESET", gs=12)
+    display.draw_text8x8(8, 53, "Press RESET to retry", gs=12)
     display.present()

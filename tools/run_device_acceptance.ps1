@@ -19,8 +19,7 @@ $ProjectRoot = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Pa
 $WorkspaceRoot = Split-Path -Parent $ProjectRoot
 $Python = Join-Path $WorkspaceRoot ".venv\python.exe"
 $WorkRoot = Join-Path $ProjectRoot ".work"
-$MpyCross = Join-Path `
-    $WorkspaceRoot "micropython\mpy-cross\build\mpy-cross.exe"
+$MpyCross = Join-Path $WorkRoot "tooling\mpy-cross-v1.28\mpy-cross.exe"
 $RemoteArtifact = "/sd/_sci_accept_stage.mpy"
 $SupportRoot = "/sd/_sci_accept_support"
 $SupportModulePaths = @(
@@ -166,10 +165,12 @@ if (-not $DryRun -and $null -eq $MpremoteAdapter -and -not (Test-Path -LiteralPa
 function Build-AcceptanceArtifacts {
     New-Item -ItemType Directory -Force -Path $env:TEMP | Out-Null
     if (-not (Test-Path -LiteralPath $MpyCross -PathType Leaf)) {
-        throw "Missing MicroPython 1.29 mpy-cross: $MpyCross"
+        throw "Missing MicroPython v1.28.0 mpy-cross tool: $MpyCross"
     }
     $MpyVersion = (& $MpyCross --version 2>&1 | Out-String)
-    if ($MpyVersion -notmatch "v1\.29\.0-preview") {
+    if ($MpyVersion -notmatch "MicroPython v1\.28\.0" `
+            -or $MpyVersion -notmatch "mpy v6\.3" `
+            -or $MpyVersion -match "preview") {
         throw "Wrong mpy-cross version for device acceptance: $MpyVersion"
     }
 
@@ -183,7 +184,7 @@ function Build-AcceptanceArtifacts {
         }
         New-Item -ItemType Directory -Force `
             -Path (Split-Path -Parent $LocalArtifact) | Out-Null
-        & $MpyCross -march=xtensawin -X no-source-lines `
+        & $MpyCross -march=xtensawin `
             -s $Stage.Script -o $LocalArtifact $LocalScript
         if ($LASTEXITCODE -ne 0) {
             throw "mpy-cross failed for device acceptance: $($Stage.Script)"
@@ -206,7 +207,7 @@ function Build-AcceptanceArtifacts {
         }
         New-Item -ItemType Directory -Force `
             -Path (Split-Path -Parent $LocalArtifact) | Out-Null
-        & $MpyCross -march=xtensawin -X no-source-lines `
+        & $MpyCross -march=xtensawin `
             -s $Payload.Script -o $LocalArtifact $LocalScript
         if ($LASTEXITCODE -ne 0) {
             throw "mpy-cross failed for acceptance support: $($Payload.Script)"

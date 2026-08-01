@@ -2,7 +2,7 @@ from pathlib import Path
 import sys
 import types
 
-import main
+import application as main
 import pytest
 from display.xglcd_font import XglcdFont
 from runtime_handle import (
@@ -190,7 +190,7 @@ def test_shipped_fonts_load_despite_legacy_non_utf8_comments():
 
 
 def test_boot_uses_the_bounded_builtin_font_path():
-    main_source = (SOURCE / "main.py").read_text(encoding="utf-8")
+    main_source = (SOURCE / "application.py").read_text(encoding="utf-8")
 
     assert "font_main = None" in main_source
     assert "font_small = None" in main_source
@@ -200,11 +200,9 @@ def test_boot_uses_the_bounded_builtin_font_path():
 def test_boot_releases_the_rebuildable_function_loader(monkeypatch):
     calc_package = types.ModuleType("calc")
     loader_module = types.ModuleType("calc.loader")
-    app_root_module = types.ModuleType("approot")
     calc_package.loader = loader_module
     monkeypatch.setitem(sys.modules, "calc", calc_package)
     monkeypatch.setitem(sys.modules, "calc.loader", loader_module)
-    monkeypatch.setitem(sys.modules, "approot", app_root_module)
     monkeypatch.setattr(main.gc, "mem_free", lambda: 1, raising=False)
     for helper_name in (
             "_init_display", "_boot_progress", "_boot_fail",
@@ -216,12 +214,11 @@ def test_boot_releases_the_rebuildable_function_loader(monkeypatch):
     main._release_function_loader()
 
     assert "calc.loader" not in sys.modules
-    assert "approot" not in sys.modules
     assert not hasattr(calc_package, "loader")
 
 
 def test_boot_presents_core_frame_before_run_loop_can_return():
-    main_source = (SOURCE / "main.py").read_text(encoding="utf-8")
+    main_source = (SOURCE / "application.py").read_text(encoding="utf-8")
 
     nav_created = main_source.index("nav = Nav(display, font_small, registry)")
     screens = main_source.index("from screens.main_menu import MainMenu")
@@ -236,7 +233,7 @@ def test_boot_presents_core_frame_before_run_loop_can_return():
 
 
 def test_boot_preloads_frozen_code_but_leaves_page_instances_to_nav():
-    main_source = (SOURCE / "main.py").read_text(encoding="utf-8")
+    main_source = (SOURCE / "application.py").read_text(encoding="utf-8")
     main_body = main_source[main_source.index("def main("):]
     boot = main_body[:main_body.index('metrics.mark_boot("ui_ready")')]
 
@@ -251,7 +248,7 @@ def test_boot_preloads_frozen_code_but_leaves_page_instances_to_nav():
 
 
 def test_boot_uses_binding_normally_and_builds_a_diagnostic_handle_on_request():
-    main_source = (SOURCE / "main.py").read_text(encoding="utf-8")
+    main_source = (SOURCE / "application.py").read_text(encoding="utf-8")
 
     binding = main_source.index("application_binding = ApplicationBinding(")
     handle = main_source.index(
@@ -498,7 +495,7 @@ def test_boot_progress_does_not_render_internal_operation_details(monkeypatch):
 
 
 def test_screen_import_detail_is_not_shown_during_boot():
-    main_source = (SOURCE / "main.py").read_text(encoding="utf-8")
+    main_source = (SOURCE / "application.py").read_text(encoding="utf-8")
 
     assert '_boot_progress(display, 6, 8, "Loading screens...")' in main_source
     assert '"import screens.*"' not in main_source

@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-import main
+import application as main
 from calc import loader
 from screens.function_panel import FunctionPanel
 from calc.limits import MAX_ENABLED_PLUGINS
@@ -376,7 +376,7 @@ def test_function_panel_releases_menu_labels_but_keeps_pending_selection(
 
 
 def test_main_defers_work_after_showing_loading_and_reloads_plugins_once():
-    source = (Path(__file__).parents[1] / "source" / "main.py").read_text(
+    source = (Path(__file__).parents[1] / "source" / "application.py").read_text(
         encoding="utf-8")
     start = source.index('elif result == "FUNC_PANEL_DONE":')
     end = source.index("elif result in (", start)
@@ -440,7 +440,7 @@ def test_main_defers_work_after_showing_loading_and_reloads_plugins_once():
 
 
 def test_main_rescan_marks_visual_change_only_when_scan_status_changes():
-    source = (Path(__file__).parents[1] / "source" / "main.py").read_text(
+    source = (Path(__file__).parents[1] / "source" / "application.py").read_text(
         encoding="utf-8")
     handler_start = source.index("    def _handle_event(event):")
     handler_end = source.index("    if publish_runtime:", handler_start)
@@ -467,7 +467,7 @@ def test_main_rescan_marks_visual_change_only_when_scan_status_changes():
 
 
 def test_main_keeps_the_loading_panel_visible_until_reload_finishes():
-    source = (Path(__file__).parents[1] / "source" / "main.py").read_text(
+    source = (Path(__file__).parents[1] / "source" / "application.py").read_text(
         encoding="utf-8")
     handler_start = source.index("    def _handle_event(event):")
     handler_end = source.index("    if publish_runtime:", handler_start)

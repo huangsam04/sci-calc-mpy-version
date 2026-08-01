@@ -5,8 +5,8 @@ $ErrorActionPreference = "Stop"
 $ProjectRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 $WorkspaceRoot = Split-Path -Parent $ProjectRoot
 $Python = Join-Path $WorkspaceRoot ".venv\python.exe"
-$MpyCross = Join-Path $WorkspaceRoot "micropython\mpy-cross\build\mpy-cross.exe"
 $WorkRoot = Join-Path $ProjectRoot ".work"
+$MpyCross = Join-Path $WorkRoot "tooling\mpy-cross-v1.28\mpy-cross.exe"
 $BuildRoot = Join-Path $WorkRoot "mpy"
 $FontBuild = Join-Path $BuildRoot "fonts"
 $HostCheckSupport = Join-Path $ProjectRoot "tools\host_check_support.ps1"
@@ -28,11 +28,13 @@ New-Item -ItemType Directory -Force -Path $BuildRoot, $env:TEMP | Out-Null
 . $HostCheckSupport
 
 if (-not (Test-Path -LiteralPath $MpyCross)) {
-    throw "Missing MicroPython 1.29 mpy-cross: build it from ..\micropython\mpy-cross first"
+    throw "Missing MicroPython v1.28.0 mpy-cross tool: $MpyCross"
 }
 $MpyVersion = (& $MpyCross --version 2>&1 | Out-String)
-if ($MpyVersion -notmatch "v1\.29\.0-preview") {
-    throw "Wrong mpy-cross version; expected repository MicroPython v1.29.0-preview: $MpyVersion"
+if ($MpyVersion -notmatch "MicroPython v1\.28\.0" `
+        -or $MpyVersion -notmatch "mpy v6\.3" `
+        -or $MpyVersion -match "preview") {
+    throw "Wrong mpy-cross version; expected stable MicroPython v1.28.0 / mpy v6.3: $MpyVersion"
 }
 
 & $Python (Join-Path $ProjectRoot "tools\build_fonts.py") `
@@ -54,7 +56,7 @@ Get-ChildItem -LiteralPath (Join-Path $ProjectRoot "source") -Recurse -Filter "*
     New-Item -ItemType Directory -Force -Path (Split-Path -Parent $Output) | Out-Null
     # The ESP32 port enables the Xtensa windowed native emitter, which is
     # required to compile the renderer's Viper transition compositor.
-    & $MpyCross -march=xtensawin -X no-source-lines -s $Relative `
+    & $MpyCross -march=xtensawin -s $Relative `
         -o $Output $_.FullName
     if ($LASTEXITCODE -ne 0) { throw "mpy-cross failed: $Relative" }
 }

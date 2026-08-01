@@ -175,6 +175,41 @@ def test_device_application_acceptance_binds_transient_fixture_before_runtime(
     ]
 
 
+def test_matrix_does_not_treat_acceptance_module_qstrs_as_product_drift(
+        monkeypatch):
+    runtime = _Runtime()
+    report = _Report()
+    report.scenarios_completed = 5
+    report.runtime_steps = 25
+    report.heap_min = 15000
+    report.buffer_peak_bytes = 8296
+    report.bounded_close_attempts = 1
+    report.bounded_session_restored = True
+    monkeypatch.setattr(
+        device_application_acceptance, "_SCENARIO_MODULES", ((),))
+    monkeypatch.setattr(
+        device_application_acceptance, "_warm_pages", lambda _runtime: None)
+
+    import runtime_acceptance
+    import runtime_scenarios
+    monkeypatch.setattr(
+        runtime_scenarios, "application_scenarios",
+        lambda rounds: (("scenario", rounds, ()),))
+    monkeypatch.setattr(
+        runtime_acceptance, "run",
+        lambda _runtime, _scenario, _observer: report)
+    heap_samples = iter((70000, 57000))
+    monkeypatch.setattr(
+        device_application_acceptance.gc, "mem_free",
+        lambda: next(heap_samples), raising=False)
+
+    summary = device_application_acceptance._run_matrix(runtime)
+
+    assert summary.heap_delta == -13000
+    assert summary.failure_mask == 0
+    assert summary.accepted is True
+
+
 def test_device_application_acceptance_rejects_a_failed_shared_report(
         monkeypatch):
     runtime = _Runtime()

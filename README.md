@@ -2,42 +2,39 @@
 
 SCI-CALC 的 MicroPython 固件，目标硬件为 ESP32-WROOM-32E、SSD1322 256×64 灰阶 OLED、5×6 矩阵键盘和 FAT32 SD 卡。
 
-当前应用版本为 **1.6.2**。源码和设备固件均由本仓库 `micropython/` 中的
-**MicroPython 1.29.0-preview** 构建；SCI-CALC 只增加 frozen manifest/board 配置，不修改
-MicroPython 核心。
+当前应用版本为 **1.7.0**。固件由官方稳定 **MicroPython v1.28.0** 的 clean tag 构建；
+锁定 commit 为 `e0e9fbb17ed6fd06bb76e266ae554784c9c80804`。SCI-CALC 只提供 frozen
+manifest 和产品启动器，不修改 MicroPython 核心。
 
 日常使用计算器时，请先看 [简明使用说明](docs/USER_GUIDE.md)。本文保留部署、插件和维护细节。
 
 ## 目录与启动方式
 
-设备采用“内部启动监督器 + SD A/B 应用槽”布局：
+产品代码统一冻结在一个应用固件中，SD 卡只保存可写用户数据：
 
 ```text
-内部 Flash
-├── boot.py             # 挂载 SD，随后立即退出
-├── sdcard.py           # 官方 Python SPI SD 驱动
-├── main.py             # 读取选择记录并启动活动槽
-├── bootenv.py / bootsel.py / bootlog.py / bootsupervisor.py
-├── recovery.py / display/  # SD/应用损坏时的恢复界面
-└── .frozen             # 稳定的显示、输入、计算、UI、页面及常驻根模块
+内部 Flash / .frozen
+├── boot.py / sdcard.py       # 挂载用户数据 SD；失败时无卡降级
+├── main.py                   # 固定最小启动器
+├── application.py            # 应用构造、导航和主循环
+├── recovery.py               # 固件启动失败时的恢复界面
+└── calc/ display/ input/ screens/ ui/ utils/ functions/
+                              # 全部普通产品模块和内置函数
 
 SD 卡 /sd
 ├── settings.json
 ├── vars.json
-├── .slots/A/ 或 B/
-│   ├── release.manifest / .sci-calc-owner
-│   ├── launch.py / main.mpy  # 动态产品入口与运行编排
-│   ├── fonts/*.xglcd   # 随发布保留；当前常驻 UI 使用内置 8x8 字体
-│   └── 其他 manifest 管理的动态产品资产
-└── .staging/           # 发布中使用，成功后原子改名为候选槽
+├── Add-ons/*.py              # 用户动态插件；可缺省
+└── 其他未知用户文件           # 固件部署不拥有、不删除
 ```
 
-MicroPython 按 `_boot.py → /boot.py → /main.py` 启动。无 SD 卡、挂载失败或
-选择记录没有可启动槽、活动槽清单缺失或槽内 `launch.py` 执行失败时，内部恢复界面会显示错误；
-串口同时保留完整错误信息。启动监督器只把选中的槽根目录放在应用 `sys.path` 首位，启动后释放
-自身模块，避免与常驻页面争用堆。
+MicroPython 按 `_boot.py → frozen boot.py → frozen main.py` 启动。`boot.py` 挂载 SD，
+`main.py` 把 `sys.path` 固定为 `['.frozen', '/lib']` 并调用 `application.main()`。
+设备不再读取 SD slot、selector、release manifest、`launch.py` 或 `main.mpy`。SD 挂载失败时
+应用仍可使用内置功能，设置和变量退回内部文件系统；产品启动失败时 frozen recovery 页面显示错误，
+串口同时保留诊断信息。
 
-## 刷入解释器
+## 刷入固件
 
 参考 [官方文档](https://micropython.org/download/ESP32_GENERIC/) 。
 
@@ -49,48 +46,35 @@ MicroPython 按 `_boot.py → /boot.py → /main.py` 启动。无 SD 卡、挂�
 
 ### 安装 Release 预编译固件
 
-GitHub Release 附件 `sci-calc-v1.6.2-esp32-factory.bin` 是已经冻结稳定核心模块的 ESP32 factory
-应用镜像。它只能写入 factory 应用分区 `0x10000`，不要把它写到 `0x0`，也不要擦除整片 Flash：
+GitHub Release 附件 `sci-calc-v1.7.0-esp32-application.bin` 包含完整 SCI-CALC 产品。
+它只能写入 factory 应用分区 `0x10000`，不要写到 `0x0`，也不要擦除整片 Flash：
 
 ```powershell
 python -m esptool --chip esp32 --port PORTNAME --baud 921600 `
   --before default_reset --after hard_reset write_flash `
-  0x10000 .\sci-calc-v1.6.2-esp32-factory.bin
+  0x10000 .\sci-calc-v1.7.0-esp32-application.bin
 ```
 
-该镜像不会覆盖 SD 卡上的 Add-ons、`settings.json`、`vars.json` 或未知用户文件。现有 SCI-CALC
-设备刷入后仍保留原 SD 应用；安装同一 Release 的 1.6.2 动态应用时，在 Release 源码目录继续运行
-下节的快速 MPY 部署命令。首次安装的空白 SD 卡使用该命令的 `--transactional` 选项。
-本仓库验证后的附件位于 `.work/releases/v1.6.2/`，同目录 `.sha256` 文件用于下载后校验。
+这一次写入不会覆盖 SD、NVS、partition table 或 bootloader。应用、页面和内置函数已经在镜像内，
+不需要再向 SD 部署配套代码。本仓库验证后的附件位于 `.work/releases/v1.7.0/`，同目录
+`.sha256` 文件用于下载后校验。
 
 ## 正式部署应用
 
 在 `mp_version` 目录执行：
 
 ```powershell
-..\.venv\python.exe .\tools\release_deploy.py --port PORTNAME --mode mpy
+..\.venv\python.exe -B .\tools\release_deploy.py --port PORTNAME
 ```
 
-该入口会：
-
-1. 生成字体和确定性的 source/MPY 发布清单，并在接触设备前验证全部摘要；
-2. 核对稳定 confirmed 槽的 selector、manifest 和 owner 标记；
-3. 只上传 SHA-256 变化或新增的 managed 文件，只删除旧 manifest 明确拥有而新版本移除的文件；
-4. 最后提交 manifest、owner 和 selector，复位后立即返回。
-
-默认快速模式不创建备用槽，也不再次连接运行 resident smoke。它不会覆盖 `/sd/settings.json`、
-`/sd/vars.json`、`/sd/Add-ons` 或槽内未知文件；中断时也不会把新 manifest 身份提前写入
-selector。若新 managed 路径与未知文件同名，快速模式会在写入前拒绝。已 provision 的设备需要
-完整 A/B 和冷启动校验时使用 `--transactional`。首次安装或
-修复 bootstrap 使用：
+该唯一正式入口先进行增量固件构建，再调用 flasher 只写 `0x10000`。已有同一源码构建产物时可跳过构建：
 
 ```powershell
-..\.venv\python.exe .\tools\release_deploy.py --port PORTNAME --mode mpy --transactional
+..\.venv\python.exe -B .\tools\release_deploy.py --port PORTNAME --skip-build
 ```
 
-COM5 实测：原完整流程 `374 s`，精简后的完整 A/B 为 `65.890 s`；默认单会话增量曾为
-`17.352 s`，当前候选含编译与同步为 `31.355 s`。当前设备只发布 `mpy`，`functions/*.py`
-始终保留源码。
+v1.7.0 在 COM5 的最终增量构建为 `27.640 s`，`--skip-build` 刷写并校验为 `24.631 s`。
+部署命令没有 SD 文件操作，不再维护 A/B slot、事务发布或 source/MPY 双模式。
 
 SD 卡和 OLED 共用 GPIO18/23 上的 SPI2，通过 CS4/CS5 分隔事务。内部
 `sdcard.py` 使用官方 Python block-device 驱动；不要替换成独占 SPI host 的
@@ -205,7 +189,7 @@ max(3, 5, 4)          -> 5
 
 ## 插件接口
 
-插件位于活动槽的 `functions/*.py`，实现 `register(registry)`。
+插件位于 `/sd/Add-ons/*.py`，实现 `register(registry)`。
 
 ```python
 WELCOME = "Statistics loaded"
@@ -274,7 +258,7 @@ def register(registry):
 
 设置文件使用 `plugin:文件名` 标识插件，例如 `plugin:solve`，因此 `basic.py` 与
 内置 `basic` 函数组不会发生名称冲突。插件默认关闭，可在函数面板中启用。
-如在开发调试时替换了活动槽中的插件，在函数面板按 `Sh+ENT` 可显式重新扫描；普通进入
+如在开发调试时替换了 `/sd/Add-ons` 中的插件，在函数面板按 `Sh+ENT` 可显式重新扫描；普通进入
 面板不会执行插件源码，以免影响页面转场响应。
 保存函数面板改动后，页面会先显示 `Loading add-ons` 固定进度条，再在后台原地重载动态插件；
 完成后自动返回主菜单。用户 Add-ons 始终保持动态，不冻结进固件。
@@ -294,7 +278,8 @@ def register(registry):
 
 ### 随附 Add-on
 
-函数面板中以 `Add-on:` 开头的项目来自活动槽的 `functions` 目录，默认关闭，可按 `ENT` 启用：
+函数面板中以 `Add-on:` 开头的项目来自 `/sd/Add-ons`，默认关闭，可按 `ENT` 启用。随固件
+编译的 `basic`、`trig` 和 `solve` 即使该目录不存在也可使用：
 
 - `Add-on: basic`（`basic.py`）：增加左结合的 `%` 取模运算符，例如 `17%5 -> 2`；
   对零取模会显示错误。
@@ -350,10 +335,11 @@ UI 会显示保存失败并每两秒重试。
 - 从 C 字体源生成紧凑 `.xglcd` 资产；
 - pytest 行为测试；
 - CPython 语法编译；
-- 仓库 MicroPython 1.29.0-preview 的 mpy-cross 逐文件编译。
+- stable MPY v6.3 `mpy-cross -march=xtensawin` 逐文件编译。
 
-`check.ps1` 会核对编译器版本，拒绝使用不匹配的 mpy-cross。首次运行前，按前文
-命令从仓库中的 `micropython/mpy-cross` 构建；Windows 可使用 GCC/Make 便携工具链。
+`check.ps1` 会同时核对编译器的 MicroPython v1.28.0 版本和 MPY v6.3 ABI，并拒绝 preview
+编译器。当前固定工具位于 `.work/tooling/mpy-cross-v1.28/mpy-cross.exe`；固件源码则严格校验
+相邻 `micropython/` 的 v1.28.0 commit 和 Git tree。
 
 ## 串口诊断与操作回放
 
@@ -390,8 +376,8 @@ UI 会显示保存失败并每两秒重试。
 ..\.venv\python.exe -m mpremote connect PORTNAME reset
 ```
 
-1.6.2 最终修订版的主机检查为 `1145 passed in 26.49s`，并通过 CPython 语法检查和
-MicroPython 1.29 `mpy-cross -march=xtensawin` 全源编译。主机 traced memory 只用于比较逻辑
+1.7.0 的主机检查为 `763 passed in 22.76s`，并通过 CPython 语法检查和 stable MPY v6.3
+`mpy-cross -march=xtensawin` 全源编译。主机 traced memory 只用于比较逻辑
 工作量，不替代真机堆或 SPI 时延。
 
 真机验收只使用现有统一入口：
@@ -404,20 +390,17 @@ MicroPython 1.29 `mpy-cross -march=xtensawin` 全源编译。主机 traced memor
 状态应用矩阵、五轮运行时目标导航、五轮捕获边沿到屏幕提交的交互探针，以及 16 帧秒表局部刷新
 分配探针；载荷在结束时删除，每阶段后复位设备并让 OLED 休眠。
 
-1.6.2 最终修订版的 COM5 五阶段验收完整通过：35 个场景连续五轮的最低空闲堆为 `10576 B`，高于
-8 KiB 硬门槛 `2384 B`；`MemoryError=0`、普通错误 0，加载条覆盖的动态插件重载为 `144.227 ms`。
-预热运行期最大普通 step 为 `23.801 ms`，输入提交最大 `19.091 ms`；80 个动画帧最大
-`18.046 ms` 且净分配为 `0 B`，Stopwatch 16 帧分配也为 `0 B`。Plot 逐字符定向探针在真实 frozen
-代码上得到 `origin=1 → initial=3 → samples=[7,9,9] → final=9`，3 个 OLED 帧最大 `10.929 ms`、
-逐帧分配 `0 B`。v1.6.1 定向操作另覆盖 Calculator
-历史、光标、RPN 往返、Function Picker 四向/翻页、Variable Panel 和 Stopwatch 圈速运动：
-前五类 71 帧最大 `19.561 ms`，Stopwatch 4 帧最大 `19.872 ms`，最大操作 step `23.183 ms`，
-动画分配 `0 B`、堆漂移 `-368 B`。验收输出
-`ACCEPTANCE_COMPLETE`，随后删除临时载荷并让 OLED 硬件休眠。
+1.7.0 的 COM5 五阶段验收完整通过：35 个场景连续五轮的最低空闲堆为 `15584 B`，高于
+8 KiB 硬门槛 `7392 B`；`MemoryError=0`、普通错误 0，加载条覆盖的动态插件重载为 `128.047 ms`。
+预热运行期最低堆 `59904 B`、漂移 `-80 B`、最大普通 step `24.431 ms`；输入提交最大
+`16.308 ms`，90 个动画帧最大 `16.753 ms` 且净分配为 `0 B`，Stopwatch 16 帧分配也为 `0 B`。
+刷写前后及验收清理后的 SD 均为 `100` 文件、`271089 B`、同一聚合 SHA-256
+`33297546fb4870dc5903f984729c36f6be257c9b9eee4db95c88edabcb96ffb7`。验收输出
+`ACCEPTANCE_COMPLETE`，删除全部临时载荷并让 OLED 硬件休眠。
 
 ## 实机回归清单
 
-1. 有卡、无卡、损坏活动槽 `main.mpy` 各启动一次，确认恢复界面和串口错误。
+1. 有卡和无卡各启动一次；确认应用来自 frozen 固件，SD 失败只影响用户数据而不影响内置页面。
 2. 计算、赋值、重启，确认变量持久化；开关插件后再次进入函数选择器。
 3. 快速输入、长按 DEL/ESC、Shift+RPN、Shift+Tab，确认没有重复事件。
 4. 运行 `tools/run_device_acceptance.ps1` 完成统一验收；只有全部硬门槛通过时才应看到

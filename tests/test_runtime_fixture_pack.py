@@ -10,8 +10,8 @@ from runtime_fixture_pack import (
 )
 
 
-_RELEASE_ID = "a" * 64
-_DIGEST = b"d" * 32
+DIRECTORY = "/sd/_sci_accept_support/functions"
+DIGEST = b"d" * 32
 
 
 class _Report:
@@ -27,154 +27,100 @@ class _Transaction:
         self.report = report
 
 
-def _snapshot(**changes):
-    values = {
-        "root": "/sd/.slots/A",
-        "directory": "/sd/.slots/A/functions",
-        "slot_name": "A",
-        "release_id": _RELEASE_ID,
-        "manifest_sha256": _DIGEST,
-        "digest0": _DIGEST,
-        "digest1": _DIGEST,
-        "digest2": _DIGEST,
-        "size0": 1,
-        "size1": 2,
-        "size2": 3,
-    }
-    values.update(changes)
-    return plugin_fixture.PluginScenarioFixtureSnapshot(**values)
+def _snapshot(directory=DIRECTORY, digest=DIGEST, size=1):
+    return plugin_fixture.PluginScenarioFixtureSnapshot(
+        directory, digest, digest, digest, size, size, size)
 
 
-def _ready_candidate(snapshot):
-    candidate = plugin_fixture.PluginScenarioFixtureCandidate()
+def _ready_candidate(snapshot=None):
+    snapshot = snapshot or _snapshot()
+    candidate = plugin_fixture.PluginScenarioFixtureCandidate(snapshot)
     candidate._state = plugin_fixture._STATE_READY
     candidate._snapshot = snapshot
     return candidate
 
 
 def _pack():
-    return bind_verified_candidate(_ready_candidate(_snapshot()))
+    return bind_verified_candidate(_ready_candidate())
 
 
-def test_binds_only_the_verified_fixed_slot_fixture_snapshot():
+def test_binds_only_the_verified_transient_fixture_snapshot():
     snapshot = _snapshot()
     pack = bind_verified_candidate(_ready_candidate(snapshot))
 
-    assert pack.directory == "/sd/.slots/A/functions"
+    assert pack.directory == DIRECTORY
     assert pack.files is FIXTURE_FILES
     assert pack.valid_selection is VALID_SELECTION
     assert pack.missing_selection is MISSING_SELECTION
-    assert pack.release_id == _RELEASE_ID
-    assert pack.manifest_sha256 is _DIGEST
     with pytest.raises(AttributeError, match="immutable"):
         pack._snapshot = snapshot
 
 
-def test_binds_the_fixed_transient_acceptance_fixture_directory():
-    snapshot = _snapshot(directory="/sd/_sci_accept_support/functions")
-    pack = bind_verified_candidate(_ready_candidate(snapshot))
-
-    assert pack.directory == "/sd/_sci_accept_support/functions"
-
-
-@pytest.mark.parametrize("changes", (
-    {"root": "/sd/Add-ons"},
-    {"directory": "/sd/.slots/A/Add-ons"},
-    {"slot_name": "C"},
-    {"release_id": "A" * 64},
-    {"manifest_sha256": bytearray(_DIGEST)},
-    {"digest1": b"x"},
-    {"size2": 0},
+@pytest.mark.parametrize("snapshot", (
+    _snapshot(directory="/sd/Add-ons"),
+    _snapshot(digest=b"short"),
+    _snapshot(size=0),
 ))
-def test_rejects_any_noncanonical_or_mutable_fixture_snapshot(changes):
+def test_rejects_noncanonical_or_unbounded_snapshots(snapshot):
     with pytest.raises(ValueError, match="snapshot"):
-        bind_verified_candidate(_ready_candidate(_snapshot(**changes)))
+        bind_verified_candidate(_ready_candidate(snapshot))
 
 
 def test_requires_a_completed_exact_fixture_candidate():
-    snapshot = _snapshot()
-    candidate = plugin_fixture.PluginScenarioFixtureCandidate()
+    candidate = plugin_fixture.PluginScenarioFixtureCandidate(_snapshot())
 
     with pytest.raises(ValueError, match="unavailable"):
         bind_verified_candidate(candidate)
     with pytest.raises(ValueError, match="candidate"):
         bind_verified_candidate(object())
     with pytest.raises(ValueError, match="candidate"):
-        ManagedPluginFixturePack(snapshot)
-
-    candidate._state = plugin_fixture._STATE_READY
-    candidate._snapshot = snapshot
-    assert bind_verified_candidate(candidate).directory == snapshot.directory
+        ManagedPluginFixturePack(_snapshot())
 
 
 def test_reverify_must_return_the_bound_snapshot_identity():
     pack = _pack()
-    snapshot = _snapshot()
-    candidate = _ready_candidate(snapshot)
 
-    assert pack.accepts_reverified_candidate(candidate) is False
-
-    bound = _ready_candidate(pack._snapshot)
-    assert pack.accepts_reverified_candidate(bound) is True
-
-    reverify = pack.open_reverify()
-    assert type(reverify) is plugin_fixture.PluginScenarioFixtureCandidate
-    assert reverify._source_snapshot is pack._snapshot
+    assert pack.accepts_reverified_candidate(
+        _ready_candidate(_snapshot())) is False
+    assert pack.accepts_reverified_candidate(
+        _ready_candidate(pack._snapshot)) is True
+    assert type(pack.open_reverify()) is (
+        plugin_fixture.PluginScenarioFixtureCandidate)
 
 
-def test_valid_chain_result_requires_only_the_two_fixed_loaded_records():
+def test_valid_chain_result_requires_only_two_fixed_loaded_records():
     pack = _pack()
-    valid = _Transaction(
-        True,
-        True,
-        _Report(
-            [
-                ("_acceptance_core", 1, ""),
-                ("_acceptance_dependent", 1, ""),
-            ],
-            [],
-        ),
-    )
+    transaction = _Transaction(True, True, _Report([
+        ("_acceptance_core", 1, ""),
+        ("_acceptance_dependent", 1, ""),
+    ], []))
 
-    assert pack.valid_reload_result(valid) is True
-    assert pack.missing_reload_result(valid) is False
-
-    valid.report.loaded.append(("unmanaged", 1, ""))
-    assert pack.valid_reload_result(valid) is False
+    assert pack.valid_reload_result(transaction) is True
+    transaction.report.loaded.append(("unmanaged", 1, ""))
+    assert pack.valid_reload_result(transaction) is False
 
 
-def test_missing_dependency_result_requires_the_fixed_single_error():
+def test_missing_dependency_result_requires_the_fixed_error():
     pack = _pack()
-    missing = _Transaction(
-        True,
-        False,
-        _Report(
-            [],
-            [("_acceptance_missing", "Dependency failed: _acceptance_absent")],
-        ),
-    )
+    transaction = _Transaction(
+        True, False, _Report([], [
+            ("_acceptance_missing",
+             "Dependency failed: _acceptance_absent")]))
 
-    assert pack.missing_reload_result(missing) is True
-    assert pack.valid_reload_result(missing) is False
-
-    missing.report.errors[0] = ("_acceptance_missing", "unexpected")
-    assert pack.missing_reload_result(missing) is False
+    assert pack.missing_reload_result(transaction) is True
+    transaction.report.errors[0] = ("_acceptance_missing", "unexpected")
+    assert pack.missing_reload_result(transaction) is False
 
 
-def test_malformed_result_or_memory_error_never_proves_a_fixture_reload():
+def test_result_memory_error_is_not_hidden():
     pack = _pack()
-    malformed = _Transaction(True, True, _Report((), []))
 
-    assert pack.valid_reload_result(malformed) is False
-
-    class _MemoryReport:
+    class MemoryReport:
         @property
         def loaded(self):
             raise MemoryError("injected report OOM")
 
-        @property
-        def errors(self):
-            return []
+        errors = []
 
     with pytest.raises(MemoryError, match="report OOM"):
-        pack.valid_reload_result(_Transaction(True, True, _MemoryReport()))
+        pack.valid_reload_result(_Transaction(True, True, MemoryReport()))

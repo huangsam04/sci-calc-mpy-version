@@ -212,6 +212,7 @@ def _append_error(report, name, detail):
 
 _LOADER_NAMESPACE_METADATA = (
     "register", "DEPENDENCIES", "EXPORTS", "WELCOME")
+_BUNDLED_PLUGIN_FILES = ("basic.py", "solve.py", "trig.py")
 
 
 def _discard_loader_metadata(namespace):
@@ -222,8 +223,7 @@ def _discard_loader_metadata(namespace):
 
 
 def _default_func_dir():
-    from approot import app_root
-    return app_root() + "/functions"
+    return "/sd/Add-ons"
 
 
 def load_function_files(registry, enabled_files=None, func_dir=None,
@@ -243,10 +243,16 @@ def load_function_files(registry, enabled_files=None, func_dir=None,
     try:
         filenames = _plugin_files(func_dir)
     except OSError:
-        return report
+        if not canonical_directory:
+            return report
+        filenames = []
     except ValueError as error:
         _append_error(report, "Add-ons", str(error))
         return report
+    if canonical_directory:
+        for filename in _BUNDLED_PLUGIN_FILES:
+            if filename not in filenames:
+                filenames.append(filename)
     filenames.sort()
     files = []
     for filename in filenames:

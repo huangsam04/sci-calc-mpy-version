@@ -1,6 +1,5 @@
-# Internal Flash boot.py: mount the application SD card and then exit.
-# The boot supervisor owns sys.path from here on; /sd must never sit on the
-# global import path or stale card files could shadow the trusted base.
+# Frozen boot.py: mount the user-data SD card before the product starts.
+# Product imports stay on .frozen; the card never enters sys.path.
 import vfs
 from machine import Pin, SPI
 import sdcard

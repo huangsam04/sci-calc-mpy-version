@@ -175,7 +175,6 @@ def _drop_function_loader_module():
         return
     import sys
     loader_module = sys.modules.pop("calc.loader", None)
-    sys.modules.pop("approot", None)
     calc_package = sys.modules.get("calc")
     if (loader_module is not None and calc_package is not None
             and getattr(calc_package, "loader", None) is loader_module):

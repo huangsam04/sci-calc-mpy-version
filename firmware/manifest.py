@@ -1,4 +1,4 @@
-"""First measured SCI-CALC frozen-code set.
+"""Self-contained SCI-CALC product firmware.
 
 Acceptance fixtures and scenario transactions are not frozen or shipped in an
 ordinary release; the existing acceptance script uploads them only while a
@@ -9,9 +9,13 @@ freeze("$(PORT_DIR)/modules")
 include("$(MPY_DIR)/extmod/asyncio")
 
 _SOURCE = "../source"
+_FIRMWARE = "."
+
+freeze(_FIRMWARE, "main.py")
 
 freeze(_SOURCE, (
-    "approot.py",
+    "application.py",
+    "boot.py",
     "calc/__init__.py",
     "calc/bundled_plugins.py",
     "calc/functions.py",
@@ -25,7 +29,9 @@ freeze(_SOURCE, (
     "functions/solve.py",
     "functions/trig.py",
     "performance.py",
+    "recovery.py",
     "runtime_handle.py",
+    "sdcard.py",
     "screens/__init__.py",
     "screens/about.py",
     "screens/calculator.py",

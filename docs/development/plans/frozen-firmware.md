@@ -44,3 +44,13 @@ slot 去重与 frozen 导入证明（2026-07-30）：发布计划从 SD managed 
 - [x] 12 KiB 堆门槛已经达到，但 `37.761 ms > 32 ms`，联合门禁仍失败；按主树干进入 Calculator 直接求值，不启动用户状态压缩。
 
 完成后回到 [PLAN](../PLAN.md) 勾选“冻结核心模块”，再读取[页面生命周期分支](page-lifecycle.md)。
+
+## v1.7.0 稳定 MicroPython 与单固件
+
+- [x] 官方稳定 tag 查询确认最新 Release 为 `v1.28.0`（2026-04-06）：annotated tag object `2b0015629f67fd186f980079b2e696ad0bc7343c`，commit `e0e9fbb17ed6fd06bb76e266ae554784c9c80804`，Git tree `6c48c290ce7e85916892549933ffea4daaedd331`，`micropython-lib` `8380c7bb8f9e5e5260e9539156742925e00366b2`。当前 `../micropython` 为该 clean tag；验证后的旧 preview 备份已删除。
+- [x] 增加一个只负责设置 frozen 导入路径并调用产品入口的最小固件 `main.py`；产品运行编排改为 `application.py`，SD 挂载和无卡降级也由 frozen 启动链完成。
+- [x] 冻结所有普通产品模块和内置静态函数；Add-ons 从 `/sd/Add-ons/` 动态发现，设置与变量继续使用 `/sd`，未知用户文件不进入固件所有权或清理范围。
+- [x] 新固件不依赖 `.slots`、selector、release manifest、`launch.py` 或 `main.mpy`；旧普通部署实现、A/B 启动链及专属兼容测试已删除，不保留两套产品启动/发布路径。
+- [x] COM5 单固件为 `1836528 B`，最终增量构建 `27.640 s`、只写 `0x10000` 并校验 `24.631 s`；冷启动 `sys.path=['.frozen','/lib']`，`application/performance/runtime_handle/version/sdcard` 均为 frozen，旧 slot 模块未加载。统一验收最低堆 `15584 B`、普通 step `25.188 ms`、输入 `16.321 ms`、动画 `16.756 ms`、逐帧 0 分配、错误 0；SD 文件数和总字节数在刷写及验收清理后不变。
+
+首个稳定版冷构建使用现有 ESP-IDF 5.5.2 和 MPY v6.3 ABI，耗时 `150.579 s`；恢复官方 clean tree 后的有限增量构建耗时 `39.485 s`。最终改用 clean v1.28.0 源码自身构建的 `mpy-cross`，强制重生成 frozen bytecode 后增量构建为 `27.640 s`；镜像仍为 `1836528 B`、factory 余量 `195088 B`、SHA-256 `22002f2280af961c0e2dbd0d7bddbf6c0e96307f8ca42963b02b07e3d60a63f5`。旧 preview 源码、旧编译器和可重建编译器中间文件均已删除，只保留 clean v1.28.0 上游树和 `.work/tooling/mpy-cross-v1.28/mpy-cross.exe`。完整产品入口、`boot.py`、SD 驱动和恢复页均已进入 frozen manifest，并通过最终 COM5 统一门禁。

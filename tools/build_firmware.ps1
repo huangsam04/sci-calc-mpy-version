@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
-    [ValidateSet("base", "frozen")]
-    [string]$Profile = "frozen",
+    [string]$MicroPythonRoot = "",
+    [string]$MpyCross = "",
     [string]$IdfPath = "",
     [string]$IdfToolsPath = ""
 )
@@ -9,15 +9,24 @@ param(
 $ErrorActionPreference = "Stop"
 $ProjectRoot = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
 $WorkspaceRoot = Split-Path -Parent $ProjectRoot
-$MicroPythonRoot = Join-Path $WorkspaceRoot "micropython"
+if (-not $MicroPythonRoot) {
+    $MicroPythonRoot = Join-Path $WorkspaceRoot "micropython"
+}
+$MicroPythonRoot = [System.IO.Path]::GetFullPath($MicroPythonRoot)
 $Esp32Port = Join-Path $MicroPythonRoot "ports\esp32"
-$MpyCross = Join-Path $MicroPythonRoot "mpy-cross\build\mpy-cross.exe"
-$Manifest = Join-Path $ProjectRoot ("firmware\manifest-" + $Profile + ".py")
+$Manifest = Join-Path $ProjectRoot "firmware\manifest.py"
 $QstrWrapper = Join-Path $ProjectRoot "tools\firmware_qstr_wrapper.py"
 $WorkRoot = Join-Path $ProjectRoot ".work"
-$BuildRoot = Join-Path $WorkRoot ("firmware\" + $Profile)
+$BuildRoot = Join-Path $WorkRoot "firmware\product"
 $TempRoot = Join-Path $WorkRoot "temp"
 $CompilerCache = Join-Path $WorkRoot "ccache"
+if (-not $MpyCross) {
+    $MpyCross = Join-Path $WorkRoot "tooling\mpy-cross-v1.28\mpy-cross.exe"
+}
+
+$ExpectedTag = "v1.28.0"
+$ExpectedCommit = "e0e9fbb17ed6fd06bb76e266ae554784c9c80804"
+$ExpectedTree = "6c48c290ce7e85916892549933ffea4daaedd331"
 
 if (-not $IdfPath) {
     $IdfPath = Join-Path $env:USERPROFILE "esp\esp-idf-v5.5.2"
@@ -39,6 +48,26 @@ foreach ($Path in $RequiredFiles) {
     if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
         throw "Missing firmware build dependency: $Path"
     }
+}
+
+$ActualCommit = (& git.exe -C $MicroPythonRoot rev-parse HEAD 2>$null | Out-String).Trim()
+$ActualTree = (& git.exe -C $MicroPythonRoot rev-parse "HEAD^{tree}" 2>$null | Out-String).Trim()
+if ($ActualCommit -ne $ExpectedCommit -or $ActualTree -ne $ExpectedTree) {
+    throw (
+        "MicroPython source is not locked to ${ExpectedTag}: " +
+        "commit=$ActualCommit tree=$ActualTree")
+}
+$SourceChanges = (& git.exe -C $MicroPythonRoot status --porcelain `
+    --untracked-files=no 2>$null | Out-String).Trim()
+if ($SourceChanges) {
+    throw "MicroPython $ExpectedTag source tree has tracked changes"
+}
+$MpyVersion = (& $MpyCross --version 2>&1 | Out-String)
+if ($LASTEXITCODE -ne 0 `
+        -or $MpyVersion -notmatch "MicroPython v1\.28\.0" `
+        -or $MpyVersion -notmatch "mpy v6\.3" `
+        -or $MpyVersion -match "preview") {
+    throw "Expected stable MicroPython v1.28.0 mpy-cross emitting mpy v6.3: $MpyVersion"
 }
 
 $Python = Get-ChildItem -LiteralPath (Join-Path $IdfToolsPath "python_env") `
@@ -151,8 +180,10 @@ function Set-QstrCommandAdapter {
 
 $FrozenContent = Join-Path $BuildRoot "frozen_content.c"
 if ((Test-Path -LiteralPath $FrozenContent -PathType Leaf) -and
-        (Get-Item -LiteralPath $Manifest).LastWriteTimeUtc -gt
-        (Get-Item -LiteralPath $FrozenContent).LastWriteTimeUtc) {
+        ((Get-Item -LiteralPath $Manifest).LastWriteTimeUtc -gt
+            (Get-Item -LiteralPath $FrozenContent).LastWriteTimeUtc -or
+         (Get-Item -LiteralPath $MpyCross).LastWriteTimeUtc -gt
+            (Get-Item -LiteralPath $FrozenContent).LastWriteTimeUtc)) {
     Remove-Item -LiteralPath $FrozenContent -Force
 }
 
@@ -162,7 +193,7 @@ try {
     if (-not (Test-Path -LiteralPath (Join-Path $BuildRoot "build.ninja") -PathType Leaf)) {
         & cmd.exe /d /c ($CommandPrefix + " reconfigure")
         if ($LASTEXITCODE -ne 0) {
-            throw "ESP32 firmware configure failed for profile $Profile"
+            throw "ESP32 product firmware configure failed"
         }
     }
 
@@ -174,7 +205,7 @@ try {
         $BuildExitCode = $LASTEXITCODE
     }
     if ($BuildExitCode -ne 0) {
-        throw "ESP32 firmware build failed for profile $Profile"
+        throw "ESP32 product firmware build failed"
     }
 }
 finally {
@@ -207,7 +238,7 @@ finally {
 }
 $Hash = [System.BitConverter]::ToString($HashBytes).Replace("-", "").ToLowerInvariant()
 Write-Output (
-    "FIRMWARE_BUILD profile=$Profile elapsed_ms=$Elapsed" +
+    "FIRMWARE_BUILD product=sci-calc micropython=$ExpectedTag elapsed_ms=$Elapsed" +
     " app_bytes=$ApplicationBytes factory_bytes=$FactoryBytes sha256=$Hash")
 Write-Output "FIRMWARE_APPLICATION $Application"
 Write-Output "FIRMWARE_PARTITION_TABLE $PartitionTable"

@@ -52,7 +52,7 @@ function Invoke-DeviceToolCompilation {
         }
         else {
             $EmbeddedSource = "tools/" + $Tool.Name
-            & $MpyCross -march=xtensawin -X no-source-lines `
+            & $MpyCross -march=xtensawin `
                 -s $EmbeddedSource -o $Output $Tool.FullName
             $ExitCode = $LASTEXITCODE
         }
