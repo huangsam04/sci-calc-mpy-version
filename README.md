@@ -389,7 +389,7 @@ UI 会显示保存失败并每两秒重试。
 ..\.venv\python.exe -m mpremote connect PORTNAME reset
 ```
 
-1.6.2 修订候选的最终主机检查为 `1144 passed in 26.45s`，并通过 CPython 语法检查和
+1.6.2 修订版的最终主机检查为 `1144 passed in 26.45s`，并通过 CPython 语法检查和
 MicroPython 1.29 `mpy-cross -march=xtensawin` 全源编译。主机 traced memory 只用于比较逻辑
 工作量，不替代真机堆或 SPI 时延。
 
@@ -403,7 +403,7 @@ MicroPython 1.29 `mpy-cross -march=xtensawin` 全源编译。主机 traced memor
 状态应用矩阵、五轮运行时目标导航、五轮捕获边沿到屏幕提交的交互探针，以及 16 帧秒表局部刷新
 分配探针；载荷在结束时删除，每阶段后复位设备并让 OLED 休眠。
 
-1.6.2 修订候选的 COM5 五阶段验收完整通过：35 个场景连续五轮的最低空闲堆为 `10608 B`，高于
+1.6.2 修订版的 COM5 五阶段验收完整通过：35 个场景连续五轮的最低空闲堆为 `10608 B`，高于
 8 KiB 硬门槛 `2416 B`；`MemoryError=0`、普通错误 0，加载条覆盖的动态插件重载为 `143.754 ms`。
 预热运行期最大普通 step 为 `24.122 ms`，输入提交最大 `19.102 ms`；80 个动画帧最大
 `18.129 ms` 且净分配为 `0 B`，Stopwatch 16 帧分配也为 `0 B`。Plot 照片路径在真实 frozen

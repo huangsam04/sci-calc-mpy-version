@@ -793,22 +793,23 @@ CPython `compileall`、对所有源码使用 `-march=xtensawin` 编译 `.mpy`。
 5. 验收侧缓存同一 application matrix 内不变的 framebuffer 身份快照；该缓存不进入普通 release。
    没有增加像素缓冲、通用动画层、`LazyScreen`、SWAP 或第二 framebuffer。
 
-1.6.2 修订候选的发布前 `check.ps1` 为 `1144 passed in 26.45s`；CPython compileall 和
+1.6.2 修订版的发布前 `check.ps1` 为 `1144 passed in 26.45s`；CPython compileall 和
 MicroPython 1.29 全源 mpy-cross 均通过。
 
 ### 10.2 COM5 严格门禁（1.6.2）
 
 当前 MPY release 为 `ba19cf52672c0131d715d0c8cf5d64b364584e6d817a4a46e304f6db10af0280`，
 manifest SHA-256 为 `1a8d03902720f96c4a39d42f4a85ca6ceff7060419eb8263629292463194c597`。
-修订 frozen 候选为 `1832608 B`，SHA-256 为 `cec1c7e4b94505ce7000491bad7c7bb6e820fb08c45b4d3bd67e72c286057b2b`；
+正式修订 frozen 镜像为 `1832608 B`，SHA-256 为 `cec1c7e4b94505ce7000491bad7c7bb6e820fb08c45b4d3bd67e72c286057b2b`；
 源变更增量构建用时 `30.595 s`，只写 factory 分区 `0x10000` 并校验用时 `24.852 s`。
-最终附件、可复现重建用时和移动后的本地 tag 在固定修正提交后的发布批次核对。统一入口仍为：
+固定修正提交后的可复现增量重建为 `4.246 s`。附件与摘要位于 `.work/releases/v1.6.2/`，
+本地 annotated tag `v1.6.2` 指向修订 release commit。统一入口仍为：
 
 ```powershell
 .\tools\run_device_acceptance.ps1 -Port PORTNAME
 ```
 
-下列行来自同一 1.6.2 候选的最终五阶段统一验收；定向交互 profile 保留 v1.6.1 较大交互批次的数据：
+下列行来自同一 1.6.2 修订版的最终五阶段统一验收；定向交互 profile 保留 v1.6.1 较大交互批次的数据：
 
 | 检查 | 真机结果 |
 | --- | --- |
@@ -829,7 +830,7 @@ manifest SHA-256 为 `1a8d03902720f96c4a39d42f4a85ca6ceff7060419eb82636292924631
 首轮 Plot 光标回归只覆盖真实 `Nav` 离页/重建，用户照片证明它没有覆盖同页取消并重进。修订红灯
 执行真实按键映射 `RPN(x) → 等待稳定 → ESC → ENT`，连续两次得到空文本、逻辑索引 0 但像素
 7 px；修复后 COM5 的实际 frozen 代码报告 `x/1/9/inactive → empty/0/1/inactive`。该边界不新增
-状态或分配；统一应用矩阵的 `plot_pipeline` 和 `page_round_trips` 随后在同一修订候选通过。
+状态或分配；统一应用矩阵的 `plot_pipeline` 和 `page_round_trips` 随后在同一修订版通过。
 
 ### 10.3 已测热点与淘汰候选
 
@@ -860,7 +861,7 @@ Stopwatch 压缩无法影响更早的 `calculator_history` 门禁，按 YAGNI �
 缓冲。Calculator、Function Picker、Variable Panel、Stopwatch 和固定 footer 的可见文本都在激活、输入或换页
 边界预先装入固定缓存，逐帧只读取缓存。Renderer 在
 动画启动前解析目标页 hooks，每一帧都把目标页严格裁剪到当前新暴露条带，包含首个 2 px 边缘。
-1.6.2 修订候选 COM5 最终 `heap_min=10608 B`，高于 8192 B 硬底线 2416 B；v1.6.1 定向 71 帧、当前统一交互 80 帧
+1.6.2 修订版 COM5 最终 `heap_min=10608 B`，高于 8192 B 硬底线 2416 B；v1.6.1 定向 71 帧、当前统一交互 80 帧
 和 Stopwatch 16 帧的净分配均为 0 B。8 KiB 是启用底线，
 12 KiB 仍是优化目标；不得为追求余量删除已经满足错误、漂移和时延门槛的动画。
 

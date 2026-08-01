@@ -93,4 +93,4 @@
 - [x] 首轮离页/重建测试只覆盖中断动画，未捕获用户照片中的同页 `ESC → ENT`；原 `1832576 B` / `08d4ebb2...fca5fc` 附件与本地 tag 已被新证据否决，不作为最终 v1.6.2 候选。
 - [x] 照片路径连续两次稳定复现空文本和 7 px 错位；复用 Calculator 的即时恢复/激活目标重算后，照片路径与原 Nav 路径均通过，相关聚焦集合 `109 passed`，新增状态与像素缓冲 0 B。
 - [x] 修订候选 `check.ps1` 为 `1144 passed in 26.45s`；COM5 照片路径严格通过，统一验收最低堆 `10608 B`、普通 step `24.122 ms`、输入 `19.102 ms`、动画 `18.129 ms`、逐帧分配 0 B、错误 0，载荷已清理且 OLED 已休眠。
-- [ ] 替换 v1.6.2 frozen 附件、SHA-256、release commit 与本地 annotated tag；同步 README/USER_GUIDE/TECHNICAL_GUIDE 并完成单代理审查，不 push。
+- [x] 最终 v1.6.2 frozen 附件为 `1832608 B`、SHA-256 `cec1c7e4b94505ce7000491bad7c7bb6e820fb08c45b4d3bd67e72c286057b2b`，固定修正提交后的增量重建为 `4.246 s`；附件、摘要、README/USER_GUIDE/TECHNICAL_GUIDE 和单代理审查均已核对，本地 annotated tag 移至修订 release commit，不 push。

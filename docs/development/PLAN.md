@@ -57,7 +57,7 @@
 - [x] **照片路径修复**：真实 `RPN(x) → 等待光标稳定 → ESC → ENT` 连续两次复现空文本、逻辑索引 0、像素光标 7 px（应为 1 px）。Plot 现与 Calculator 一样用 `set_str(..., immediate=True)` 恢复隐藏状态，并在激活时按当前文本 `_update_cursor_target(immediate=True)`；正常输入动画不变，聚焦集合 `109 passed`，新增状态/缓冲为 0 B。
 - [x] **版本**：产品版本及 boot probe 合同更新为 `1.6.2`；历史 v1.6.1 发布数据不改写。
 - [x] **修订验证**：`check.ps1` 为 `1144 passed in 26.45s`；COM5 照片路径为 `x/1/9/inactive → empty/0/1/inactive`。统一验收最低堆 `10608 B`、普通最大 step `24.122 ms`、输入 `19.102 ms`、动画最大 `18.129 ms`、逐帧分配 0 B、错误 0，载荷已清理且 OLED 已休眠。
-- [ ] **修订发布**：从固定修正提交重建并替换 `.work/releases/v1.6.2/` 附件、摘要和本地 annotated tag `v1.6.2`，同步最终数据、完成单代理审查且不 push。
+- [x] **修订发布**：从固定修正提交可复现重建 `1832608 B` frozen 镜像，SHA-256 `cec1c7e4b94505ce7000491bad7c7bb6e820fb08c45b4d3bd67e72c286057b2b`，增量构建 `4.246 s`；已替换 `.work/releases/v1.6.2/` 附件与摘要，同步最终说明并完成单代理差异审查，本地 annotated tag `v1.6.2` 移至修订 release commit，不 push。
 
 ## 唯一执行顺序
 
