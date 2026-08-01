@@ -339,6 +339,13 @@ class PlotScreen(UIElement):
         'Run ordinary Plot maintenance, converting OOM into the local UI.'
         return self._settle_curve_step()
 
+    @property
+    def motion_active(self):
+        return self.input_box.motion_active
+
+    def advance_motion(self, now):
+        return self.input_box.advance_motion(now)
+
     def _settle_curve_step(self, propagate_memory=False):
         'Advance one quiet Plot phase, optionally preserving the primary OOM.'
         if self._state[1][3] == 2 and self.error_popup.expired():

@@ -58,6 +58,8 @@
 - [x] **版本**：产品版本及 boot probe 合同更新为 `1.6.2`；历史 v1.6.1 发布数据不改写。
 - [x] **修订验证**：`check.ps1` 为 `1144 passed in 26.45s`；COM5 照片路径为 `x/1/9/inactive → empty/0/1/inactive`。统一验收最低堆 `10608 B`、普通最大 step `24.122 ms`、输入 `19.102 ms`、动画最大 `18.129 ms`、逐帧分配 0 B、错误 0，载荷已清理且 OLED 已休眠。
 - [x] **修订发布**：从固定修正提交可复现重建 `1832608 B` frozen 镜像，SHA-256 `cec1c7e4b94505ce7000491bad7c7bb6e820fb08c45b4d3bd67e72c286057b2b`，增量构建 `4.246 s`；已替换 `.work/releases/v1.6.2/` 附件与摘要，同步最终说明并完成单代理差异审查，本地 annotated tag `v1.6.2` 移至修订 release commit，不 push。
+- [x] **逐字符动画根因**：用户真机指出 Plot 每次输入后光标只移动明显小于一个字符。屏幕级真实 `RPN(x)` 红灯连续两次证明 `InputBox` 已启动动画但 `PlotScreen` 未公开页面 `motion_active` / `advance_motion()`，主循环因此只显示首次 2 px 小步而不能到 8 px 终点；现原样复用 Calculator 的无状态转发，相关 101 项通过，不新增状态、分配或缓冲。
+- [ ] **二次修订验证与发布**：`check.ps1` 已以 `1145 passed in 26.49s` 通过；仍须在 COM5 验证逐字符 96 ms ease-out 完整到达每个 8 px 单元并复用统一五阶段验收。通过后重建并替换 v1.6.2 固件、摘要、release commit 和本地 annotated tag，不 push，结束后休眠 OLED。
 
 ## 唯一执行顺序
 

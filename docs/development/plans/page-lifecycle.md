@@ -55,3 +55,6 @@
 - [x] 照片路径使用真实按键映射执行 `RPN → finish input motion → ESC → ENT`；修复前连续两次稳定为文本空、`cursor_pos=0`、`cursor.x=7`，预期 `1`。原因是取消编辑使用非即时 `set_str()`，把隐藏状态恢复错误地启动为可见动画。
 - [x] Plot 取消编辑现复用 Calculator 的即时 InputBox 恢复语义，激活也复用其按文本重算目标的边界；正常输入仍使用原 96 ms ease-out，新增状态、分配和像素缓冲均为 0，Plot/Calculator/InputBox/Nav 聚焦集合 `109 passed`。
 - [x] 修订主机 `1144 passed`；COM5 照片路径严格得到 `x/1/9/inactive → empty/0/1/inactive`，统一五阶段最低堆 `10608 B`、错误 0，载荷已清理且 OLED 已硬件休眠。
+- [x] 用户复测随后发现逐字符移动仍只显示小于一格；新屏幕级红灯不直接结束子控件动画，而是按主循环合同查询 Plot 页面，连续两次稳定得到 `AttributeError: PlotScreen has no motion_active`。Calculator 对照确认它已转发相同 InputBox 动画。
+- [x] Plot 现与 Calculator 一样仅转发 `motion_active` 和 `advance_motion(now)`；主循环可把首次 2 px 小步继续推进到 96 ms 的完整 8 px 字符终点。未增加实例字段或状态，InputBox/Plot/Nav/动效相关 101 项通过。
+- [ ] COM5 定向逐字符动画与统一五阶段门禁通过后，由验证分支替换第二次修订的 v1.6.2 发布产物并休眠 OLED。

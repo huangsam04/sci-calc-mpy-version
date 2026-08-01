@@ -235,6 +235,26 @@ def test_plot_cancel_then_reenter_restores_empty_cursor_geometry():
     assert plot.input_box.motion_active is False
 
 
+def test_plot_advances_input_cursor_motion_through_screen_contract(
+        monkeypatch):
+    clock = [100]
+    monkeypatch.setattr("ui.inputbox.time.ticks_ms", lambda: clock[0])
+    monkeypatch.setattr(
+        "ui.inputbox.time.ticks_diff", lambda newer, older: newer - older)
+    plot = PlotScreen(None, registry=build_registry())
+
+    assert plot.update(KeyboardStub(), (3, 5, False)) == "REDRAW"
+    start = plot.input_box.x + 1
+    target = start + 8
+    assert start < plot.input_box.cursor.x < target
+    assert plot.motion_active is True
+
+    clock[0] = 196
+    assert plot.advance_motion(clock[0]) is True
+    assert plot.input_box.cursor.x == target
+    assert plot.motion_active is False
+
+
 def test_curve_job_is_fixed_shape_and_keeps_only_needed_autoscale_state():
     automatic = _curve_job(True, 20, 54, 21)
     manual = _curve_job(False, 20, 54, 21)
